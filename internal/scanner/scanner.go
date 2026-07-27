@@ -84,11 +84,13 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 		ScannerVersion: Version,
 	}
 
-	// Resolve IP
+	// Resolve IP. A name that does not resolve was never measured, and must not
+	// be presented as a scan result.
 	ips, err := net.LookupIP(host)
-	if err == nil && len(ips) > 0 {
-		result.IP = ips[0].String()
+	if err != nil || len(ips) == 0 {
+		return nil, fmt.Errorf("cannot resolve %s: %w", host, err)
 	}
+	result.IP = ips[0].String()
 
 	// Run probes concurrently
 	var wg sync.WaitGroup
@@ -132,13 +134,57 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 		mu.Unlock()
 	}()
 
+	// Enumerate the cipher suites the server accepts, rather than reporting
+	// only the one this client happened to negotiate.
+	var offeredCiphers []types.CipherSuite
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		ciphers, _ := s.probeCipherSuites(ctx, host, port)
+		mu.Lock()
+		offeredCiphers = ciphers
+		mu.Unlock()
+	}()
+
 	wg.Wait()
+
+	result.CipherSuites = mergeCipherSuites(result.CipherSuites, offeredCiphers)
+
+	// A host that resolved but never completed a handshake was not measured
+	// either. Reporting it as a graded result made an unreachable, firewalled or
+	// non-TLS host indistinguishable from one measured to be insecure, and in a
+	// --targets sweep every typo produced a confident failing row.
+	if !anyProtocolSupported(result.Protocols) && result.Certificate == nil &&
+		len(negotiated) == 0 && len(offered) == 0 {
+		return nil, fmt.Errorf(
+			"no TLS connection could be established to %s:%d (host unreachable, "+
+				"port closed, or not speaking TLS)", host, port)
+	}
 
 	result.KeyExchanges = mergeKeyExchanges(negotiated, offered)
 	if len(skipped) > 0 {
 		result.ScanWarnings = append(result.ScanWarnings, fmt.Sprintf(
 			"key exchange groups not probed because this build of the scanner cannot offer them: %s",
 			strings.Join(skipped, ", ")))
+	}
+
+	// Be explicit about the one enumeration this scanner cannot perform, so a
+	// suite that is simply unobservable is never read as unsupported.
+	if hasTLS13(result.Protocols) {
+		result.ScanWarnings = append(result.ScanWarnings,
+			"TLS 1.3 cipher suites cannot be enumerated individually: Go's TLS stack "+
+				"always offers all three and ignores per-suite configuration, so only the "+
+				"negotiated TLS 1.3 suite is reported. TLS 1.2 and earlier suites are "+
+				"enumerated in full.")
+	}
+
+	if !s.config.CheckVulns {
+		result.ScanWarnings = append(result.ScanWarnings,
+			"vulnerability checks were skipped, so the grade carries no vulnerability penalties")
+	}
+	if !s.config.CheckQuantum {
+		result.ScanWarnings = append(result.ScanWarnings,
+			"quantum risk assessment was skipped and is excluded from the grade")
 	}
 
 	// Analyze results
@@ -155,6 +201,52 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 
 	result.Duration = types.Duration{Duration: time.Since(start)}
 	return result, nil
+}
+
+// hasTLS13 reports whether the target negotiated or accepted TLS 1.3.
+func hasTLS13(protocols []types.Protocol) bool {
+	for _, p := range protocols {
+		if p.Version == "TLS 1.3" && p.Supported {
+			return true
+		}
+	}
+	return false
+}
+
+// mergeCipherSuites combines the negotiated suite with the enumerated ones,
+// keeping the strongest first and removing duplicates.
+func mergeCipherSuites(negotiated, offered []types.CipherSuite) []types.CipherSuite {
+	seen := make(map[uint16]bool, len(negotiated)+len(offered))
+	merged := make([]types.CipherSuite, 0, len(negotiated)+len(offered))
+
+	for _, list := range [][]types.CipherSuite{negotiated, offered} {
+		for _, cs := range list {
+			if seen[cs.ID] {
+				continue
+			}
+			seen[cs.ID] = true
+			merged = append(merged, cs)
+		}
+	}
+
+	sort.SliceStable(merged, func(i, j int) bool {
+		if merged[i].Bits != merged[j].Bits {
+			return merged[i].Bits > merged[j].Bits
+		}
+		return merged[i].Name < merged[j].Name
+	})
+	return merged
+}
+
+// anyProtocolSupported reports whether at least one TLS version handshake
+// succeeded, which is the minimum evidence that a scan measured anything.
+func anyProtocolSupported(protocols []types.Protocol) bool {
+	for _, p := range protocols {
+		if p.Supported {
+			return true
+		}
+	}
+	return false
 }
 
 // probeProtocols checks which TLS versions are supported.
@@ -342,6 +434,97 @@ func (s *Scanner) probeKeyExchangeGroups(ctx context.Context, host string, port 
 		}
 	}
 	return supported, skipped
+}
+
+// probeCipherSuites enumerates which TLS 1.2 and earlier cipher suites the
+// server accepts, by offering exactly one suite per handshake.
+//
+// Reporting only the single negotiated suite made the tool assert things it had
+// not measured: a grade rationale of "all ciphers have forward secrecy" after
+// asking once, and a CNSA 2.0 violation for a 128-bit cipher against servers
+// that also offer AES-256.
+//
+// TLS 1.3 suites cannot be enumerated this way. Go's crypto/tls ignores
+// Config.CipherSuites for TLS 1.3 and always offers all three, so the only TLS
+// 1.3 suite observable from here is the negotiated one. That limit is reported
+// to the caller rather than hidden, so an absent suite is never mistaken for an
+// unsupported one.
+func (s *Scanner) probeCipherSuites(ctx context.Context, host string, port int) (
+	supported []types.CipherSuite, tls13Enumerable bool) {
+
+	candidates := tls.CipherSuites()
+	candidates = append(candidates, tls.InsecureCipherSuites()...)
+
+	type slot struct {
+		cs *types.CipherSuite
+	}
+	results := make([]slot, len(candidates))
+
+	var wg sync.WaitGroup
+	for i, suite := range candidates {
+		// TLS 1.3 suites are not configurable; skip them here and let the
+		// negotiated-connection probe report the one actually used.
+		if isTLS13Suite(suite.ID) {
+			continue
+		}
+
+		wg.Add(1)
+		go func(idx int, id uint16) {
+			defer wg.Done()
+
+			cfg := &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         s.getSNI(host),
+				MinVersion:         tls.VersionTLS10,
+				MaxVersion:         tls.VersionTLS12,
+				CipherSuites:       []uint16{id},
+			}
+
+			addr := fmt.Sprintf("%s:%d", host, port)
+			dialer := &tls.Dialer{
+				NetDialer: &net.Dialer{Timeout: s.config.ConnectTimeout},
+				Config:    cfg,
+			}
+
+			conn, err := dialer.DialContext(ctx, "tcp", addr)
+			if err != nil {
+				return
+			}
+			defer func() { _ = conn.Close() }()
+
+			state := conn.(*tls.Conn).ConnectionState()
+			if state.CipherSuite != id {
+				return
+			}
+			results[idx] = slot{cs: parseCipherSuite(id, state.Version)}
+		}(i, suite.ID)
+	}
+	wg.Wait()
+
+	for _, r := range results {
+		if r.cs != nil {
+			supported = append(supported, *r.cs)
+		}
+	}
+
+	sort.SliceStable(supported, func(i, j int) bool {
+		if supported[i].Bits != supported[j].Bits {
+			return supported[i].Bits > supported[j].Bits
+		}
+		return supported[i].Name < supported[j].Name
+	})
+
+	return supported, false
+}
+
+// isTLS13Suite reports whether a cipher suite identifier belongs to TLS 1.3.
+func isTLS13Suite(id uint16) bool {
+	switch id {
+	case tls.TLS_AES_128_GCM_SHA256, tls.TLS_AES_256_GCM_SHA384,
+		tls.TLS_CHACHA20_POLY1305_SHA256:
+		return true
+	}
+	return false
 }
 
 // probeConnection connects with best available settings and extracts info.
@@ -551,11 +734,22 @@ func parseCSComponents(cs *types.CipherSuite, name string) {
 		case strings.HasPrefix(part, "AES"):
 			cs.Encryption = "AES"
 		case part == "CHACHA20":
-			cs.Encryption = "ChaCha20"
+			cs.Encryption = "ChaCha20-Poly1305"
+			// ChaCha20 is defined only with a 256-bit key, and the suite name
+			// carries no key-size token, so it must be set here or the suite
+			// reports 0 bits and reads as weaker than AES-128.
+			cs.Bits = 256
 		case part == "3DES":
 			cs.Encryption = "3DES"
+			// Three-key 3DES carries a 168-bit key, but meet-in-the-middle
+			// reduces its effective strength to 112 bits, and the 64-bit block
+			// makes it vulnerable to Sweet32. Report the key size for
+			// consistency with the other suites and state the real strength in
+			// the deprecation reason rather than overstating it in a number.
+			cs.Bits = 168
 			cs.Deprecated = true
-			cs.DeprecatedReason = "3DES is deprecated due to small block size"
+			cs.DeprecatedReason = "3DES has only 112-bit effective strength and a " +
+				"64-bit block, which exposes it to Sweet32 (CVE-2016-2183)"
 		case part == "RC4":
 			cs.Encryption = "RC4"
 			cs.Deprecated = true

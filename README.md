@@ -158,36 +158,22 @@ Sample terminal output:
 ═══════════════════════════════════════════════════════════════
 
   Target: example.com
-  IP: 172.66.147.243
-  Scanned: 2026-07-27 13:38:45 MDT
-  Duration: 80.176667ms
+  IP: 104.20.23.154
+  Scanned: 2026-07-27 14:43:06 MDT
+  Duration: 452.647084ms
 
 ───────────────────────────────────────────────────────────────
   OVERALL GRADE
 ───────────────────────────────────────────────────────────────
 
-  TLS Security:     D    (51/100)
+  TLS Security:     F    (21/100)
   Quantum Ready:    Q
 
   Score Breakdown:
     Protocol Support     [████████░░░░░░░░░░░░] 10/25
-    Cipher Strength      [████████████████░░░░] 20/25
+    Cipher Strength      [████████████░░░░░░░░] 15/25
     Certificate          [████████████████████] 25/25
     Quantum Readiness    [████████████░░░░░░░░] 16/25
-
-───────────────────────────────────────────────────────────────
-  POLICY EVALUATION
-───────────────────────────────────────────────────────────────
-
-    Policy:     cnsa-2.0-2027
-    Status:     ✗ NON-COMPLIANT
-    Score:      70/100
-
-    Violations (2)
-      • [HIGH] Cipher suite key size below minimum
-        Expected: >= 256 bits | Actual: 128 bits (TLS_AES_128_GCM_SHA256)
-      • [HIGH] ECC key size below minimum
-        Expected: >= 384 bits | Actual: 256 bits
 
 ───────────────────────────────────────────────────────────────
   CNSA 2.0 COMPLIANCE TIMELINE

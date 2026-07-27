@@ -43,16 +43,25 @@ func (s *Scanner) calculateGrade(result *types.ScanResult) types.Grade {
 	totalScore += certScore
 	maxTotal += certMax
 
-	// Quantum readiness score (max 25 points)
-	quantumScore := result.QuantumRisk.Score / 4 // Scale 0-100 to 0-25
-	factors = append(factors, types.GradeFactor{
-		Category: "Quantum Readiness",
-		Score:    quantumScore,
-		MaxScore: 25,
-		Details:  describeQuantumScore(result.QuantumRisk),
-	})
-	totalScore += quantumScore
-	maxTotal += 25
+	// Quantum readiness score (max 25 points).
+	//
+	// Only counted when the assessment actually ran. Skipping it with
+	// --skip-quantum previously left the score at zero while still charging the
+	// full 25 points against the total, so declining to run an analysis dropped
+	// the grade a whole band and reported a quantum score of 0 for servers that
+	// verifiably negotiate a hybrid ML-KEM group. A check that was not run
+	// contributes neither points nor maximum.
+	if s.config.CheckQuantum {
+		quantumScore := result.QuantumRisk.Score / 4 // Scale 0-100 to 0-25
+		factors = append(factors, types.GradeFactor{
+			Category: "Quantum Readiness",
+			Score:    quantumScore,
+			MaxScore: 25,
+			Details:  describeQuantumScore(result.QuantumRisk),
+		})
+		totalScore += quantumScore
+		maxTotal += 25
+	}
 
 	// Calculate final percentage
 	finalScore := 0
@@ -136,36 +145,63 @@ func scoreProtocols(protocols []types.Protocol) (int, int) {
 	return score, maxScore
 }
 
+// scoreCiphers grades the cipher configuration by its weakest accepted suite.
+//
+// An attacker who can influence negotiation will steer it toward the weakest
+// suite the server still accepts, so the security of the configuration is the
+// security of that suite, not of the best one. This previously awarded bonuses
+// per suite and saturated at the maximum: once the scanner began enumerating
+// the full list rather than reporting only the negotiated suite, a server
+// offering non-forward-secret RSA suites still scored 25/25 while the policy
+// evaluator listed sixteen violations against the same configuration.
 func scoreCiphers(ciphers []types.CipherSuite) (int, int) {
-	score := 0
 	maxScore := 25
 
 	if len(ciphers) == 0 {
 		return 0, maxScore
 	}
 
+	var (
+		anyWithoutForwardSecrecy bool
+		anyDeprecated            bool
+		anyBelow128              bool
+		strongest                int
+	)
+
 	for _, cs := range ciphers {
-		// Forward secrecy bonus
-		if cs.ForwardSecrecy {
-			score += 10
+		if !cs.ForwardSecrecy {
+			anyWithoutForwardSecrecy = true
 		}
-
-		// Strong encryption bonus
-		if cs.Bits >= 256 {
-			score += 10
-		} else if cs.Bits >= 128 {
-			score += 5
-		}
-
-		// Modern cipher bonus
-		if cs.Encryption == "AES-GCM" || cs.Encryption == "ChaCha20-Poly1305" {
-			score += 5
-		}
-
-		// Deprecated cipher penalty
 		if cs.Deprecated {
-			score -= 15
+			anyDeprecated = true
 		}
+		if cs.Bits > 0 && cs.Bits < 128 {
+			anyBelow128 = true
+		}
+		if cs.Bits > strongest {
+			strongest = cs.Bits
+		}
+	}
+
+	score := maxScore
+	if anyWithoutForwardSecrecy {
+		// Recorded traffic stays decryptable if the server key is ever
+		// compromised, which is the same exposure post-quantum work targets.
+		score -= 10
+	}
+	if anyDeprecated {
+		// Accepting a broken cipher such as RC4, MD5 or 3DES undermines the
+		// configuration regardless of what else is offered, since negotiation
+		// can be steered toward it. This dimension scores zero rather than
+		// taking a proportional penalty.
+		return 0, maxScore
+	}
+	if anyBelow128 {
+		score -= 10
+	}
+	if strongest < 256 {
+		// CNSA 2.0 requires AES-256 for symmetric encryption.
+		score -= 5
 	}
 
 	// Normalize to max score

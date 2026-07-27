@@ -7,6 +7,42 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [0.3.0] - 2026-07-27
 
+### Fixed (found by the pre-release fresh-user test)
+
+- **`--port` was declared and documented but never read.** `tlsanalyzer host -p 8443`
+  silently scanned port 443 and reported a confident grade for a port the user
+  never asked about. Only the `host:port` form worked. The flag now applies when
+  explicitly passed, and overrides a port already present in the target.
+- **Unreachable hosts produced a fabricated report.** A name that did not resolve,
+  or a port that refused the connection, yielded `F (0/100)`, `Risk: CRITICAL`,
+  `HNDL: CRITICAL - no forward secrecy`, and exit code 0, with no error field
+  anywhere. A host that was never contacted was indistinguishable from one
+  measured to be insecure, and in a `--targets` sweep every typo became a
+  confident failing row. Both cases are now errors with a non-zero exit.
+- **Only the negotiated cipher suite was reported.** The scanner asked once and
+  presented the answer as the server's full cipher configuration, which produced
+  the grade rationale "all ciphers have forward secrecy" after a single
+  handshake, and a false CNSA 2.0 violation ("key size below minimum, 128 bits")
+  against servers that also offer AES-256. Cipher suites for TLS 1.2 and earlier
+  are now enumerated by probing each one. TLS 1.3 suites cannot be enumerated
+  this way, because Go's TLS stack ignores per-suite configuration for TLS 1.3,
+  and that limitation is now stated in `scanWarnings` rather than left implicit.
+- **`--targets ... --format json` emitted invalid JSON**, as concatenated objects
+  rather than an array. This is a documented example in `--help`, and every
+  strict parser rejected it. Batch mode now emits a single JSON array.
+- **`--skip-quantum` lowered the grade and printed false claims.** The skipped
+  assessment still counted zero points against a full 25-point maximum, so
+  declining to run an analysis dropped the grade a whole band and reported a
+  quantum score of 0 for servers that verifiably negotiate a hybrid ML-KEM
+  group. A check that did not run now contributes neither points nor maximum,
+  and skipped checks are disclosed in `scanWarnings`.
+- **ChaCha20 and 3DES cipher suites reported a key size of 0**, which made
+  ChaCha20-Poly1305 read as weaker than AES-128 in reports and policy
+  evaluation. ChaCha20 now reports 256 bits and 3DES reports its 168-bit key,
+  with its 112-bit effective strength and Sweet32 exposure stated in the
+  deprecation reason.
+
+
 This release fixes a defect that prevented the analyzer from ever reporting a
 quantum-safe connection, along with several correctness problems found while
 reproducing it. Reported in [#1](https://github.com/csnp/tls-analyzer/issues/1).

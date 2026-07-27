@@ -4,9 +4,12 @@ package main
 import (
 	"bufio"
 	"context"
+	"encoding/json"
 	"fmt"
+	"net"
 	"os"
 	"os/signal"
+	"strconv"
 	"strings"
 	"sync"
 	"syscall"
@@ -160,6 +163,15 @@ func runScan(cmd *cobra.Command, args []string) error {
 
 	if len(targets) == 0 {
 		return fmt.Errorf("no targets specified. Use 'tlsanalyzer example.com' or '--targets file.txt'")
+	}
+
+	// Apply --port only when the user actually passed it, so that targets
+	// written as host:port keep working and the default never silently
+	// rewrites them.
+	if cmd.Flags().Changed("port") {
+		for i, target := range targets {
+			targets[i] = applyPortOverride(target, port)
+		}
 	}
 
 	// Handle signals for graceful shutdown
@@ -319,7 +331,21 @@ func scanBatchTargets(ctx context.Context, s *scanner.Scanner, cnsa2 *analyzer.C
 		fmt.Fprintln(os.Stderr) // New line after progress
 	}
 
-	// Output results
+	// Output results.
+	//
+	// Machine-readable formats are emitted as one document covering the whole
+	// batch. Concatenating one JSON object per target produced a stream that
+	// only lenient parsers such as jq accept; json.load and every strict parser
+	// reject it, which broke the documented
+	// "tlsanalyzer --targets hosts.txt --format json" workflow.
+	if outputFormat == "json" {
+		encoder := json.NewEncoder(output)
+		if !jsonCompact {
+			encoder.SetIndent("", "  ")
+		}
+		return encoder.Encode(results)
+	}
+
 	rep := createReporter()
 	for _, result := range results {
 		if err := rep.Report(output, result); err != nil {
@@ -331,6 +357,22 @@ func scanBatchTargets(ctx context.Context, s *scanner.Scanner, cnsa2 *analyzer.C
 	}
 
 	return nil
+}
+
+// applyPortOverride attaches the --port value to a target.
+//
+// The flag was previously declared and documented but never read, so
+// "tlsanalyzer host -p 8443" silently scanned port 443 and reported a confident
+// grade for a port the user never asked about. Only an explicitly provided flag
+// overrides, so a target written as host:port keeps working on its own.
+func applyPortOverride(target string, portOverride int) string {
+	host, _, err := net.SplitHostPort(target)
+	if err != nil {
+		// No port present. Strip any brackets so JoinHostPort can re-add them
+		// for an IPv6 literal rather than double-bracketing it.
+		host = strings.TrimSuffix(strings.TrimPrefix(target, "["), "]")
+	}
+	return net.JoinHostPort(host, strconv.Itoa(portOverride))
 }
 
 func collectTargets(args []string) ([]string, error) {
