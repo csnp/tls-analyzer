@@ -321,7 +321,7 @@ func (s *Scanner) probeKeyExchangeGroups(ctx context.Context, host string, port 
 			if err != nil {
 				return
 			}
-			defer conn.Close()
+			defer func() { _ = conn.Close() }()
 
 			// Confirm the server actually selected the offered group rather
 			// than assuming a successful handshake implies it.
@@ -721,10 +721,10 @@ func publicKeyBits(pub any) int {
 	case *rsa.PublicKey:
 		return k.N.BitLen()
 	case *ecdsa.PublicKey:
-		if k.Curve == nil || k.Curve.Params() == nil {
+		if k.Curve == nil || k.Params() == nil {
 			return 0
 		}
-		return k.Curve.Params().BitSize
+		return k.Params().BitSize
 	case ed25519.PublicKey:
 		return len(k) * 8
 	case *ecdh.PublicKey:
