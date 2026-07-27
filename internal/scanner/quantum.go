@@ -47,26 +47,34 @@ func (s *Scanner) assessQuantumRisk(result *types.ScanResult) types.QuantumRiskA
 	var hybridPQC bool = false
 	var fullPQC bool = false
 
-	// Analyze key exchanges
+	// Analyze key exchanges. The scanner reports every group a server supports,
+	// so the posture is set by the strongest one available: a server that
+	// offers a hybrid group is protected against harvest-now-decrypt-later even
+	// if it also still offers classical groups for older clients. Scores are
+	// therefore combined with max, not by last-one-wins.
 	for _, ke := range result.KeyExchanges {
 		switch ke.Type {
 		case "pqc":
-			keyExchangeScore = 100
+			keyExchangeScore = max(keyExchangeScore, 100)
 			fullPQC = true
 			assessment.Details = append(assessment.Details,
 				"Key exchange uses full post-quantum cryptography: "+ke.PQCAlgorithm)
 		case "hybrid":
-			keyExchangeScore = 80
+			keyExchangeScore = max(keyExchangeScore, 80)
 			hybridPQC = true
 			assessment.Details = append(assessment.Details,
 				"Key exchange uses hybrid PQC: "+ke.Name+" ("+ke.HybridClassical+" + "+ke.PQCAlgorithm+")")
-		default:
-			// Classical key exchange
-			if _, vulnerable := QuantumVulnerableAlgorithms[ke.Name]; vulnerable {
-				keyExchangeScore = 0
-				assessment.Details = append(assessment.Details,
-					"Key exchange "+ke.Name+" is vulnerable to quantum attacks (Shor's algorithm)")
+		}
+	}
+
+	if !hybridPQC && !fullPQC {
+		for _, ke := range result.KeyExchanges {
+			if ke.Type != "classical" {
+				continue
 			}
+			assessment.Details = append(assessment.Details,
+				"Key exchange "+ke.Name+" is vulnerable to quantum attacks (Shor's algorithm)")
+			break
 		}
 	}
 
@@ -113,9 +121,24 @@ func (s *Scanner) assessQuantumRisk(result *types.ScanResult) types.QuantumRiskA
 		}
 	}
 
-	// Calculate overall score
-	// Weight: 60% key exchange (immediate threat), 40% certificate
-	assessment.Score = (keyExchangeScore*60 + certScore*40) / 100
+	// Calculate overall score.
+	//
+	// Weight: 80% key exchange, 20% certificate. The two risks are not
+	// equivalent and are not equally actionable:
+	//
+	//   Key exchange is retroactive. Traffic recorded today is decrypted once a
+	//   cryptanalytically relevant quantum computer exists, so a classical
+	//   exchange is already leaking. It is also fixable today, since every
+	//   major TLS stack ships hybrid ML-KEM groups.
+	//
+	//   Certificate signatures are not retroactive. Forging a signature after
+	//   the fact does not compromise past sessions, and no publicly trusted CA
+	//   issues ML-DSA certificates yet, so an operator cannot remediate this
+	//   dimension at any price. Weighting it heavily would cap every
+	//   well-configured site at a failing score and recommend work that cannot
+	//   be done, which is why the earlier 60/40 split produced a HIGH risk
+	//   verdict for servers already running hybrid PQC.
+	assessment.Score = (keyExchangeScore*80 + certScore*20) / 100
 	assessment.HybridPQCReady = hybridPQC
 	assessment.FullPQCReady = fullPQC
 
@@ -135,7 +158,7 @@ func (s *Scanner) assessQuantumRisk(result *types.ScanResult) types.QuantumRiskA
 	assessment.KeyExchangeRisk = describeKeyExchangeRisk(keyExchangeScore)
 	assessment.CertificateRisk = describeCertificateRisk(certScore)
 	assessment.HNDLRisk = describeHNDLRisk(result)
-	assessment.TimeToAction = recommendTimeToAction(assessment.Score)
+	assessment.TimeToAction = recommendTimeToAction(keyExchangeScore, certScore)
 
 	return assessment
 }
@@ -191,15 +214,25 @@ func describeHNDLRisk(result *types.ScanResult) string {
 	return "CRITICAL - No forward secrecy; all recorded traffic decryptable when quantum computers arrive"
 }
 
-func recommendTimeToAction(score int) string {
+// recommendTimeToAction returns the next step an operator can actually take.
+// It is driven by the two dimensions separately rather than by the combined
+// score, so that a server already running hybrid key exchange is never told to
+// go and implement hybrid key exchange.
+func recommendTimeToAction(keyExchangeScore, certScore int) string {
 	switch {
-	case score >= 80:
-		return "MONITORING - Continue monitoring PQC developments"
-	case score >= 50:
-		return "12-24 MONTHS - Plan migration to full PQC"
-	case score >= 20:
-		return "6-12 MONTHS - Begin hybrid PQC implementation"
+	case keyExchangeScore >= 100 && certScore >= 100:
+		return "MONITORING - Full post-quantum key exchange and signatures in place"
+	case keyExchangeScore >= 80:
+		// Key exchange, the retroactive risk, is already handled. Certificates
+		// cannot be migrated until publicly trusted CAs issue ML-DSA, so the
+		// remaining work is readiness, not deployment.
+		return "MONITORING - Hybrid key exchange deployed; post-quantum certificates " +
+			"are not yet available from publicly trusted CAs, so track CA readiness " +
+			"and keep crypto-agility in place"
+	case keyExchangeScore > 0:
+		return "12-24 MONTHS - Complete the move to hybrid or full PQC key exchange"
 	default:
-		return "IMMEDIATE - High priority for organizations with sensitive data"
+		return "IMMEDIATE - Classical key exchange is exposed to harvest-now-decrypt-later; " +
+			"enable a hybrid ML-KEM group"
 	}
 }

@@ -3,11 +3,18 @@ package scanner
 
 import (
 	"context"
+	"crypto/ecdh"
+	"crypto/ecdsa"
+	"crypto/ed25519"
+	"crypto/rsa"
+	"crypto/sha1"
+	"crypto/sha256"
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
 	"fmt"
 	"net"
+	"sort"
 	"strings"
 	"sync"
 	"time"
@@ -15,8 +22,10 @@ import (
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
-// Version is the scanner version.
-const Version = "0.1.0"
+// Version is the scanner library default. Binaries built from cmd/tlsanalyzer
+// override the value recorded in reports with their own release version,
+// injected at build time.
+const Version = "0.3.0"
 
 // Scanner performs TLS analysis on targets.
 type Scanner struct {
@@ -96,6 +105,7 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 	}()
 
 	// Get certificate and cipher suites (from preferred connection)
+	var negotiated []types.KeyExchange
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
@@ -104,11 +114,32 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 		result.Certificate = cert
 		result.CertChain = chain
 		result.CipherSuites = ciphers
-		result.KeyExchanges = keyExchanges
+		negotiated = keyExchanges
+		mu.Unlock()
+	}()
+
+	// Enumerate which key exchange groups the server supports, which is a
+	// broader question than which one this client negotiated.
+	var offered []types.KeyExchange
+	var skipped []string
+	wg.Add(1)
+	go func() {
+		defer wg.Done()
+		groups, unavailable := s.probeKeyExchangeGroups(ctx, host, port)
+		mu.Lock()
+		offered = groups
+		skipped = unavailable
 		mu.Unlock()
 	}()
 
 	wg.Wait()
+
+	result.KeyExchanges = mergeKeyExchanges(negotiated, offered)
+	if len(skipped) > 0 {
+		result.ScanWarnings = append(result.ScanWarnings, fmt.Sprintf(
+			"key exchange groups not probed because this build of the scanner cannot offer them: %s",
+			strings.Join(skipped, ", ")))
+	}
 
 	// Analyze results
 	if s.config.CheckVulns {
@@ -138,15 +169,16 @@ func (s *Scanner) probeProtocols(ctx context.Context, host string, port int) []t
 		{tls.VersionTLS10, "TLS 1.0"},
 	}
 
-	var protocols []types.Protocol
-	var preferred string
-	var mu sync.Mutex
+	// Results are written to a fixed index per version so that the output order
+	// always matches the declared version order (highest first), independent of
+	// which probe finishes first.
+	protocols := make([]types.Protocol, len(versions))
 	var wg sync.WaitGroup
 
 	// Check each version concurrently
-	for _, v := range versions {
+	for i, v := range versions {
 		wg.Add(1)
-		go func(ver uint16, name string) {
+		go func(idx int, ver uint16, name string) {
 			defer wg.Done()
 
 			cfg := &tls.Config{
@@ -156,32 +188,160 @@ func (s *Scanner) probeProtocols(ctx context.Context, host string, port int) []t
 				ServerName:         s.getSNI(host),
 			}
 
-			supported := s.tryConnect(ctx, host, port, cfg)
-
-			mu.Lock()
-			defer mu.Unlock()
-			protocols = append(protocols, types.Protocol{
+			protocols[idx] = types.Protocol{
 				Version:   name,
-				Supported: supported,
-			})
-			// First successful is preferred (we check in order)
-			if supported && preferred == "" {
-				preferred = name
+				Supported: s.tryConnect(ctx, host, port, cfg),
 			}
-		}(v.version, v.name)
+		}(i, v.version, v.name)
 	}
 
 	wg.Wait()
 
-	// Mark preferred
+	// TLS negotiates the highest version both peers support, so the highest
+	// supported version is the one an ordinary client would end up using.
 	for i := range protocols {
-		if protocols[i].Version == preferred {
+		if protocols[i].Supported {
 			protocols[i].Preferred = true
 			break
 		}
 	}
 
 	return protocols
+}
+
+// mergeKeyExchanges combines the group this scan negotiated with the groups the
+// server was found to support, marking the negotiated one and keeping the
+// strongest entries first so readers see post-quantum support up front.
+func mergeKeyExchanges(negotiated, offered []types.KeyExchange) []types.KeyExchange {
+	byName := make(map[string]types.KeyExchange, len(negotiated)+len(offered))
+	order := make([]string, 0, len(negotiated)+len(offered))
+
+	add := func(ke types.KeyExchange, isNegotiated bool) {
+		existing, seen := byName[ke.Name]
+		if seen {
+			existing.Negotiated = existing.Negotiated || isNegotiated
+			byName[ke.Name] = existing
+			return
+		}
+		ke.Negotiated = isNegotiated
+		byName[ke.Name] = ke
+		order = append(order, ke.Name)
+	}
+
+	for _, ke := range negotiated {
+		add(ke, true)
+	}
+	for _, ke := range offered {
+		add(ke, false)
+	}
+
+	merged := make([]types.KeyExchange, 0, len(order))
+	for _, name := range order {
+		merged = append(merged, byName[name])
+	}
+
+	// Rank post-quantum groups ahead of classical ones, then by key size, so
+	// the ordering is deterministic and does not depend on probe timing.
+	rank := map[string]int{"pqc": 0, "hybrid": 1, "classical": 2, "unknown": 3}
+	sort.SliceStable(merged, func(i, j int) bool {
+		ri, rj := rank[merged[i].Type], rank[merged[j].Type]
+		if ri != rj {
+			return ri < rj
+		}
+		if merged[i].Bits != merged[j].Bits {
+			return merged[i].Bits > merged[j].Bits
+		}
+		return merged[i].Name < merged[j].Name
+	})
+	return merged
+}
+
+// toolchainSupportsGroup reports whether the running Go toolchain implements a
+// supported group. crypto/tls renders groups it knows by name and falls back to
+// a numeric form otherwise, so an unnamed group is one this build cannot offer.
+// Probing such a group would fail for a reason unrelated to the server, which
+// would misreport a capable server as lacking post-quantum support.
+func toolchainSupportsGroup(id tls.CurveID) bool {
+	return !strings.HasPrefix(id.String(), "CurveID(")
+}
+
+// probeKeyExchangeGroups determines which key exchange groups the server
+// actually supports, by offering exactly one group per handshake. This reports
+// server capability rather than only the group this client happened to
+// negotiate, which is what a readiness assessment needs.
+//
+// Groups this Go build cannot offer are skipped rather than reported
+// unsupported; skipped groups are returned so callers can be explicit about
+// coverage instead of implying a negative result.
+func (s *Scanner) probeKeyExchangeGroups(ctx context.Context, host string, port int) (
+	supported []types.KeyExchange, skipped []string) {
+
+	candidates := []tls.CurveID{
+		groupX25519MLKEM768,
+		groupSecP256r1MLKEM768,
+		groupSecP384r1MLKEM1024,
+		tls.X25519,
+		tls.CurveP256,
+		tls.CurveP384,
+		tls.CurveP521,
+	}
+
+	type probeResult struct {
+		ke      *types.KeyExchange
+		skipped string
+	}
+	results := make([]probeResult, len(candidates))
+
+	var wg sync.WaitGroup
+	for i, id := range candidates {
+		if !toolchainSupportsGroup(id) {
+			info := tlsGroups[id]
+			results[i] = probeResult{skipped: info.name}
+			continue
+		}
+
+		wg.Add(1)
+		go func(idx int, group tls.CurveID) {
+			defer wg.Done()
+
+			cfg := &tls.Config{
+				InsecureSkipVerify: true,
+				ServerName:         s.getSNI(host),
+				MinVersion:         tls.VersionTLS12,
+				CurvePreferences:   []tls.CurveID{group},
+			}
+
+			addr := fmt.Sprintf("%s:%d", host, port)
+			dialer := &tls.Dialer{
+				NetDialer: &net.Dialer{Timeout: s.config.ConnectTimeout},
+				Config:    cfg,
+			}
+
+			conn, err := dialer.DialContext(ctx, "tcp", addr)
+			if err != nil {
+				return
+			}
+			defer conn.Close()
+
+			// Confirm the server actually selected the offered group rather
+			// than assuming a successful handshake implies it.
+			state := conn.(*tls.Conn).ConnectionState()
+			if state.CurveID == group {
+				results[idx] = probeResult{ke: keyExchangeFromGroup(group)}
+			}
+		}(i, id)
+	}
+	wg.Wait()
+
+	for _, r := range results {
+		switch {
+		case r.ke != nil:
+			supported = append(supported, *r.ke)
+		case r.skipped != "":
+			skipped = append(skipped, r.skipped)
+		}
+	}
+	return supported, skipped
 }
 
 // probeConnection connects with best available settings and extracts info.
@@ -235,9 +395,12 @@ func (s *Scanner) probeConnection(ctx context.Context, host string, port int) (
 // tryConnect attempts a TLS connection with the given config.
 func (s *Scanner) tryConnect(ctx context.Context, host string, port int, cfg *tls.Config) bool {
 	addr := fmt.Sprintf("%s:%d", host, port)
-	dialer := &net.Dialer{Timeout: s.config.ConnectTimeout}
+	dialer := &tls.Dialer{
+		NetDialer: &net.Dialer{Timeout: s.config.ConnectTimeout},
+		Config:    cfg,
+	}
 
-	conn, err := tls.DialWithDialer(dialer, "tcp", addr, cfg)
+	conn, err := dialer.DialContext(ctx, "tcp", addr)
 	if err != nil {
 		return false
 	}
@@ -285,17 +448,14 @@ func parseCertificate(cert *x509.Certificate) *types.Certificate {
 		}
 	}
 
-	// Determine public key size
-	var bits int
-	var algo string
-	switch pub := cert.PublicKey.(type) {
-	case interface{ Size() int }:
-		bits = pub.Size() * 8
-	}
-	algo = cert.PublicKeyAlgorithm.String()
+	bits := publicKeyBits(cert.PublicKey)
+	algo := cert.PublicKeyAlgorithm.String()
 
-	// Check if quantum-safe (currently none are, unless using PQC)
-	quantumSafe := false // Future: detect ML-DSA, etc.
+	// A certificate is quantum-safe only if both the key it carries and the
+	// signature over it are post-quantum. Go's x509 parser only understands
+	// classical algorithms today, so anything it names is quantum-vulnerable;
+	// an algorithm it cannot name is reported as unknown rather than assumed safe.
+	quantumSafe := isQuantumSafeCertificate(cert)
 
 	daysUntilExpiry := int(cert.NotAfter.Sub(now).Hours() / 24)
 
@@ -350,17 +510,27 @@ func parseCSComponents(cs *types.CipherSuite, name string) {
 		cs.Authentication = "any"
 		cs.ForwardSecrecy = true
 
-		if strings.Contains(name, "256") {
-			cs.Bits = 256
-		} else if strings.Contains(name, "128") {
+		// Match the encryption key size specifically. A bare Contains(name,
+		// "256") would match the SHA256 suffix of TLS_AES_128_GCM_SHA256 and
+		// report a 128-bit cipher as 256-bit.
+		switch {
+		case strings.Contains(name, "AES_128"):
 			cs.Bits = 128
-		}
-
-		if strings.Contains(name, "AES") {
 			cs.Encryption = "AES-GCM"
-		} else if strings.Contains(name, "CHACHA20") {
+		case strings.Contains(name, "AES_256"):
+			cs.Bits = 256
+			cs.Encryption = "AES-GCM"
+		case strings.Contains(name, "CHACHA20"):
+			cs.Bits = 256
 			cs.Encryption = "ChaCha20-Poly1305"
 		}
+
+		// In TLS 1.3 the key exchange is negotiated separately from the cipher
+		// suite, so this flag describes only the bulk cipher's resistance to
+		// Grover's algorithm, which halves the effective key length. A 256-bit
+		// key retains 128-bit security and meets CNSA 2.0; a 128-bit key does
+		// not. The key exchange is reported separately in keyExchanges.
+		cs.QuantumSafe = cs.Bits >= 256
 		return
 	}
 
@@ -405,30 +575,91 @@ func parseCSComponents(cs *types.CipherSuite, name string) {
 		}
 	}
 
-	// Quantum safety - currently only hybrid/PQC key exchanges are safe
+	// For TLS 1.2 and earlier the key exchange is part of the cipher suite
+	// itself, and every such exchange in use today (RSA, DHE, ECDHE) falls to
+	// Shor's algorithm. A strong bulk cipher does not rescue the handshake, so
+	// these suites are never quantum-safe regardless of key size.
 	cs.QuantumSafe = false
 }
 
-// parseKeyExchange extracts key exchange info from connection state.
-func parseKeyExchange(state tls.ConnectionState) *types.KeyExchange {
-	ke := &types.KeyExchange{}
+// IANA TLS Supported Groups code points for the hybrid post-quantum key
+// exchanges (RFC 8446 registry). These are declared here rather than taken from
+// crypto/tls because the standard library only exports SecP256r1MLKEM768 and
+// SecP384r1MLKEM1024 from Go 1.26, and this module keeps a Go 1.25 floor.
+// TestHybridGroupCodePoints asserts these stay in step with the standard library.
+const (
+	groupSecP256r1MLKEM768  tls.CurveID = 4587
+	groupX25519MLKEM768     tls.CurveID = 4588
+	groupSecP384r1MLKEM1024 tls.CurveID = 4589
+)
 
-	// Determine key exchange from cipher suite and curve
-	if state.Version == tls.VersionTLS13 {
-		// TLS 1.3 uses separate key share
-		ke.Name = "X25519" // Default, would need extension to detect PQC
-		ke.Type = "classical"
-		ke.Curve = "X25519"
-		ke.Bits = 256
-		ke.QuantumSafe = false
+// groupInfo describes a TLS key exchange group.
+type groupInfo struct {
+	name         string
+	kind         string // "classical", "hybrid", or "pqc"
+	curve        string
+	bits         int // classical security strength of the group
+	pqcAlgorithm string
+	classical    string
+}
 
-		// Note: Hybrid PQC key exchange detection (e.g., X25519MLKEM768) requires
-		// raw handshake access or TLS extension parsing. Go's standard library
-		// doesn't expose this directly. Future versions may use custom TLS
-		// implementation or BoringSSL bindings for full PQC detection.
+// tlsGroups maps negotiated TLS supported groups to their properties. A hybrid
+// group combines a classical exchange with an ML-KEM encapsulation, so the
+// session key stays secret unless an attacker breaks both.
+var tlsGroups = map[tls.CurveID]groupInfo{
+	tls.CurveP256: {name: "secp256r1", kind: "classical", curve: "P-256", bits: 256},
+	tls.CurveP384: {name: "secp384r1", kind: "classical", curve: "P-384", bits: 384},
+	tls.CurveP521: {name: "secp521r1", kind: "classical", curve: "P-521", bits: 521},
+	tls.X25519:    {name: "X25519", kind: "classical", curve: "X25519", bits: 256},
+	groupX25519MLKEM768: {
+		name: "X25519MLKEM768", kind: "hybrid", curve: "X25519", bits: 256,
+		pqcAlgorithm: "ML-KEM-768", classical: "X25519",
+	},
+	groupSecP256r1MLKEM768: {
+		name: "SecP256r1MLKEM768", kind: "hybrid", curve: "P-256", bits: 256,
+		pqcAlgorithm: "ML-KEM-768", classical: "P-256",
+	},
+	groupSecP384r1MLKEM1024: {
+		name: "SecP384r1MLKEM1024", kind: "hybrid", curve: "P-384", bits: 384,
+		pqcAlgorithm: "ML-KEM-1024", classical: "P-384",
+	},
+}
+
+// keyExchangeFromGroup builds a KeyExchange from a negotiated supported group.
+func keyExchangeFromGroup(id tls.CurveID) *types.KeyExchange {
+	info, known := tlsGroups[id]
+	if !known {
+		// Report the raw code point rather than guessing. An unrecognized group
+		// is not evidence of quantum safety.
+		return &types.KeyExchange{
+			Name:        fmt.Sprintf("unknown group 0x%04X", uint16(id)),
+			Type:        "unknown",
+			QuantumSafe: false,
+		}
 	}
 
-	return ke
+	return &types.KeyExchange{
+		Name:            info.name,
+		Type:            info.kind,
+		Curve:           info.curve,
+		Bits:            info.bits,
+		QuantumSafe:     info.kind == "hybrid" || info.kind == "pqc",
+		PQCAlgorithm:    info.pqcAlgorithm,
+		HybridClassical: info.classical,
+	}
+}
+
+// parseKeyExchange extracts key exchange info from connection state.
+// TLS 1.3 negotiates the key exchange as a supported group independent of the
+// cipher suite; ConnectionState.CurveID (Go 1.25+) reports which one was used.
+func parseKeyExchange(state tls.ConnectionState) *types.KeyExchange {
+	if state.CurveID == 0 {
+		// No key agreement took place (for example a TLS 1.2 static RSA
+		// exchange), so there is no group to report.
+		return nil
+	}
+
+	return keyExchangeFromGroup(state.CurveID)
 }
 
 func tlsVersionName(v uint16) string {
@@ -467,12 +698,62 @@ func parseTarget(target string) (string, int, error) {
 	return host, port, nil
 }
 
-func sha256Fingerprint(data []byte) string {
-	// Implementation using crypto/sha256
-	return hex.EncodeToString(data[:20]) + "..." // Abbreviated for now
+// sha256Fingerprint returns the SHA-256 fingerprint of a DER-encoded
+// certificate as lowercase hex, matching `openssl x509 -fingerprint -sha256`.
+func sha256Fingerprint(der []byte) string {
+	sum := sha256.Sum256(der)
+	return hex.EncodeToString(sum[:])
 }
 
-func sha1Fingerprint(data []byte) string {
-	// Implementation using crypto/sha1
-	return hex.EncodeToString(data[:10]) + "..." // Abbreviated for now
+// sha1Fingerprint returns the SHA-1 fingerprint of a DER-encoded certificate as
+// lowercase hex. SHA-1 is collision-broken and is reported only because some
+// certificate inventories and pinning configurations still key off it.
+func sha1Fingerprint(der []byte) string {
+	sum := sha1.Sum(der)
+	return hex.EncodeToString(sum[:])
+}
+
+// publicKeyBits returns the key size in bits for a certificate public key.
+// For elliptic curve keys this is the curve size, not the encoded point length.
+// Returns 0 only when the key type is genuinely unrecognized.
+func publicKeyBits(pub any) int {
+	switch k := pub.(type) {
+	case *rsa.PublicKey:
+		return k.N.BitLen()
+	case *ecdsa.PublicKey:
+		if k.Curve == nil || k.Curve.Params() == nil {
+			return 0
+		}
+		return k.Curve.Params().BitSize
+	case ed25519.PublicKey:
+		return len(k) * 8
+	case *ecdh.PublicKey:
+		switch k.Curve() {
+		case ecdh.X25519():
+			return 256
+		case ecdh.P256():
+			return 256
+		case ecdh.P384():
+			return 384
+		case ecdh.P521():
+			return 521
+		}
+		return 0
+	default:
+		return 0
+	}
+}
+
+// isQuantumSafeCertificate reports whether a certificate is protected against
+// cryptanalytically relevant quantum computers. Every algorithm Go's x509
+// package can currently parse is breakable by Shor's algorithm, so this returns
+// false for all recognized algorithms and false (not true) for unrecognized
+// ones: an unknown algorithm is not evidence of post-quantum protection.
+func isQuantumSafeCertificate(cert *x509.Certificate) bool {
+	switch cert.PublicKeyAlgorithm {
+	case x509.RSA, x509.ECDSA, x509.Ed25519, x509.DSA:
+		return false
+	default:
+		return false
+	}
 }

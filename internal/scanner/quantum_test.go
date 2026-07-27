@@ -78,7 +78,7 @@ func TestAssessQuantumRisk(t *testing.T) {
 			wantFullPQC: false,
 		},
 		{
-			name: "hybrid key exchange - high risk",
+			name: "hybrid key exchange with classical certificate - medium risk",
 			result: &types.ScanResult{
 				KeyExchanges: []types.KeyExchange{
 					{
@@ -92,12 +92,17 @@ func TestAssessQuantumRisk(t *testing.T) {
 					PublicKeyAlgorithm: "RSA",
 				},
 			},
-			wantLevel:   types.RiskHigh, // High because score = (80*60 + 0*40)/100 = 48 < 50
+			// Hybrid ML-KEM key exchange removes the harvest-now-decrypt-later
+			// exposure, which is the only retroactive quantum risk. The
+			// certificate is still classical, but no publicly trusted CA issues
+			// ML-DSA certificates yet, so this is the strongest posture a real
+			// deployment can hold today and must not grade as HIGH or CRITICAL.
+			wantLevel:   types.RiskMedium,
 			wantHybrid:  true,
 			wantFullPQC: false,
 		},
 		{
-			name: "full PQC key exchange - medium risk",
+			name: "full PQC key exchange with classical certificate - low risk",
 			result: &types.ScanResult{
 				KeyExchanges: []types.KeyExchange{
 					{
@@ -110,7 +115,12 @@ func TestAssessQuantumRisk(t *testing.T) {
 					PublicKeyAlgorithm: "RSA",
 				},
 			},
-			wantLevel:   types.RiskMedium, // Medium because score = (100*60 + 0*40)/100 = 60
+			// Full post-quantum key exchange leaves no retroactive exposure.
+			// The remaining risk is signature forgery by a future quantum
+			// computer, which is not retroactive and cannot be remediated until
+			// CAs issue post-quantum certificates. FullPQCReady stays the signal
+			// that distinguishes this from a fully post-quantum deployment.
+			wantLevel:   types.RiskLow,
 			wantHybrid:  false,
 			wantFullPQC: true,
 		},
@@ -210,22 +220,85 @@ func TestDescribeCertificateRisk(t *testing.T) {
 
 func TestRecommendTimeToAction(t *testing.T) {
 	tests := []struct {
-		score    int
-		contains string
+		name             string
+		keyExchangeScore int
+		certScore        int
+		contains         string
 	}{
-		{100, "MONITORING"},
-		{80, "MONITORING"},
-		{50, "12-24 MONTHS"},
-		{20, "6-12 MONTHS"},
-		{0, "IMMEDIATE"},
+		{"full pqc both dimensions", 100, 100, "MONITORING"},
+		{"hybrid key exchange deployed", 80, 0, "MONITORING"},
+		{"partial key exchange progress", 50, 0, "12-24 MONTHS"},
+		{"fully classical", 0, 0, "IMMEDIATE"},
 	}
 
 	for _, tt := range tests {
-		t.Run(tt.contains, func(t *testing.T) {
-			result := recommendTimeToAction(tt.score)
+		t.Run(tt.name, func(t *testing.T) {
+			result := recommendTimeToAction(tt.keyExchangeScore, tt.certScore)
 			if !containsAny(result, tt.contains) {
 				t.Errorf("expected result to contain %s, got %s", tt.contains, result)
 			}
 		})
+	}
+}
+
+// TestHybridServerNotToldToDeployHybrid guards the advice regression that
+// shipped before: a server already running a hybrid ML-KEM key exchange was
+// scored HIGH risk and told to "begin hybrid PQC implementation", work it had
+// already completed. No public CA issues ML-DSA certificates yet, so a
+// classical certificate must not drag a hybrid deployment into a failing
+// verdict or produce advice the operator cannot act on.
+func TestHybridServerNotToldToDeployHybrid(t *testing.T) {
+	s := New(DefaultConfig())
+	result := &types.ScanResult{
+		KeyExchanges: []types.KeyExchange{
+			{
+				Name: "X25519MLKEM768", Type: "hybrid", QuantumSafe: true,
+				PQCAlgorithm: "ML-KEM-768", HybridClassical: "X25519", Negotiated: true,
+			},
+			{Name: "X25519", Type: "classical"},
+		},
+		Certificate: &types.Certificate{
+			PublicKeyAlgorithm: "ECDSA",
+			SignatureAlgorithm: "ECDSA-SHA256",
+		},
+		CipherSuites: []types.CipherSuite{{ForwardSecrecy: true}},
+	}
+
+	assessment := s.assessQuantumRisk(result)
+
+	if !assessment.HybridPQCReady {
+		t.Error("hybrid key exchange present but HybridPQCReady is false")
+	}
+	if assessment.Level == types.RiskCritical || assessment.Level == types.RiskHigh {
+		t.Errorf("server running hybrid PQC graded %s; expected MEDIUM or better",
+			assessment.Level)
+	}
+	if containsAny(assessment.TimeToAction, "Begin hybrid", "begin hybrid") {
+		t.Errorf("advice tells a hybrid-enabled server to deploy hybrid: %s",
+			assessment.TimeToAction)
+	}
+	if !containsAny(assessment.HNDLRisk, "LOW") {
+		t.Errorf("hybrid key exchange should reduce HNDL risk, got %s", assessment.HNDLRisk)
+	}
+}
+
+// TestClassicalOnlyStaysCritical is the other half of the guard: relaxing the
+// certificate weighting must not soften the verdict for a server that has done
+// nothing, since its recorded traffic is already exposed.
+func TestClassicalOnlyStaysCritical(t *testing.T) {
+	s := New(DefaultConfig())
+	result := &types.ScanResult{
+		KeyExchanges: []types.KeyExchange{{Name: "X25519", Type: "classical"}},
+		Certificate:  &types.Certificate{PublicKeyAlgorithm: "RSA"},
+	}
+
+	assessment := s.assessQuantumRisk(result)
+
+	if assessment.Level != types.RiskCritical {
+		t.Errorf("classical-only server graded %s; expected CRITICAL", assessment.Level)
+	}
+	if !containsAny(assessment.TimeToAction, "IMMEDIATE") {
+		t.Errorf("classical-only server should require immediate action, got %s",
+			assessment.TimeToAction)
 	}
 }

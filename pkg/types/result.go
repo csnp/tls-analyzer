@@ -33,6 +33,11 @@ type ScanResult struct {
 	Compliance    []ComplianceResult `json:"compliance,omitempty"`
 	PolicyResult  *PolicyResult      `json:"policyResult,omitempty"`
 
+	// ScanWarnings records limits on this scan's coverage, such as key exchange
+	// groups the running build could not offer. Present so that an absent
+	// result is never mistaken for a negative one.
+	ScanWarnings []string `json:"scanWarnings,omitempty"`
+
 	// Metadata
 	ScannerVersion string `json:"scannerVersion"`
 	ScanProfile    string `json:"scanProfile,omitempty"` // e.g., "default", "quantum-ready", "compliance"
@@ -75,12 +80,15 @@ type CipherSuite struct {
 // KeyExchange represents a key exchange mechanism.
 type KeyExchange struct {
 	Name            string `json:"name"`
-	Type            string `json:"type"` // "classical", "hybrid", "pqc"
+	Type            string `json:"type"` // "classical", "hybrid", "pqc", "unknown"
 	Curve           string `json:"curve,omitempty"`
 	Bits            int    `json:"bits,omitempty"`
 	QuantumSafe     bool   `json:"quantumSafe"`
 	PQCAlgorithm    string `json:"pqcAlgorithm,omitempty"`    // e.g., "ML-KEM-768"
 	HybridClassical string `json:"hybridClassical,omitempty"` // e.g., "X25519"
+	// Negotiated marks the group this scan's own connection actually used, as
+	// opposed to groups the server was separately found to support.
+	Negotiated bool `json:"negotiated,omitempty"`
 }
 
 // Certificate represents an X.509 certificate.

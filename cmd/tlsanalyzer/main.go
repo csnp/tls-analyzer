@@ -20,7 +20,7 @@ import (
 )
 
 var (
-	version = "0.2.0"
+	version = "0.3.0"
 	commit  = "dev"
 	date    = "unknown"
 )
@@ -243,6 +243,10 @@ func scanSingleTarget(ctx context.Context, s *scanner.Scanner, cnsa2 *analyzer.C
 		result.PolicyResult = policyEval.Evaluate(result, policy)
 	}
 
+	// Stamp the released binary's version so generated reports carry real
+	// provenance rather than the scanner package default.
+	result.ScannerVersion = version
+
 	// Create reporter and output
 	rep := createReporter()
 	return rep.Report(output, result)
@@ -287,6 +291,12 @@ func scanBatchTargets(ctx context.Context, s *scanner.Scanner, cnsa2 *analyzer.C
 				if policy != nil {
 					result.PolicyResult = policyEval.Evaluate(result, policy)
 				}
+
+				// Stamp the released binary's version so generated reports
+				// carry real provenance. The scanner package default would
+				// otherwise leave every SARIF, CBOM and HTML report claiming a
+				// version the user never installed.
+				result.ScannerVersion = version
 			}
 
 			mu.Lock()

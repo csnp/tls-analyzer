@@ -57,11 +57,26 @@ type CryptoComponent struct {
 
 // CryptoProperties contains cryptographic-specific properties.
 type CryptoProperties struct {
-	AssetType             string            `json:"assetType"` // algorithm, protocol, certificate, related-crypto-material
-	AlgorithmProperties   *AlgorithmProps   `json:"algorithmProperties,omitempty"`
-	ProtocolProperties    *ProtocolProps    `json:"protocolProperties,omitempty"`
-	CertificateProperties *CertificateProps `json:"certificateProperties,omitempty"`
-	OID                   string            `json:"oid,omitempty"`
+	AssetType                       string                      `json:"assetType"` // algorithm, protocol, certificate, related-crypto-material
+	AlgorithmProperties             *AlgorithmProps             `json:"algorithmProperties,omitempty"`
+	ProtocolProperties              *ProtocolProps              `json:"protocolProperties,omitempty"`
+	CertificateProperties           *CertificateProps           `json:"certificateProperties,omitempty"`
+	RelatedCryptoMaterialProperties *RelatedCryptoMaterialProps `json:"relatedCryptoMaterialProperties,omitempty"`
+	OID                             string                      `json:"oid,omitempty"`
+}
+
+// RelatedCryptoMaterialProps describes key material rather than an algorithm.
+// CycloneDX 1.6 models keys, certificates signing requests, secrets and tokens
+// this way; representing them as algorithm assets loses the material's type and
+// size.
+type RelatedCryptoMaterialProps struct {
+	// Type is a CycloneDX relatedCryptoMaterialType, for example private-key,
+	// public-key, secret-key, key, ciphertext, signature, or password.
+	Type string `json:"type"`
+	// Size is the key size in bits, omitted when not known.
+	Size int `json:"size,omitempty"`
+	// State is the key lifecycle state, for example active or deactivated.
+	State string `json:"state,omitempty"`
 }
 
 // AlgorithmProps describes a cryptographic algorithm.
@@ -91,14 +106,16 @@ type CipherSuiteRef struct {
 
 // CertificateProps describes a certificate.
 type CertificateProps struct {
-	SubjectName           string    `json:"subjectName"`
-	IssuerName            string    `json:"issuerName"`
-	NotValidBefore        time.Time `json:"notValidBefore"`
-	NotValidAfter         time.Time `json:"notValidAfter"`
-	SignatureAlgorithmRef string    `json:"signatureAlgorithmRef"`          // bom-ref
-	SubjectPublicKeyRef   string    `json:"subjectPublicKeyRef"`            // bom-ref
-	CertificateFormat     string    `json:"certificateFormat"`              // X.509
-	CertificateExtension  string    `json:"certificateExtension,omitempty"` // pem, der
+	SubjectName    string    `json:"subjectName"`
+	IssuerName     string    `json:"issuerName"`
+	NotValidBefore time.Time `json:"notValidBefore"`
+	NotValidAfter  time.Time `json:"notValidAfter"`
+	// bom-ref values. CycloneDX 1.6 requires a non-empty string when present,
+	// so these are omitted rather than emitted empty.
+	SignatureAlgorithmRef string `json:"signatureAlgorithmRef,omitempty"`
+	SubjectPublicKeyRef   string `json:"subjectPublicKeyRef,omitempty"`
+	CertificateFormat     string `json:"certificateFormat"`              // X.509
+	CertificateExtension  string `json:"certificateExtension,omitempty"` // pem, der
 }
 
 // CryptoEvidence provides evidence of where crypto was found.

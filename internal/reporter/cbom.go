@@ -81,7 +81,9 @@ func (r *CBOMReporter) generateCBOM(result *types.ScanResult) types.CryptoBOM {
 
 	// Add certificate
 	if result.Certificate != nil {
-		cbom.Components = append(cbom.Components, r.certificateComponent(result.Certificate, result.Target))
+		cbom.Components = append(cbom.Components,
+			r.certificateComponent(result.Certificate, result.Target),
+			r.publicKeyComponent(result.Certificate, result.Target))
 	}
 
 	return cbom
@@ -155,9 +157,17 @@ func (r *CBOMReporter) cipherComponent(cs types.CipherSuite, target string) type
 func (r *CBOMReporter) keyExchangeComponent(ke types.KeyExchange, target string) types.CryptoComponent {
 	ref := fmt.Sprintf("kex-%s-%s", target, ke.Name)
 
-	primitive := "kex"
-	if ke.Type == "pqc" || ke.Type == "hybrid" {
+	// CycloneDX 1.6 constrains primitive to a fixed enum. "kex" is not a member
+	// of it, so emitting that value made the whole document fail schema
+	// validation. A classical Diffie-Hellman style exchange is "key-agree";
+	// ML-KEM is a key encapsulation mechanism, and a hybrid group is a
+	// "combiner" of the two.
+	primitive := "key-agree"
+	switch ke.Type {
+	case "pqc":
 		primitive = "kem"
+	case "hybrid":
+		primitive = "combiner"
 	}
 
 	quantumLevel := 0
@@ -197,6 +207,27 @@ func (r *CBOMReporter) keyExchangeComponent(ke types.KeyExchange, target string)
 	return comp
 }
 
+// publicKeyComponent emits the certificate's public key as its own
+// related-crypto-material asset, so the certificate component can reference
+// real key material instead of carrying a dangling reference.
+func (r *CBOMReporter) publicKeyComponent(cert *types.Certificate, target string) types.CryptoComponent {
+	return types.CryptoComponent{
+		Type:        "cryptographic-asset",
+		BOMRef:      publicKeyRef(target),
+		Name:        fmt.Sprintf("%s public key", cert.PublicKeyAlgorithm),
+		Description: fmt.Sprintf("Subject public key of the certificate presented by %s", target),
+		CryptoProperties: types.CryptoProperties{
+			AssetType: "related-crypto-material",
+			RelatedCryptoMaterialProperties: &types.RelatedCryptoMaterialProps{
+				Type: "public-key",
+				Size: cert.PublicKeyBits,
+			},
+		},
+	}
+}
+
+func publicKeyRef(target string) string { return fmt.Sprintf("cert-key-%s", target) }
+
 func (r *CBOMReporter) certificateComponent(cert *types.Certificate, target string) types.CryptoComponent {
 	ref := fmt.Sprintf("cert-%s", target)
 
@@ -213,11 +244,12 @@ func (r *CBOMReporter) certificateComponent(cert *types.Certificate, target stri
 		CryptoProperties: types.CryptoProperties{
 			AssetType: "certificate",
 			CertificateProperties: &types.CertificateProps{
-				SubjectName:       cert.Subject,
-				IssuerName:        cert.Issuer,
-				NotValidBefore:    cert.NotBefore,
-				NotValidAfter:     cert.NotAfter,
-				CertificateFormat: "X.509",
+				SubjectName:         cert.Subject,
+				IssuerName:          cert.Issuer,
+				NotValidBefore:      cert.NotBefore,
+				NotValidAfter:       cert.NotAfter,
+				CertificateFormat:   "X.509",
+				SubjectPublicKeyRef: publicKeyRef(target),
 			},
 			AlgorithmProperties: &types.AlgorithmProps{
 				Primitive:              "signature",

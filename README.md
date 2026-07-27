@@ -85,10 +85,17 @@ Expected output: Security grade, quantum risk score, CNSA 2.0 timeline.
 
 | Feature | Description |
 |---------|-------------|
-| **Quantum Risk Scoring** | 0-100 score indicating quantum vulnerability |
-| **PQC Detection** | ML-KEM, ML-DSA, SLH-DSA, and hybrid key exchange detection |
+| **Quantum Risk Scoring** | 0-100 score, weighted toward key exchange because that is the risk that applies retroactively |
+| **Hybrid PQC Detection** | Detects the negotiated key exchange group and separately probes which groups the server supports: `X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024` |
 | **HNDL Risk Assessment** | Evaluate exposure to harvest-now-decrypt-later attacks |
 | **CNSA 2.0 Timeline** | Track compliance against NSA's post-quantum migration deadlines |
+
+Post-quantum certificate signatures (ML-DSA, SLH-DSA) are reported as unavailable
+rather than detected. No publicly trusted CA issues them yet, so a classical
+certificate is not counted as a failure an operator could act on today. The
+quantum score is weighted 80 percent key exchange and 20 percent certificate for
+the same reason: recorded traffic is decrypted retroactively once a quantum
+computer exists, while a signature cannot be forged after the fact.
 
 ### Compliance & Reporting
 
@@ -151,21 +158,22 @@ Sample terminal output:
 ═══════════════════════════════════════════════════════════════
 
   Target: example.com
-  IP: 93.184.216.34
-  Scanned: 2025-01-15 10:30:00 UTC
+  IP: 172.66.147.243
+  Scanned: 2026-07-27 13:38:45 MDT
+  Duration: 80.176667ms
 
 ───────────────────────────────────────────────────────────────
   OVERALL GRADE
 ───────────────────────────────────────────────────────────────
 
-  TLS Security:     B    (78/100)
-  Quantum Ready:    QV
+  TLS Security:     D    (51/100)
+  Quantum Ready:    Q
 
   Score Breakdown:
-    Protocol Support     [████████████████░░░░] 20/25
-    Cipher Strength      [████████████████████] 25/25
+    Protocol Support     [████████░░░░░░░░░░░░] 10/25
+    Cipher Strength      [████████████████░░░░] 20/25
     Certificate          [████████████████████] 25/25
-    Quantum Readiness    [░░░░░░░░░░░░░░░░░░░░] 0/25
+    Quantum Readiness    [████████████░░░░░░░░] 16/25
 
 ───────────────────────────────────────────────────────────────
   POLICY EVALUATION
@@ -173,28 +181,39 @@ Sample terminal output:
 
     Policy:     cnsa-2.0-2027
     Status:     ✗ NON-COMPLIANT
-    Score:      10/100
+    Score:      70/100
 
-    Violations (4)
-      • [CRITICAL] Required key exchange algorithm not found
-        Expected: X25519MLKEM768 or SecP384r1MLKEM1024
+    Violations (2)
+      • [HIGH] Cipher suite key size below minimum
+        Expected: >= 256 bits | Actual: 128 bits (TLS_AES_128_GCM_SHA256)
+      • [HIGH] ECC key size below minimum
+        Expected: >= 384 bits | Actual: 256 bits
 
 ───────────────────────────────────────────────────────────────
   CNSA 2.0 COMPLIANCE TIMELINE
 ───────────────────────────────────────────────────────────────
 
-    Current Phase:      Preparation Phase
-    Timeline Score:     54/100
-    Days to Deadline:   371
-    Next Action:        Enable hybrid PQC key exchange
+    Current Phase:      New NSS Systems
+    Timeline Score:     84/100
+    Days to Deadline:   157
+    Next Action:        Legacy protocol still enabled: TLS 1.2
 
     Milestones:
       ○ Preparation Phase (2025-12-31)
-      ✗ New NSS Systems (2027-01-01)
-         └─ ML-KEM key exchange not detected
+      ✓ New NSS Systems (2027-01-01)
       ◐ TLS 1.3 Required (2030-01-02)
+         └─ Legacy protocol still enabled: TLS 1.2
       — Legacy System Update (2033-01-01)
+         └─ PQC certificates not yet available
       — Full PQC Transition (2035-01-01)
+         └─ PQC certificates not yet available
+
+    Algorithm Status:
+      [approved    ] key-exchange: X25519MLKEM768
+      [transitional] key-exchange: X25519
+      [transitional] signature: ECDSA-SHA256
+      [deprecated  ] signature-key: ECDSA
+               Replace with: ML-DSA certificates (when available)
 ```
 
 Other formats: `--format json` for automation, `--format cbom` for [CycloneDX CBOM](https://cyclonedx.org/capabilities/cbom/), `--format html` for shareable reports, `--format sarif` for GitHub Security.

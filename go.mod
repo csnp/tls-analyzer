@@ -1,6 +1,6 @@
 module github.com/csnp/qramm-tls-analyzer
 
-go 1.23.1
+go 1.25
 
 require (
 	github.com/google/uuid v1.6.0 // indirect
