@@ -7,6 +7,32 @@ this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.htm
 
 ## [0.3.0] - 2026-07-27
 
+### Fixed (found by the second pre-release fresh-user pass)
+
+- **`--skip-quantum` fabricated a negative post-quantum finding.** Excluding the
+  assessment from the grade was not enough: the report still printed
+  `Quantum Ready: QV`, `✗ Hybrid PQC Key Exchange`, `hybridPqcReady: false`, and
+  a priority-1 recommendation to enable hybrid key exchange, for servers that
+  demonstrably negotiate `X25519MLKEM768`, while the CNSA section of the same
+  report listed that group as approved. A suppressed check now produces no
+  quantum findings, no quantum recommendations, and a quantum grade of
+  "not assessed" rather than "quantum vulnerable". Not measured is not absent.
+- **IPv6 targets could not be scanned.** Connection addresses were built with
+  `fmt.Sprintf("%s:%d", host, port)`, producing `::1:19502` instead of
+  `[::1]:19502`, so every IPv6 target failed as "unreachable" and was
+  indistinguishable from a real finding. Verified fixed against a local TLS
+  server on `[::1]` that OpenSSL also reaches.
+- **Scan coverage warnings were invisible in text output**, the default format.
+  The caveats existed only in JSON, which is exactly where they were not needed.
+  Text reports now carry a "Scan coverage" section.
+- **The cipher enumeration warning overstated its own completeness.** It claimed
+  "TLS 1.2 and earlier suites are enumerated in full", but Go does not implement
+  the CBC-SHA256 and CBC-SHA384 families, so a server can accept suites that do
+  not appear. The warning now states that limit instead of denying it.
+- **An unknown `--format` silently produced text with exit 0.** A pipeline
+  asking for `--format JSON` (wrong case) received a text report and a success
+  code. Unknown formats are now rejected with the list of supported values.
+
 ### Fixed (found by the pre-release fresh-user test)
 
 - **`--port` was declared and documented but never read.** `tlsanalyzer host -p 8443`

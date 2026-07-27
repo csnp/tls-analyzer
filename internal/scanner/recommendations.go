@@ -9,8 +9,15 @@ func (s *Scanner) generateRecommendations(result *types.ScanResult) []types.Reco
 	var recs []types.Recommendation
 	priority := 1
 
-	// Critical: Quantum readiness
-	if result.QuantumRisk.Score < 50 {
+	// Critical: Quantum readiness.
+	//
+	// Only when the assessment actually ran. A suppressed check leaves
+	// QuantumRisk zero-valued, and treating that as a low score produced a
+	// priority-1 "enable hybrid post-quantum key exchange" recommendation for
+	// servers that demonstrably already negotiate X25519MLKEM768, contradicting
+	// the CNSA section of the same report. Not measured is not the same as
+	// measured absent.
+	if s.config.CheckQuantum && result.QuantumRisk.Score < 50 {
 		recs = append(recs, types.Recommendation{
 			Priority:    priority,
 			Category:    "quantum",
@@ -156,7 +163,10 @@ func (s *Scanner) generateRecommendations(result *types.ScanResult) []types.Reco
 		}
 
 		// Future-looking: PQC certificate recommendation
-		if !cert.QuantumSafe && result.QuantumRisk.Score < 80 {
+		// Gated on the assessment having run, for the same reason as the key
+		// exchange recommendation above: a suppressed check leaves the score at
+		// zero, which must not be read as a measured low score.
+		if s.config.CheckQuantum && !cert.QuantumSafe && result.QuantumRisk.Score < 80 {
 			recs = append(recs, types.Recommendation{
 				Priority:    priority,
 				Category:    "quantum",

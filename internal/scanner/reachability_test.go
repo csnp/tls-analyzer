@@ -174,3 +174,39 @@ func TestParseTargetKeepsExplicitPort(t *testing.T) {
 		t.Errorf("got %s:%d, want example.com:443", host, port)
 	}
 }
+
+// TestSkippedQuantumProducesNoQuantumFindings guards the fabrication where a
+// suppressed assessment was rendered as a negative result: the report claimed
+// "QV" and recommended enabling hybrid post-quantum key exchange for servers
+// that demonstrably already negotiate X25519MLKEM768, while the CNSA section of
+// the same output listed that group as approved. Not measured is not absent.
+func TestSkippedQuantumProducesNoQuantumFindings(t *testing.T) {
+	result := &types.ScanResult{
+		Protocols:    []types.Protocol{{Version: "TLS 1.3", Supported: true, Preferred: true}},
+		CipherSuites: []types.CipherSuite{{Name: "TLS_AES_256_GCM_SHA384", Bits: 256, ForwardSecrecy: true}},
+		KeyExchanges: []types.KeyExchange{{
+			Name: "X25519MLKEM768", Type: "hybrid", QuantumSafe: true,
+			PQCAlgorithm: "ML-KEM-768", Negotiated: true,
+		}},
+		Certificate: &types.Certificate{PublicKeyAlgorithm: "ECDSA", PublicKeyBits: 256},
+	}
+
+	cfg := DefaultConfig()
+	cfg.CheckQuantum = false
+	s := New(cfg)
+
+	grade := s.calculateGrade(result)
+	if grade.QuantumGrade == "QV" {
+		t.Error("a skipped quantum assessment was graded quantum vulnerable")
+	}
+	if grade.QuantumGrade != "not assessed" {
+		t.Errorf("quantumGrade = %q, want \"not assessed\"", grade.QuantumGrade)
+	}
+
+	for _, rec := range s.generateRecommendations(result) {
+		if rec.Category == "quantum" {
+			t.Errorf("skipped quantum assessment still produced a quantum recommendation: %q",
+				rec.Title)
+		}
+	}
+}

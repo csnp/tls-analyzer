@@ -89,12 +89,22 @@ func (s *Scanner) calculateGrade(result *types.ScanResult) types.Grade {
 		finalScore = 100
 	}
 
-	return types.Grade{
-		Letter:       scoresToLetter(finalScore),
-		Score:        finalScore,
-		QuantumGrade: quantumScoreToLetter(result.QuantumRisk.Score),
-		Factors:      factors,
+	grade := types.Grade{
+		Letter:  scoresToLetter(finalScore),
+		Score:   finalScore,
+		Factors: factors,
 	}
+
+	// Only assign a quantum letter when the assessment ran. Deriving one from a
+	// zero-valued, never-populated assessment reported "QV" (quantum
+	// vulnerable) for servers that verifiably negotiate a hybrid ML-KEM group.
+	if s.config.CheckQuantum {
+		grade.QuantumGrade = quantumScoreToLetter(result.QuantumRisk.Score)
+	} else {
+		grade.QuantumGrade = "not assessed"
+	}
+
+	return grade
 }
 
 func scoreProtocols(protocols []types.Protocol) (int, int) {

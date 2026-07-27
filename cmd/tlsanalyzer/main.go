@@ -165,6 +165,14 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return fmt.Errorf("no targets specified. Use 'tlsanalyzer example.com' or '--targets file.txt'")
 	}
 
+	// Reject an unrecognized format rather than falling back to text. A
+	// pipeline asking for "--format JSON" previously received a text report and
+	// a success exit code, so the mistake was invisible until something
+	// downstream failed to parse it.
+	if err := validateFormat(outputFormat); err != nil {
+		return err
+	}
+
 	// Apply --port only when the user actually passed it, so that targets
 	// written as host:port keep working and the default never silently
 	// rewrites them.
@@ -404,6 +412,21 @@ func collectTargets(args []string) ([]string, error) {
 	}
 
 	return targets, nil
+}
+
+// supportedFormats lists the accepted --format values, in help-text order.
+var supportedFormats = []string{"text", "json", "sarif", "cbom", "html"}
+
+// validateFormat rejects an unknown output format. Matching is case-sensitive
+// so that "--format JSON" fails loudly rather than silently producing text.
+func validateFormat(format string) error {
+	for _, supported := range supportedFormats {
+		if format == supported {
+			return nil
+		}
+	}
+	return fmt.Errorf("unknown format: %s (supported: %s)",
+		format, strings.Join(supportedFormats, ", "))
 }
 
 func createReporter() reporter.Reporter {

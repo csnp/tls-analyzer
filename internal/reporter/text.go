@@ -55,8 +55,12 @@ func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
 		r.printCertificate(w, result.Certificate)
 	}
 
-	// Quantum risk assessment
-	r.printQuantumRisk(w, result.QuantumRisk)
+	// Quantum risk assessment. Omitted entirely when it was not run, rather
+	// than rendered from a zero-valued assessment, which reported a server with
+	// hybrid ML-KEM key exchange as quantum vulnerable.
+	if result.Grade.QuantumGrade != "not assessed" {
+		r.printQuantumRisk(w, result.QuantumRisk)
+	}
 
 	// Vulnerabilities
 	if len(result.Vulnerabilities) > 0 {
@@ -68,7 +72,26 @@ func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
 		r.printRecommendations(w, result.Recommendations)
 	}
 
+	// Scan coverage limits. Text is the default format, so warnings that exist
+	// only in JSON are invisible to most users, which is precisely where a
+	// caveat is needed to stop an unmeasured value being read as a measured one.
+	if len(result.ScanWarnings) > 0 {
+		r.printScanWarnings(w, result.ScanWarnings)
+	}
+
 	return nil
+}
+
+// printScanWarnings renders the limits on what this scan could observe.
+func (r *TextReporter) printScanWarnings(w io.Writer, warnings []string) {
+	fmt.Fprintf(w, "\n%s\n", r.color(colorBold, strings.Repeat("─", 63)))
+	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorYellow, "SCAN COVERAGE"))
+	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, strings.Repeat("─", 63)))
+
+	for _, warning := range warnings {
+		fmt.Fprintf(w, "    - %s\n", warning)
+	}
+	fmt.Fprintln(w)
 }
 
 // Format returns the format name.

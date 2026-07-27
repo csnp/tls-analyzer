@@ -15,6 +15,7 @@ import (
 	"fmt"
 	"net"
 	"sort"
+	"strconv"
 	"strings"
 	"sync"
 	"time"
@@ -170,13 +171,13 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 
 	// Be explicit about the one enumeration this scanner cannot perform, so a
 	// suite that is simply unobservable is never read as unsupported.
-	if hasTLS13(result.Protocols) {
-		result.ScanWarnings = append(result.ScanWarnings,
-			"TLS 1.3 cipher suites cannot be enumerated individually: Go's TLS stack "+
-				"always offers all three and ignores per-suite configuration, so only the "+
-				"negotiated TLS 1.3 suite is reported. TLS 1.2 and earlier suites are "+
-				"enumerated in full.")
-	}
+	result.ScanWarnings = append(result.ScanWarnings,
+		"cipher suite enumeration is limited to the suites this scanner's TLS stack "+
+			"can offer. TLS 1.3 suites cannot be probed individually at all, since Go "+
+			"always offers all three and ignores per-suite configuration, so only the "+
+			"negotiated TLS 1.3 suite is reported. Some TLS 1.2 suites Go does not "+
+			"implement, such as the CBC-SHA256 and CBC-SHA384 families, cannot be "+
+			"probed either, so a server may accept suites that do not appear here.")
 
 	if !s.config.CheckVulns {
 		result.ScanWarnings = append(result.ScanWarnings,
@@ -403,7 +404,7 @@ func (s *Scanner) probeKeyExchangeGroups(ctx context.Context, host string, port 
 				CurvePreferences:   []tls.CurveID{group},
 			}
 
-			addr := fmt.Sprintf("%s:%d", host, port)
+			addr := net.JoinHostPort(host, strconv.Itoa(port))
 			dialer := &tls.Dialer{
 				NetDialer: &net.Dialer{Timeout: s.config.ConnectTimeout},
 				Config:    cfg,
@@ -480,7 +481,7 @@ func (s *Scanner) probeCipherSuites(ctx context.Context, host string, port int) 
 				CipherSuites:       []uint16{id},
 			}
 
-			addr := fmt.Sprintf("%s:%d", host, port)
+			addr := net.JoinHostPort(host, strconv.Itoa(port))
 			dialer := &tls.Dialer{
 				NetDialer: &net.Dialer{Timeout: s.config.ConnectTimeout},
 				Config:    cfg,
@@ -536,7 +537,7 @@ func (s *Scanner) probeConnection(ctx context.Context, host string, port int) (
 		ServerName:         s.getSNI(host),
 	}
 
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	dialer := &net.Dialer{Timeout: s.config.ConnectTimeout}
 
 	conn, err := tls.DialWithDialer(dialer, "tcp", addr, cfg)
@@ -577,7 +578,7 @@ func (s *Scanner) probeConnection(ctx context.Context, host string, port int) (
 
 // tryConnect attempts a TLS connection with the given config.
 func (s *Scanner) tryConnect(ctx context.Context, host string, port int, cfg *tls.Config) bool {
-	addr := fmt.Sprintf("%s:%d", host, port)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: s.config.ConnectTimeout},
 		Config:    cfg,
