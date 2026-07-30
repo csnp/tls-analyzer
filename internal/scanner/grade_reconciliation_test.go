@@ -186,3 +186,88 @@ func TestSkippingVulnerabilityChecksIsNotPresentedAsABetterResult(t *testing.T) 
 		t.Error("a full scan is also labelled an upper bound, which makes the label vacuous")
 	}
 }
+
+// protocolCombination builds a protocol list from a set of supported versions.
+func protocolCombination(supported map[string]bool) []types.Protocol {
+	all := []string{"TLS 1.3", "TLS 1.2", "TLS 1.1", "TLS 1.0"}
+	protocols := make([]types.Protocol, 0, len(all))
+	for _, version := range all {
+		protocols = append(protocols, types.Protocol{Version: version, Supported: supported[version]})
+	}
+	return protocols
+}
+
+// TestRetiringALegacyProtocolNeverLowersTheProtocolScore guards a scoring
+// inversion: the model awarded points for TLS 1.3 and further points for TLS 1.2,
+// so a TLS 1.3-only server was capped at 15 of 25 and turning TLS 1.2 off cost ten
+// points.
+//
+// TLS 1.3-only is the configuration this tool's own `strict` and `cnsa-2.0-2030`
+// policies require, so following its advice lowered its grade, and the best
+// achievable protocol posture could not reach the top of the dimension. Same class
+// as a skipped check raising the score: an action the tool recommends must not move
+// the number the wrong way.
+//
+// Stated as the general property rather than as one expected value, over all
+// sixteen combinations, so a future reweighting cannot reintroduce it in a shape
+// this fixture did not anticipate.
+func TestRetiringALegacyProtocolNeverLowersTheProtocolScore(t *testing.T) {
+	versions := []string{"TLS 1.3", "TLS 1.2", "TLS 1.1", "TLS 1.0"}
+	legacy := []string{"TLS 1.2", "TLS 1.1", "TLS 1.0"}
+
+	for mask := 0; mask < 1<<len(versions); mask++ {
+		supported := map[string]bool{}
+		for i, version := range versions {
+			if mask&(1<<i) != 0 {
+				supported[version] = true
+			}
+		}
+
+		// The property holds where TLS 1.3 is available. Without it, dropping
+		// TLS 1.2 removes the only modern protocol and a lower score is correct.
+		if !supported["TLS 1.3"] {
+			continue
+		}
+
+		before, _ := scoreProtocols(protocolCombination(supported))
+
+		for _, drop := range legacy {
+			if !supported[drop] {
+				continue
+			}
+			reduced := map[string]bool{}
+			for k, v := range supported {
+				reduced[k] = v
+			}
+			delete(reduced, drop)
+
+			after, _ := scoreProtocols(protocolCombination(reduced))
+			if after < before {
+				t.Errorf("disabling %s lowered the protocol score from %d to %d (supported before: %v). "+
+					"Retiring a legacy protocol is what the tool recommends; it must not cost points.",
+					drop, before, after, supported)
+			}
+		}
+	}
+}
+
+// TestTLS13OnlyReachesTheProtocolMaximum pins the best achievable posture at the
+// top of its dimension. Without this, the invariant above is satisfied by any flat
+// scoring function.
+func TestTLS13OnlyReachesTheProtocolMaximum(t *testing.T) {
+	score, max := scoreProtocols(protocolCombination(map[string]bool{"TLS 1.3": true}))
+	if score != max {
+		t.Errorf("a TLS 1.3-only server scores %d of %d on protocol support; the strictest "+
+			"available configuration cannot reach the top of the dimension", score, max)
+	}
+
+	// And a server still offering deprecated versions must NOT reach it, or the
+	// dimension has stopped discriminating.
+	withLegacy, _ := scoreProtocols(protocolCombination(map[string]bool{
+		"TLS 1.3": true, "TLS 1.2": true, "TLS 1.1": true, "TLS 1.0": true,
+	}))
+	if withLegacy >= score {
+		t.Errorf("a server offering TLS 1.0 and 1.1 scores %d, not below the %d of a clean "+
+			"TLS 1.3-only server", withLegacy, score)
+	}
+}

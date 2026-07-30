@@ -191,12 +191,20 @@ func scoreProtocols(protocols []types.Protocol) (int, int) {
 		}
 	}
 
-	// Scoring logic
+	// TLS 1.3 carries the full credit for this dimension on its own.
+	//
+	// The previous model added 15 for TLS 1.3 and a further 10 for TLS 1.2, so a
+	// TLS 1.3-only server could not score above 15 of 25 and turning TLS 1.2 off
+	// cost ten points. That is the configuration this tool's own `strict` and
+	// `cnsa-2.0-2030` policies require, so following its advice lowered its grade,
+	// and the best achievable protocol posture was structurally denied the top of
+	// the dimension. TLS 1.2 alongside TLS 1.3 is neither a bonus nor a penalty:
+	// it is still a secure protocol, and its presence is what the policy layer is
+	// for. Only deprecated versions move the score down.
 	if tls13 {
-		score += 15 // TLS 1.3 support is key
-	}
-	if tls12 {
-		score += 10 // TLS 1.2 is still good
+		score += 25
+	} else if tls12 {
+		score += 10 // Secure, but not modern.
 	}
 	if tls11 {
 		score -= 5 // Penalty for TLS 1.1

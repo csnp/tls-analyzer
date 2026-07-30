@@ -72,11 +72,18 @@ func TestScoreProtocols(t *testing.T) {
 			wantMax:   25,
 		},
 		{
+			// This asserted 15 until 0.3.1, which pinned a scoring inversion
+			// rather than a judgement: TLS 1.3-only is the strictest available
+			// configuration and the one the `strict` and `cnsa-2.0-2030` policies
+			// require, and it was capped at 15 of 25 because the model wanted
+			// TLS 1.2 alongside for the remaining ten points. Turning TLS 1.2 off
+			// therefore cost ten points of the grade. TLS 1.3 now carries the full
+			// dimension on its own; only deprecated versions deduct.
 			name: "TLS 1.3 only",
 			protocols: []types.Protocol{
 				{Version: "TLS 1.3", Supported: true},
 			},
-			wantScore: 15,
+			wantScore: 25,
 			wantMax:   25,
 		},
 		{
