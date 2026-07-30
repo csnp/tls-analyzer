@@ -119,6 +119,18 @@ type CipherSuite struct {
 	ForwardSecrecy   bool   `json:"forwardSecrecy"`
 	Deprecated       bool   `json:"deprecated"`
 	DeprecatedReason string `json:"deprecatedReason,omitempty"`
+
+	// Negotiated marks the suite this scan's own connection actually used, as
+	// opposed to suites the server was separately found to accept.
+	//
+	// It matters most for TLS 1.3, where Go offers all three suites and ignores
+	// per-suite configuration, so the one reported is chosen by this scanner's
+	// client preference rather than the server's. Measured against openssl 3.6.1
+	// on 2026-07-30: example.com, cloudflare.com and google.com all negotiate
+	// TLS_AES_256_GCM_SHA384 when the client offers AES-256 first, while this
+	// scanner reports TLS_AES_128_GCM_SHA256 for all three. Without this marker
+	// the cipher list reads as the server's preference.
+	Negotiated bool `json:"negotiated,omitempty"`
 }
 
 // KeyExchange represents a key exchange mechanism.

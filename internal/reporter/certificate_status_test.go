@@ -244,3 +244,33 @@ func protocolRows(doc string) map[string]string {
 	}
 	return rows
 }
+
+// TestTextReporterMarksTheNegotiatedSuite pins the label in the rendered cipher
+// list, where the misreading happens. For TLS 1.3 the suite reported is chosen
+// by this scanner's client preference, not the server's, so an unlabelled row
+// reads as the server's choice.
+func TestTextReporterMarksTheNegotiatedSuite(t *testing.T) {
+	result := certResult(healthyCert())
+	result.CipherSuites = []types.CipherSuite{
+		{Name: "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384", Bits: 256, ForwardSecrecy: true},
+		{Name: "TLS_AES_128_GCM_SHA256", Bits: 128, ForwardSecrecy: true, Negotiated: true},
+	}
+
+	var buf bytes.Buffer
+	if err := (&TextReporter{NoColor: true}).Report(&buf, result); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+
+	for _, line := range strings.Split(buf.String(), "\n") {
+		switch {
+		case strings.Contains(line, "TLS_AES_128_GCM_SHA256"):
+			if !strings.Contains(line, "negotiated by this scan") {
+				t.Errorf("the negotiated suite is not marked as such: %q", line)
+			}
+		case strings.Contains(line, "TLS_ECDHE_RSA_WITH_AES_256_GCM_SHA384"):
+			if strings.Contains(line, "negotiated by this scan") {
+				t.Errorf("an enumerated suite is marked as negotiated: %q", line)
+			}
+		}
+	}
+}

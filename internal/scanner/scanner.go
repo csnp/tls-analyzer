@@ -186,6 +186,17 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 			"implement, such as the CBC-SHA256 and CBC-SHA384 families, cannot be "+
 			"probed either, so a server may accept suites that do not appear here.")
 
+	// And say whose preference the negotiated suite reflects, because the
+	// enumeration limit above does not imply it. The suite marked as negotiated
+	// is the one this scanner's client preference produced, not the server's:
+	// openssl offering AES-256 first negotiates TLS_AES_256_GCM_SHA384 with the
+	// same hosts for which this scanner reports TLS_AES_128_GCM_SHA256.
+	result.ScanWarnings = append(result.ScanWarnings,
+		"the suite marked negotiated is the one this scanner's own client preference "+
+			"selected, not the server's preferred suite, which this scanner cannot "+
+			"observe. A server offering both usually prefers AES-256 to a client that "+
+			"offers AES-256 first")
+
 	// The trust verdict depends on the machine the scan runs from, so say so.
 	// The same host can be trusted on one machine and untrusted on another, and
 	// a certificate issued by an internal CA is untrusted here unless that CA is
@@ -600,6 +611,7 @@ func (s *Scanner) probeConnection(ctx context.Context, host string, port int) (
 	var ciphers []types.CipherSuite
 	cs := parseCipherSuite(state.CipherSuite, state.Version)
 	if cs != nil {
+		cs.Negotiated = true
 		ciphers = append(ciphers, *cs)
 	}
 

@@ -402,8 +402,17 @@ func (r *TextReporter) printCipherSuites(w io.Writer, ciphers []types.CipherSuit
 			quantum = r.color(colorPurple, " [PQC]")
 		}
 
-		fmt.Fprintf(w, "    %s %-50s %d-bit%s%s\n",
-			status, cs.Name, cs.Bits, pfs, quantum)
+		// Marked as this scan's own negotiation rather than as the server's
+		// preference. For TLS 1.3 the suite here is chosen by this scanner's
+		// client preference, not the server's, and an unlabelled row reads as
+		// the server having picked it.
+		negotiated := ""
+		if cs.Negotiated {
+			negotiated = r.color(colorCyan, " [negotiated by this scan]")
+		}
+
+		fmt.Fprintf(w, "    %s %-50s %d-bit%s%s%s\n",
+			status, cs.Name, cs.Bits, pfs, quantum, negotiated)
 
 		if cs.Deprecated {
 			fmt.Fprintf(w, "      %s\n", r.color(colorRed+colorDim, "└─ "+cs.DeprecatedReason))
