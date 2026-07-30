@@ -248,6 +248,42 @@ func TestScoreCertificateZeroOnAFailedCheck(t *testing.T) {
 	}
 }
 
+// TestAQuantumAssessmentThatRanIsMarkedAsHavingRun is the acceptance control
+// for every guard that now branches on that flag.
+//
+// If the scanner never set it, each of those guards would fire on every scan:
+// the policy rule would be skipped always, the SARIF finding would never be
+// published, and the HTML quantum section would never be drawn. Suppressing the
+// tool's main output on every run is the failure mode on the other side of this
+// fix, and it would be invisible to tests that only assert the unmeasured case.
+func TestAQuantumAssessmentThatRanIsMarkedAsHavingRun(t *testing.T) {
+	notBefore, notAfter := validFrom()
+	iss := issueLeaf(t, nil, []net.IP{net.ParseIP("127.0.0.1")}, notBefore, notAfter)
+
+	host, port := startLocalTLSServer(t, iss.serving)
+
+	cfg := DefaultConfig()
+	cfg.CheckQuantum = true
+
+	result := scanLocal(t, cfg, host, port)
+	if !result.QuantumRisk.Assessed {
+		t.Fatal("a scan that ran the quantum assessment reports it as not having run, " +
+			"which suppresses the quantum verdict in every output format")
+	}
+	if result.Grade.QuantumGrade == types.QuantumGradeNotAssessed {
+		t.Fatalf("QuantumGrade = %q for a scan that assessed quantum readiness",
+			result.Grade.QuantumGrade)
+	}
+
+	// And the negative half from the same scanner, so the flag tracks the config
+	// rather than being hardcoded either way.
+	cfg = DefaultConfig()
+	cfg.CheckQuantum = false
+	if skipped := scanLocal(t, cfg, host, port); skipped.QuantumRisk.Assessed {
+		t.Fatal("a scan run with the quantum assessment disabled reports it as having run")
+	}
+}
+
 // TestConfiguredTrustRootsDecideTheVerdict proves the injected pool is what the
 // scanner actually consults, so the suite's own isolation from the host trust
 // store is real rather than assumed.
