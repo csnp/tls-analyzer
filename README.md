@@ -299,6 +299,12 @@ Skipping the vulnerability checks with `--skip-vulns` leaves the penalty
 unmeasured rather than zero, so the score is then reported as an upper bound and
 is not comparable with a full scan's.
 
+TLS 1.3 alone earns the full protocol dimension. TLS 1.2 alongside it is neither
+a bonus nor a penalty, so disabling TLS 1.2 does not cost points, and only
+deprecated versions deduct. Before 0.3.1 a TLS 1.3-only server was capped at 15
+of 25, which penalised the configuration the `strict` and `cnsa-2.0-2030`
+policies require.
+
 ### Quantum Readiness Grade
 
 Derived from the 0-100 quantum risk score, which is weighted 80 percent key

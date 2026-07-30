@@ -12,6 +12,29 @@ where noted; what changed is that a reader can now reconcile them.
 
 ### Fixed
 
+- **The CBOM did not validate against CycloneDX 1.6.** A scan of a host offering
+  any non-AEAD cipher suite produced a document declaring `specVersion: 1.6` that
+  no 1.6 validator would accept: `primitive: "cipher"` and `mode: "stream"` are
+  not members of their closed enums, and one non-member value invalidates the
+  whole document. A real scan of example.com produced 19 such errors. This was the
+  same defect 0.3.0 fixed for key exchange, where `"kex"` was emitted, one
+  function away. A suite with no separate MAC stays `ae`; one that carries a MAC is
+  classified by its cipher (`block-cipher` for AES and 3DES, `stream-cipher` for
+  ChaCha20 and RC4, `other` for anything unrecognised). The mode now comes from
+  the suite name, which carries it, instead of from the encryption summary, which
+  is `AES` for every CBC suite and so reported no mode for exactly the suites
+  whose mode matters. Verified against the published schema: 0 errors on
+  example.com, cloudflare.com and badssl.com.
+- **A TLS 1.3-only server was penalised for it.** The protocol dimension added 15
+  points for TLS 1.3 and a further 10 for TLS 1.2, so a server offering only TLS
+  1.3 could not score above 15 of 25, and turning TLS 1.2 off cost ten points of
+  the grade. That is the configuration the `strict` and `cnsa-2.0-2030` policies
+  require, so following this tool's own advice lowered its grade. TLS 1.3 now
+  carries the dimension on its own, TLS 1.2 alongside it is neither a bonus nor a
+  penalty, and only deprecated versions deduct. Measured across all sixteen
+  protocol combinations: four change and twelve do not, and all four are
+  configurations offering TLS 1.3 without TLS 1.2. Any server that still offers
+  TLS 1.2, which is every host checked, reports exactly the same grade as before.
 - **The score breakdown could not be added up to the score it sat under.** The
   vulnerability penalty was applied to the grade and never printed, so a
   breakdown reading `Protocol 10 + Cipher 15 + Certificate 25 + Quantum 16 = 66`
@@ -81,6 +104,13 @@ where noted; what changed is that a reader can now reconcile them.
 
 ### Changed
 
+- **The CycloneDX enum check reads the spec instead of a copy of it.** The schema
+  test hand-wrote the enum lists and validated a fixture holding one AEAD suite,
+  which is the single shape whose primitive was legal, so it passed for three
+  releases while the emitted document was invalid. The lists now come from a copy
+  of the published schema under `internal/reporter/testdata/cyclonedx/`, guarded
+  against being empty, truncated, or containing `"cipher"`, and a new table drives
+  every encryption value the scanner can assign with a MAC present and absent.
 - **CI fails when a test file is not tracked by git.** The `.gitignore` binary
   patterns were unanchored, so `tlsanalyzer` matched the `cmd/tlsanalyzer`
   directory as well as the built binary and excluded everything in it.
