@@ -359,7 +359,7 @@ func (r *TextReporter) printProtocols(w io.Writer, protocols []types.Protocol) {
 	for _, p := range protocols {
 		status := r.color(colorRed, "✗ Not Supported")
 		if p.Supported {
-			if p.Version == "TLS 1.0" || p.Version == "TLS 1.1" {
+			if types.IsDeprecatedProtocol(p.Version) {
 				status = r.color(colorYellow, "⚠ Supported (Deprecated)")
 			} else {
 				status = r.color(colorGreen, "✓ Supported")
@@ -417,11 +417,17 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold, "CERTIFICATE"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 
-	// Status
+	// Status. A certificate a client would refuse must not be headed "Valid":
+	// the name and chain checks are part of that verdict, not a footnote to it.
 	status := r.color(colorGreen, "✓ Valid")
-	if cert.Expired {
+	switch {
+	case cert.Expired:
 		status = r.color(colorRed, "✗ EXPIRED")
-	} else if cert.DaysUntilExpiry < 30 {
+	case cert.NameMatch == types.CheckFailed:
+		status = r.color(colorRed, "✗ NOT VALID FOR THIS NAME")
+	case cert.ChainTrust == types.CheckFailed:
+		status = r.color(colorRed, "✗ NOT TRUSTED")
+	case cert.DaysUntilExpiry < 30:
 		status = r.color(colorYellow, fmt.Sprintf("⚠ Expiring in %d days", cert.DaysUntilExpiry))
 	}
 
@@ -438,6 +444,20 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 		fmt.Fprintf(w, "    SANs:        %s\n", strings.Join(cert.SANs, ", "))
 	}
 
+	// Both checks are printed whatever their outcome, including when they did
+	// not run. A check whose result is absent from the report is a check the
+	// reader assumes passed.
+	fmt.Fprintf(w, "    Name check:  %s\n", r.certCheckLine(
+		cert.NameMatch,
+		"valid for "+cert.RequestedName,
+		cert.NameMismatchReason,
+		"not checked against any name"))
+	fmt.Fprintf(w, "    Chain trust: %s\n", r.certCheckLine(
+		cert.ChainTrust,
+		"chains to a root this host trusts",
+		cert.ChainTrustReason,
+		"not verified"))
+
 	if cert.IsSelfSigned {
 		fmt.Fprintf(w, "    %s\n", r.color(colorYellow, "    ⚠ Self-signed certificate"))
 	}
@@ -448,6 +468,22 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 		quantumStatus = r.color(colorGreen, "✓ Quantum Safe")
 	}
 	fmt.Fprintf(w, "    Quantum:     %s\n\n", quantumStatus)
+}
+
+// certCheckLine renders one certificate check in its own right, so that
+// "passed", "failed" and "did not run" are three visibly different answers.
+func (r *TextReporter) certCheckLine(result types.CheckResult, passed, failReason, notRun string) string {
+	switch result {
+	case types.CheckPassed:
+		return r.color(colorGreen, "✓ "+passed)
+	case types.CheckFailed:
+		if failReason == "" {
+			failReason = "failed"
+		}
+		return r.color(colorRed, "✗ "+failReason)
+	default:
+		return r.color(colorYellow, "? "+notRun)
+	}
 }
 
 func (r *TextReporter) printQuantumRisk(w io.Writer, qr types.QuantumRiskAssessment) {

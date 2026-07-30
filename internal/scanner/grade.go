@@ -316,6 +316,16 @@ func scoreCertificate(cert *types.Certificate) (int, int) {
 		return 0, maxScore // Expired = 0
 	}
 
+	// A certificate that is not valid for the name it was asked for, or that
+	// does not chain to a trusted root, cannot authenticate the connection at
+	// all: every client refuses it outright, exactly as it refuses an expired
+	// one. So the dimension scores zero for the same reason expiry does.
+	// wrong.host.badssl.com and untrusted-root.badssl.com both scored 25 of 25
+	// before this, which told an operator the certificate was perfect.
+	if cert.NameMatch == types.CheckFailed || cert.ChainTrust == types.CheckFailed {
+		return 0, maxScore
+	}
+
 	if cert.DaysUntilExpiry > 30 {
 		score += 5
 	}
@@ -449,13 +459,26 @@ func describeCertScore(cert *types.Certificate) string {
 	if cert.Expired {
 		return "Critical: Certificate has expired"
 	}
+	if cert.NameMatch == types.CheckFailed {
+		return "Critical: Certificate is not valid for " + cert.RequestedName
+	}
+	if cert.ChainTrust == types.CheckFailed {
+		return "Critical: Certificate does not chain to a trusted root"
+	}
 	if cert.DaysUntilExpiry < 30 {
 		return "Warning: Certificate expiring soon"
 	}
 	if cert.IsSelfSigned {
 		return "Note: Self-signed certificate"
 	}
-	return "Valid certificate from trusted CA"
+
+	// Say what was checked rather than asserting more than that. This line read
+	// "Valid certificate from trusted CA" while nothing verified the chain at
+	// all, so untrusted-root.badssl.com carried it too.
+	if cert.NameMatch == types.CheckPassed && cert.ChainTrust == types.CheckPassed {
+		return "Certificate is current, valid for " + cert.RequestedName + ", and chains to a trusted root"
+	}
+	return "Certificate is current; name or chain verification did not run"
 }
 
 func describeQuantumScore(qr types.QuantumRiskAssessment) string {

@@ -12,6 +12,7 @@ import (
 	"crypto/tls"
 	"crypto/x509"
 	"encoding/hex"
+	"errors"
 	"fmt"
 	"net"
 	"sort"
@@ -44,6 +45,12 @@ type Config struct {
 	CheckQuantum   bool
 	MinTLSVersion  uint16
 	MaxTLSVersion  uint16
+
+	// TrustRoots is the pool used to decide whether a presented certificate
+	// chain is trusted. nil means the scanning host's own trust store, which is
+	// what a client on that host would use. Tests set it so that the verdict
+	// does not depend on the trust store of the machine running them.
+	TrustRoots *x509.CertPool
 }
 
 // DefaultConfig returns sensible defaults.
@@ -178,6 +185,28 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 			"negotiated TLS 1.3 suite is reported. Some TLS 1.2 suites Go does not "+
 			"implement, such as the CBC-SHA256 and CBC-SHA384 families, cannot be "+
 			"probed either, so a server may accept suites that do not appear here.")
+
+	// The trust verdict depends on the machine the scan runs from, so say so.
+	// The same host can be trusted on one machine and untrusted on another, and
+	// a certificate issued by an internal CA is untrusted here unless that CA is
+	// installed locally.
+	if result.Certificate != nil {
+		result.ScanWarnings = append(result.ScanWarnings,
+			"the certificate chain is verified against the trust store of the machine running "+
+				"this scan, so a certificate issued by an internal CA is reported untrusted "+
+				"unless that CA is installed here")
+	}
+
+	// --sni asks the server for a different name than the target, so the
+	// certificate verdict is about that other name. Both appear in the report,
+	// but only together, so state the split rather than leaving a reader to
+	// notice that "Target: example.com" and "valid for cloudflare.com" are not
+	// the same claim.
+	if s.config.SNI != "" && !strings.EqualFold(s.config.SNI, host) {
+		result.ScanWarnings = append(result.ScanWarnings, fmt.Sprintf(
+			"--sni requested the certificate for %s, so the certificate checks answer for that "+
+				"name and not for the target %s", s.config.SNI, host))
+	}
 
 	if !s.config.CheckVulns {
 		result.ScanWarnings = append(result.ScanWarnings,
@@ -554,6 +583,14 @@ func (s *Scanner) probeConnection(ctx context.Context, host string, port int) (
 
 	if len(state.PeerCertificates) > 0 {
 		cert = parseCertificate(state.PeerCertificates[0])
+
+		// The handshake above deliberately skipped verification. Run the two
+		// checks it skipped, separately, so neither answer is inferred from the
+		// other and neither is silently absent.
+		verifyCertificateName(state.PeerCertificates[0], cert, cfg.ServerName)
+		verifyCertificateChain(
+			state.PeerCertificates[0], state.PeerCertificates[1:], cert, s.config.TrustRoots)
+
 		for _, c := range state.PeerCertificates[1:] {
 			chain = append(chain, *parseCertificate(c))
 		}
@@ -597,6 +634,82 @@ func (s *Scanner) getSNI(host string) string {
 		return s.config.SNI
 	}
 	return host
+}
+
+// verifyCertificateName records whether the leaf certificate is valid for the
+// name that was actually requested from the server.
+//
+// This is a name check only: it never consults a trust store, so it stays
+// independent of verifyCertificateChain and both can be reported separately.
+//
+// The authoritative name is the one sent in the ClientHello, which is the
+// --sni value when one was given and the target host otherwise. That is the
+// name the server was asked for, so it is the name its answer has to match,
+// and it keeps --sni usable as a deliberate virtual-host probe rather than as
+// a way to switch the check off. Before this existed, both
+// "tlsanalyzer wrong.host.badssl.com" and
+// "tlsanalyzer example.com --sni cloudflare.com" were reported as valid
+// certificates and awarded 25 of 25, while every browser rejects them.
+func verifyCertificateName(leaf *x509.Certificate, parsed *types.Certificate, requestedName string) {
+	parsed.RequestedName = requestedName
+
+	if requestedName == "" {
+		parsed.NameMatch = types.CheckNotPerformed
+		parsed.NameMismatchReason = "no name was requested, so there is nothing to verify against"
+		return
+	}
+
+	if err := leaf.VerifyHostname(requestedName); err != nil {
+		parsed.NameMatch = types.CheckFailed
+		parsed.NameMismatchReason = err.Error()
+		return
+	}
+
+	parsed.NameMatch = types.CheckPassed
+}
+
+// verifyCertificateChain records whether the presented chain builds to a root
+// the scanning host trusts, for server authentication.
+//
+// roots is nil in normal operation, which x509 reads as the host's own trust
+// store. Tests pass an explicit pool so the suite never depends on the trust
+// store of the machine it runs on.
+//
+// Expiry is deliberately not reported here. An expired certificate fails chain
+// verification too, and reporting that as a second, differently worded trust
+// failure would state one defect twice; expiry has its own finding and its own
+// place in the score.
+func verifyCertificateChain(
+	leaf *x509.Certificate,
+	intermediates []*x509.Certificate,
+	parsed *types.Certificate,
+	roots *x509.CertPool,
+) {
+	pool := x509.NewCertPool()
+	for _, c := range intermediates {
+		pool.AddCert(c)
+	}
+
+	_, err := leaf.Verify(x509.VerifyOptions{
+		Roots:         roots,
+		Intermediates: pool,
+		KeyUsages:     []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+	})
+	if err == nil {
+		parsed.ChainTrust = types.CheckPassed
+		return
+	}
+
+	var invalid x509.CertificateInvalidError
+	if errors.As(err, &invalid) && invalid.Reason == x509.Expired {
+		parsed.ChainTrust = types.CheckNotPerformed
+		parsed.ChainTrustReason = "not evaluated because the certificate is outside its validity period, " +
+			"which is reported on its own"
+		return
+	}
+
+	parsed.ChainTrust = types.CheckFailed
+	parsed.ChainTrustReason = err.Error()
 }
 
 // parseCertificate extracts relevant info from an x509 certificate.
@@ -644,6 +757,12 @@ func parseCertificate(cert *x509.Certificate) *types.Certificate {
 	daysUntilExpiry := int(cert.NotAfter.Sub(now).Hours() / 24)
 
 	return &types.Certificate{
+		// Both checks start as not performed. Only the leaf is checked, by the
+		// caller; a certificate in the presented chain keeps this state, so
+		// nothing anywhere can read an unchecked certificate as a passing one.
+		NameMatch:  types.CheckNotPerformed,
+		ChainTrust: types.CheckNotPerformed,
+
 		Subject:            cert.Subject.String(),
 		Issuer:             cert.Issuer.String(),
 		SerialNumber:       cert.SerialNumber.String(),

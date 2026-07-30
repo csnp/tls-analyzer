@@ -24,6 +24,11 @@ func (r *HTMLReporter) Report(w io.Writer, result *types.ScanResult) error {
 		"formatTime":    formatTime,
 		"progressBar":   progressBar,
 		"statusIcon":    statusIcon,
+		// The icon and the badge answer the same question, so they read the
+		// same predicate rather than each carrying its own copy of the version
+		// list.
+		"protocolIcon":         protocolIcon,
+		"isDeprecatedProtocol": types.IsDeprecatedProtocol,
 		// Shared with the text reporter so the two cannot describe the same
 		// deduction differently.
 		"describePenalties": describePenalties,
@@ -109,6 +114,22 @@ func statusIcon(supported bool) template.HTML {
 		return template.HTML(`<span class="status-icon status-good">✓</span>`)
 	}
 	return template.HTML(`<span class="status-icon status-bad">✗</span>`)
+}
+
+// protocolIcon distinguishes a protocol that is supported and current from one
+// that is supported and deprecated. Both used to render as the same green
+// check, so an HTML report showed TLS 1.0 and TLS 1.1 rows as good while the
+// text report called them deprecated and the vulnerability list flagged TLS 1.0
+// HIGH. The .status-warn class was already defined in the stylesheet and used
+// nowhere, so the warning styling was intended and lost.
+func protocolIcon(p types.Protocol) template.HTML {
+	if !p.Supported {
+		return template.HTML(`<span class="status-icon status-bad">✗</span>`)
+	}
+	if types.IsDeprecatedProtocol(p.Version) {
+		return template.HTML(`<span class="status-icon status-warn">⚠</span>`)
+	}
+	return template.HTML(`<span class="status-icon status-good">✓</span>`)
 }
 
 const htmlTemplate = `<!DOCTYPE html>
@@ -473,10 +494,10 @@ const htmlTemplate = `<!DOCTYPE html>
                     {{range .Protocols}}
                     <tr>
                         <td>{{.Version}}</td>
-                        <td>{{statusIcon .Supported}}</td>
+                        <td>{{protocolIcon .}}</td>
                         <td>
                             {{if .Preferred}}<span class="badge" style="background:#2d3748">Preferred</span>{{end}}
-                            {{if and .Supported (or (eq .Version "TLS 1.0") (eq .Version "TLS 1.1"))}}
+                            {{if and .Supported (isDeprecatedProtocol .Version)}}
                             <span class="badge severity-medium">Deprecated</span>
                             {{end}}
                         </td>

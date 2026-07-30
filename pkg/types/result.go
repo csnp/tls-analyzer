@@ -91,6 +91,20 @@ type Protocol struct {
 	Preferred bool   `json:"preferred,omitempty"`
 }
 
+// IsDeprecatedProtocol reports whether a protocol version is deprecated for
+// use. It lives here so that the text report, the HTML report and the
+// vulnerability checks answer the question from one place and cannot disagree
+// about the same row: the HTML report painted TLS 1.0 and TLS 1.1 with the same
+// green check as TLS 1.3, while the text report marked them "Supported
+// (Deprecated)" and the vulnerability list flagged TLS 1.0 as HIGH.
+func IsDeprecatedProtocol(version string) bool {
+	switch version {
+	case "SSL 3.0", "TLS 1.0", "TLS 1.1":
+		return true
+	}
+	return false
+}
+
 // CipherSuite represents a TLS cipher suite.
 type CipherSuite struct {
 	ID               uint16 `json:"id"`
@@ -140,7 +154,52 @@ type Certificate struct {
 	DaysUntilExpiry    int          `json:"daysUntilExpiry"`
 	Expired            bool         `json:"expired"`
 	Fingerprints       Fingerprints `json:"fingerprints"`
+
+	// RequestedName is the name that was asked of the server, which is the
+	// --sni value when one was given and the target host otherwise. It is the
+	// name NameMatch is a verdict about.
+	RequestedName string `json:"requestedName,omitempty"`
+
+	// NameMatch reports whether this certificate is valid for RequestedName.
+	// Only the leaf is checked against a name; every certificate in the
+	// presented chain carries CheckNotPerformed.
+	NameMatch CheckResult `json:"nameMatch,omitempty"`
+
+	// NameMismatchReason states why the certificate is not valid for
+	// RequestedName, so the report can explain the verdict rather than assert it.
+	NameMismatchReason string `json:"nameMismatchReason,omitempty"`
+
+	// ChainTrust reports whether the presented chain builds to a root the
+	// scanning host trusts, for server authentication. It is an independent
+	// question from NameMatch, and the report must not answer one by the other.
+	ChainTrust CheckResult `json:"chainTrust,omitempty"`
+
+	// ChainTrustReason states why the chain was not trusted, or why the check
+	// was not performed.
+	ChainTrustReason string `json:"chainTrustReason,omitempty"`
 }
+
+// CheckResult is the outcome of a certificate check that has three states, so
+// that "not checked" can never be read as "passed".
+//
+// The scanner handshakes with verification disabled on purpose: it has to be
+// able to connect to and describe an expired, self-signed or untrusted
+// certificate, which a verifying client would refuse outright. Disabling
+// verification also silently disabled the name and trust checks, so a
+// certificate issued for a different host, and a certificate from a root
+// nothing trusts, were both reported as valid and awarded the full certificate
+// score. These fields carry each check's own answer instead.
+type CheckResult string
+
+const (
+	// CheckPassed means the check ran and the certificate satisfied it.
+	CheckPassed CheckResult = "passed"
+	// CheckFailed means the check ran and the certificate did not satisfy it.
+	CheckFailed CheckResult = "failed"
+	// CheckNotPerformed means the check did not run, so its result is unknown
+	// rather than favourable.
+	CheckNotPerformed CheckResult = "notPerformed"
+)
 
 // Fingerprints contains certificate fingerprints.
 type Fingerprints struct {

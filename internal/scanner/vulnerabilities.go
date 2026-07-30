@@ -1,6 +1,8 @@
 package scanner
 
 import (
+	"fmt"
+
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
@@ -122,6 +124,44 @@ func (s *Scanner) checkVulnerabilities(result *types.ScanResult) []types.Vulnera
 				Severity:    types.SeverityMedium,
 				Description: "The certificate will expire in less than 30 days.",
 				Remediation: "Plan certificate renewal before expiration.",
+			})
+		}
+
+		// Certificate presented for a different name
+		if cert.NameMatch == types.CheckFailed {
+			vulns = append(vulns, types.Vulnerability{
+				ID:       "CERT_NAME_MISMATCH",
+				Name:     "Certificate Name Mismatch",
+				Severity: types.SeverityHigh,
+				Description: fmt.Sprintf(
+					"The certificate served for %s is not valid for that name (%s). A client "+
+						"that verifies the connection refuses it, so this name cannot be reached "+
+						"over TLS by a normal browser or API client.",
+					cert.RequestedName, cert.NameMismatchReason),
+				Remediation: fmt.Sprintf(
+					"Install a certificate whose subject alternative names include %s, or point "+
+						"clients at a name the presented certificate already covers.",
+					cert.RequestedName),
+			})
+		}
+
+		// Chain does not build to a trusted root. Reported only when the
+		// certificate is not self-signed, because the self-signed finding below
+		// is the more specific diagnosis of the same condition and stating it
+		// twice would deduct twice for one decision.
+		if cert.ChainTrust == types.CheckFailed && !cert.IsSelfSigned {
+			vulns = append(vulns, types.Vulnerability{
+				ID:       "CERT_CHAIN_UNTRUSTED",
+				Name:     "Certificate Chain Not Trusted",
+				Severity: types.SeverityHigh,
+				Description: fmt.Sprintf(
+					"The presented certificate chain does not build to a root in this host's "+
+						"trust store (%s). A client that verifies the connection refuses it.",
+					cert.ChainTrustReason),
+				Remediation: "Serve the full chain including every intermediate, and use a " +
+					"certificate from a CA the intended clients trust. If this host is served " +
+					"by an internal CA, that CA has to be installed in the trust store of the " +
+					"machine running the scan for this check to pass.",
 			})
 		}
 
