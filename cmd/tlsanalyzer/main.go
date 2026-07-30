@@ -180,29 +180,23 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
+	// Validate the flag values before anything else, so that an unusable value is
+	// reported as such whether or not a target was supplied. Checking targets
+	// first meant "tlsanalyzer --concurrency 0" answered "no targets specified"
+	// and said nothing about the concurrency.
+	if err := validateFlags(cmd); err != nil {
+		return err
+	}
+
 	if len(targets) == 0 {
 		return fmt.Errorf("no targets specified. Use 'tlsanalyzer example.com' or '--targets file.txt'")
 	}
 
-	// Reject an unrecognized format rather than falling back to text. A
-	// pipeline asking for "--format JSON" previously received a text report and
-	// a success exit code, so the mistake was invisible until something
-	// downstream failed to parse it.
-	if err := validateFormat(outputFormat); err != nil {
-		return err
-	}
-
 	// Apply --port only when the user actually passed it, so that targets
 	// written as host:port keep working and the default never silently
-	// rewrites them.
-	//
-	// The value is range-checked here, before any network work, so that the error
-	// names the flag. A port written into the target itself is checked by the
+	// rewrites them. A port written into the target itself is checked by the
 	// scanner when it parses the target, which is the one place both routes meet.
 	if cmd.Flags().Changed("port") {
-		if err := scanner.ValidatePort(port); err != nil {
-			return fmt.Errorf("--port: %w", err)
-		}
 		for i, target := range targets {
 			targets[i] = applyPortOverride(target, port)
 		}
@@ -401,7 +395,33 @@ func scanBatchTargets(ctx context.Context, scan scanFunc, cnsa2 *analyzer.CNSA2A
 		}
 	}
 
-	return nil
+	return batchOutcome(results)
+}
+
+// batchOutcome fails the run when any target could not be scanned.
+//
+// Batch mode exited 0 with nothing on stderr even when every target failed, so
+// "tlsanalyzer --targets hosts.txt && deploy" proceeded on a sweep that measured
+// nothing. The single-target path has always exited non-zero for the same
+// failure; this makes the two agree.
+func batchOutcome(results []*types.ScanResult) error {
+	failed := make([]string, 0, len(results))
+	for _, result := range results {
+		if result != nil && result.Error != "" {
+			failed = append(failed, result.Target)
+		}
+	}
+
+	switch len(failed) {
+	case 0:
+		return nil
+	case len(results):
+		return fmt.Errorf("no targets could be scanned (%d of %d failed): %s",
+			len(failed), len(results), strings.Join(failed, ", "))
+	default:
+		return fmt.Errorf("%d of %d targets could not be scanned: %s",
+			len(failed), len(results), strings.Join(failed, ", "))
+	}
 }
 
 // applyPortOverride attaches the --port value to a target.
@@ -449,6 +469,40 @@ func collectTargets(args []string) ([]string, error) {
 	}
 
 	return targets, nil
+}
+
+// validateFlags rejects every flag value the tool cannot act on, before any
+// target is resolved or any connection is attempted.
+//
+// --port was the only numeric flag that was checked. --concurrency 0 hung
+// forever on an unbuffered semaphore with nothing on either stream,
+// --concurrency -1 panicked out of make() with a Go stack trace that also printed
+// absolute source paths, and --timeout 0 or a negative value meant no timeout at
+// all, so a single unresponsive host wedged an entire sweep.
+func validateFlags(cmd *cobra.Command) error {
+	// Reject an unrecognized format rather than falling back to text. A pipeline
+	// asking for "--format JSON" previously received a text report and a success
+	// exit code, so the mistake was invisible until something downstream failed
+	// to parse it.
+	if err := validateFormat(outputFormat); err != nil {
+		return err
+	}
+
+	if cmd.Flags().Changed("port") {
+		if err := scanner.ValidatePort(port); err != nil {
+			return fmt.Errorf("--port: %w", err)
+		}
+	}
+
+	if concurrency < 1 {
+		return fmt.Errorf("--concurrency: invalid value %d: must be at least 1", concurrency)
+	}
+
+	if timeout < 1 {
+		return fmt.Errorf("--timeout: invalid value %d: must be at least 1 second", timeout)
+	}
+
+	return nil
 }
 
 // supportedFormats lists the accepted --format values, in help-text order.

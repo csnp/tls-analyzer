@@ -5,6 +5,7 @@ import (
 	"context"
 	"encoding/json"
 	"reflect"
+	"strings"
 	"testing"
 	"time"
 
@@ -112,5 +113,105 @@ func TestBatchOutputKeepsFailedTargetsInPlace(t *testing.T) {
 	if !reflect.DeepEqual(reported, batchTargets) {
 		t.Errorf("a failed target moved the surrounding rows:\n  got  %v\n  want %v",
 			reported, batchTargets)
+	}
+}
+
+// TestBatchFailsWhenATargetCouldNotBeScanned guards the defect where a sweep
+// exited 0 with nothing on stderr even when every target failed, so
+// "tlsanalyzer --targets hosts.txt && deploy" proceeded on a scan that measured
+// nothing. The single-target path has always exited non-zero for the same
+// failure.
+func TestBatchFailsWhenATargetCouldNotBeScanned(t *testing.T) {
+	tests := []struct {
+		name      string
+		failing   map[string]bool
+		wantError bool
+		wantNames []string
+	}{
+		{"all succeed", nil, false, nil},
+		{"one fails", map[string]bool{batchTargets[2]: true}, true, []string{batchTargets[2]}},
+		{"all fail", map[string]bool{
+			batchTargets[0]: true, batchTargets[1]: true, batchTargets[2]: true,
+			batchTargets[3]: true, batchTargets[4]: true, batchTargets[5]: true,
+		}, true, batchTargets},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			results := make([]*types.ScanResult, 0, len(batchTargets))
+			for _, target := range batchTargets {
+				result := &types.ScanResult{Target: target}
+				if tt.failing[target] {
+					result.Error = "cannot resolve " + target
+				}
+				results = append(results, result)
+			}
+
+			err := batchOutcome(results)
+			if tt.wantError && err == nil {
+				t.Fatalf("batchOutcome returned no error with %d failing targets", len(tt.failing))
+			}
+			if !tt.wantError {
+				if err != nil {
+					t.Fatalf("batchOutcome failed a run where every target succeeded: %v", err)
+				}
+				return
+			}
+
+			// The message has to name what failed, or an operator cannot act on it.
+			for _, name := range tt.wantNames {
+				if !strings.Contains(err.Error(), name) {
+					t.Errorf("the error does not name the failed target %q: %v", name, err)
+				}
+			}
+		})
+	}
+}
+
+// TestNumericFlagBoundsAreValidated pins the bounds on the flags that could take
+// an unusable value. --concurrency 0 hung forever on an unbuffered semaphore with
+// nothing on either stream, --concurrency -1 panicked out of make() with a stack
+// trace that printed absolute source paths, and --timeout 0 or negative meant no
+// timeout at all, so one unresponsive host wedged a whole sweep.
+func TestNumericFlagBoundsAreValidated(t *testing.T) {
+	previousConcurrency, previousTimeout := concurrency, timeout
+	defer func() { concurrency, timeout = previousConcurrency, previousTimeout }()
+
+	tests := []struct {
+		name                 string
+		concurrency, timeout int
+		wantRefused          bool
+	}{
+		{"defaults accepted", 10, 30, false},
+		{"minimum accepted", 1, 1, false},
+		{"zero concurrency refused", 0, 30, true},
+		{"negative concurrency refused", -1, 30, true},
+		{"zero timeout refused", 10, 0, true},
+		{"negative timeout refused", 10, -5, true},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.name, func(t *testing.T) {
+			concurrency, timeout = tt.concurrency, tt.timeout
+
+			// runScan reaches the bounds checks before any network work, so an
+			// empty target list is enough to exercise them: a refused value must
+			// fail on its own message, not on "no targets specified".
+			err := runScan(rootCmd, nil)
+			if err == nil {
+				t.Fatal("runScan returned no error at all")
+			}
+
+			named := strings.Contains(err.Error(), "--concurrency") ||
+				strings.Contains(err.Error(), "--timeout")
+			if tt.wantRefused && !named {
+				t.Errorf("concurrency %d / timeout %d was not refused by name; got: %v",
+					tt.concurrency, tt.timeout, err)
+			}
+			if !tt.wantRefused && named {
+				t.Errorf("a valid concurrency %d / timeout %d was refused: %v",
+					tt.concurrency, tt.timeout, err)
+			}
+		})
 	}
 }

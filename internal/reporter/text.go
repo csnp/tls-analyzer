@@ -28,6 +28,22 @@ const (
 
 // Report writes the scan result as formatted text.
 func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
+	// A target that could not be scanned has no measurements, so it gets no
+	// report. Batch mode records the failure on the result and carried on to the
+	// grade block, which rendered a zero-valued assessment as a finished
+	// assessment: "TLS Security: (0/100)" with a blank letter, "Quantum Score:
+	// 0/100" and an unticked "Hybrid PQC Key Exchange", for a host that was never
+	// reached. In a --targets sweep every typo or DNS blip became a confident
+	// failing row, which is the same defect 0.3.0 fixed for the single-target
+	// path and which survived in batch because the error travels on the result
+	// rather than as a returned error. JSON carried the reason all along; text,
+	// the default format, discarded it.
+	if result.Error != "" {
+		r.printHeader(w, result)
+		r.printScanError(w, result.Error)
+		return nil
+	}
+
 	// Header
 	r.printHeader(w, result)
 
@@ -80,6 +96,19 @@ func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
 	}
 
 	return nil
+}
+
+// printScanError renders the reason a target produced no measurements.
+func (r *TextReporter) printScanError(w io.Writer, message string) {
+	fmt.Fprintf(w, "%s\n", r.color(colorBold, strings.Repeat("─", 63)))
+	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorRed, "NOT SCANNED"))
+	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, strings.Repeat("─", 63)))
+
+	for _, line := range wrapText(message, 59) {
+		fmt.Fprintf(w, "    %s\n", line)
+	}
+	fmt.Fprintf(w, "\n    %s\n\n", r.color(colorDim,
+		"No grade is reported for this target, because nothing was measured."))
 }
 
 // printScope renders a wrapped scope note under a section heading.

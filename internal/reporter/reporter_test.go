@@ -386,3 +386,75 @@ func TestHTMLReporterFormat(t *testing.T) {
 		t.Errorf("HTMLReporter.Format() = %s, want html", r.Format())
 	}
 }
+
+// TestTextReporterDoesNotGradeAnUnscannedTarget guards the defect where batch
+// mode rendered a host it never reached as a finished assessment.
+//
+// The error travels on the result rather than as a returned error, so the grade
+// block ran on a zero-valued Grade and printed "TLS Security: (0/100)" with a
+// blank letter, a quantum score of 0 and an unticked hybrid PQC line, for a host
+// that did not resolve. In a --targets sweep every typo or DNS blip became a
+// confident failing row. JSON carried the reason all along; text, the default
+// format, discarded it.
+func TestTextReporterDoesNotGradeAnUnscannedTarget(t *testing.T) {
+	result := &types.ScanResult{
+		Target:    "nonexistent.invalid",
+		Host:      "nonexistent.invalid",
+		Timestamp: time.Now(),
+		Error:     "cannot resolve nonexistent.invalid: no such host",
+	}
+
+	var buf bytes.Buffer
+	if err := (&TextReporter{NoColor: true}).Report(&buf, result); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	out := buf.String()
+
+	// The reason must reach the default format.
+	if !strings.Contains(out, "cannot resolve nonexistent.invalid") {
+		t.Error("the text report does not state why the target was not scanned, so a " +
+			"reader of the default format cannot tell a failure from a finding")
+	}
+
+	// And nothing that reads as a measurement may appear.
+	for _, forbidden := range []string{
+		"TLS Security:",
+		"Score Breakdown",
+		"Dimension subtotal",
+		"Quantum Score",
+		"OVERALL GRADE",
+	} {
+		if strings.Contains(out, forbidden) {
+			t.Errorf("a target that was never reached still prints %q, which presents an "+
+				"unmeasured host as a graded one", forbidden)
+		}
+	}
+
+	// Specifically: the skipped-checks label must not appear. A zero-valued Grade
+	// leaves VulnerabilitiesAssessed false, which made an error row claim
+	// "upper bound, vulnerability checks skipped" when no such flag was passed.
+	if strings.Contains(strings.ToLower(out), "upper bound") {
+		t.Error("an unscanned target is labelled an upper bound, which describes a flag " +
+			"the user never passed")
+	}
+
+	// Acceptance control: a real result must still be graded, or the guard above
+	// is satisfied by never printing a grade at all.
+	scanned := &types.ScanResult{
+		Target:    "example.com",
+		Timestamp: time.Now(),
+		Protocols: []types.Protocol{{Version: "TLS 1.3", Supported: true}},
+		Grade: types.Grade{
+			Letter: "A", Score: 91, QuantumGrade: "Q",
+			DimensionScore: 91, DimensionPoints: 91, DimensionMaxPoints: 100,
+			VulnerabilitiesAssessed: true,
+		},
+	}
+	var scannedBuf bytes.Buffer
+	if err := (&TextReporter{NoColor: true}).Report(&scannedBuf, scanned); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	if !strings.Contains(scannedBuf.String(), "TLS Security:") {
+		t.Error("a scanned target no longer prints a grade, so the error-path guard is too broad")
+	}
+}
