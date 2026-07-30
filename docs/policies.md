@@ -92,6 +92,9 @@ rules:
       - SSL 3.0
       - TLS 1.0
       - TLS 1.1
+
+    # Highest acceptable TLS version
+    maxVersion: TLS 1.3
 ```
 
 ### Cipher Rules
@@ -119,10 +122,16 @@ rules:
       - TLS_RSA_WITH_AES_128_CBC_SHA
       - TLS_RSA_WITH_AES_256_CBC_SHA
 
-    # Cipher suites that SHOULD be preferred
-    preferredCipherSuites:
+    # Only these cipher suites are acceptable. Leave unset to allow any suite
+    # that satisfies the other rules.
+    allowedCipherSuites:
       - TLS_AES_256_GCM_SHA384
       - TLS_CHACHA20_POLY1305_SHA256
+
+    # At least one of these key exchange algorithms must be available
+    requiredKeyExchange:
+      - X25519MLKEM768
+      - SecP384r1MLKEM1024
 ```
 
 ### Certificate Rules
@@ -142,6 +151,10 @@ rules:
     # Minimum ECC key size in bits
     minEccKeySize: 256
 
+    # Signature algorithms the certificate must use one of
+    requiredSignatureAlgorithms:
+      - ECDSA-SHA384
+
     # Signature algorithms to ban
     bannedSignatureAlgorithms:
       - SHA1
@@ -152,7 +165,7 @@ rules:
     allowSelfSigned: false
 
     # Require certificate transparency
-    requireCT: true
+    requireCt: true
 ```
 
 ### Quantum Rules
@@ -163,8 +176,9 @@ rules:
     # Require hybrid PQC key exchange
     requireHybridKeyExchange: true
 
-    # Require full PQC (no classical fallback)
-    requireFullPqc: false
+    # Require a post-quantum certificate signature. No publicly trusted CA
+    # issues one yet, so this raises a warning rather than a violation.
+    requirePqcCertificates: false
 
     # Minimum quantum readiness score (0-100)
     minQuantumScore: 50
@@ -177,11 +191,18 @@ rules:
       - ML-KEM-768
       - ML-KEM-1024
       - X25519MLKEM768
+```
 
-    # Required signature algorithms
-    requiredSignatureAlgorithms:
-      - ML-DSA-65
-      - ML-DSA-87
+Certificate signature requirements live under `rules.certificate`, not here.
+
+### Scoring weights
+
+```yaml
+weights:
+  protocol: 25
+  cipher: 25
+  certificate: 25
+  quantum: 25
 ```
 
 ## Complete Example
@@ -215,7 +236,7 @@ rules:
       - EXPORT
       - NULL
       - ANON
-    preferredCipherSuites:
+    allowedCipherSuites:
       - TLS_AES_256_GCM_SHA384
       - TLS_CHACHA20_POLY1305_SHA256
       - TLS_ECDHE_ECDSA_WITH_AES_256_GCM_SHA384
@@ -230,7 +251,7 @@ rules:
       - SHA1
       - MD5
     allowSelfSigned: false
-    requireCT: true
+    requireCt: true
 
   quantum:
     requireHybridKeyExchange: false
@@ -263,16 +284,36 @@ extends: strict
 
 rules:
   certificate:
-    minRsaKeySize: 4096
-    minEccKeySize: 384
+    minValidityDays: 90
+    maxValidityDays: 397
+    requireCt: true
 ```
+
+Every key the file sets wins; every key it omits is inherited from the base
+policy. Above, the certificate validity and transparency requirements are this
+file's, and the protocol, cipher and quantum rules are `strict`'s.
+
+Run `tlsanalyzer print-policy strict` to see exactly what is being inherited.
 
 ## Compliance Checking in CI/CD
 
+`tlsanalyzer` exits non-zero when a policy is not satisfied, so it can gate a
+pipeline directly:
+
+| Exit code | Meaning |
+|-----------|---------|
+| 0 | Scanned, and any policy applied was fully evaluated and satisfied |
+| 1 | The scan could not be completed |
+| 2 | A policy was applied and the target did not satisfy it, or the policy could not be fully evaluated |
+
+Exit code 2 also covers an evaluation that skipped a rule, because a verdict
+that skipped rules has established compliance with the part of the policy that
+ran and not with the policy. The report lists any such rule under
+"Not evaluated".
+
 ```bash
-# Exit with error if non-compliant
-tlsanalyzer api.example.com --policy-file my-policy.yaml --format json | \
-  jq -e '.policyResult.compliant == true'
+# Fails the job when the policy is not satisfied
+tlsanalyzer api.example.com --policy-file my-policy.yaml
 
 # Get compliance score
 SCORE=$(tlsanalyzer api.example.com --policy-file my-policy.yaml --format json | \
@@ -286,15 +327,30 @@ tlsanalyzer api.example.com --policy-file my-policy.yaml --format json | \
 
 ## Policy Validation
 
-Before using a custom policy, validate its syntax:
+A policy file is checked before any scan runs, and a policy that could not be
+understood is refused rather than applied. Refused: a file with no YAML
+document, a policy with no `name`, a policy with no rules after any inheritance,
+a key the schema does not define, and an `extends` naming a policy that does not
+exist.
+
+This matters because the alternative is worse than an error. An empty file used
+to report `COMPLIANT 100/100` and exit 0 on a host that `--policy strict` failed
+with 35 violations at the same moment, and a file whose keys were all misspelled
+did the same.
 
 ```bash
-# The tool will report YAML parsing errors
+# Print a built-in policy in exactly the shape --policy-file accepts
+tlsanalyzer print-policy strict > my-policy.yaml
+
+# Any problem with the file is reported before the scan, naming the YAML path
 tlsanalyzer example.com --policy-file my-policy.yaml
 
-# Check policy loading
-tlsanalyzer policies  # Lists built-in policies
+# List the built-in policies
+tlsanalyzer policies
 ```
+
+`--policy` and `--policy-file` both name a policy, so passing both is an error
+rather than one silently winning.
 
 ## Best Practices
 

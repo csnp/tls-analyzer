@@ -5,12 +5,108 @@ All notable changes to QRAMM TLS Analyzer are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.3.1] - 2026-07-30
+## [0.4.0] - 2026-07-30
 
-Reporting release. The verdicts and scores a scan produces are unchanged except
-where noted; what changed is that a reader can now reconcile them.
+**A minor version rather than a patch, because three things a user can depend on
+change.** A policy that is not satisfied now exits 2 where it exited 0, so a CI
+job that passed can start failing, which is the point. A policy file with an
+unknown key, no name or no rules is refused where it was accepted and reported
+compliant. And a certificate that is not valid for the name it was served for,
+or that does not chain to a trusted root, scores zero for its dimension where it
+scored full marks, which can move the letter grade. A patch number would tell an
+operator this upgrade is safe to take unattended, and it is not.
+
+The release began as a reporting release: the score breakdown now reconciles,
+the CNSA 2.0 verdicts state their differing scope, and batch output is
+deterministic. Two gate runs then found six fail-open defects in the analysis
+itself, and those are what set the version.
 
 ### Fixed
+
+- **The certificate name and chain were asserted, not verified.** The scanner
+  handshakes with verification disabled on purpose, so it can connect to and
+  describe a certificate a verifying client would refuse. Nothing replaced the
+  two checks that disabling verification skipped, so both of these were reported
+  as perfect: `tlsanalyzer wrong.host.badssl.com` gave `Certificate 25/25` and
+  `Status: Valid` for a certificate whose only names are `*.badssl.com` and
+  `badssl.com`, and `tlsanalyzer untrusted-root.badssl.com` gave
+  `Certificate 25/25` and "Valid certificate from trusted CA" for a chain built
+  on a root nothing trusts. openssl answers `verify error:num=62:hostname
+  mismatch` and `verify error:num=19` for the same two hosts. Reproducible
+  without badssl as `tlsanalyzer example.com --sni cloudflare.com`. Both checks
+  now run as separate questions with separate answers, and each is printed
+  whatever its outcome including when it did not run. Either failing scores the
+  certificate dimension zero, as expiry already did. The authoritative name is
+  the one sent in the ClientHello, which is the `--sni` value when given and the
+  target otherwise; when the two differ a scan warning names both. Chain trust is
+  decided against the trust store of the machine running the scan, which a scan
+  warning also states. Measured on five well-configured public hosts: grade and
+  certificate score unchanged, both checks passing.
+- **An empty or unparseable `--policy-file` reported `COMPLIANT 100/100`.** An
+  empty file produced `{"policyName": "", "compliant": true, "score": 100}` and
+  exit 0 on a host that `--policy strict` failed with 35 HIGH violations at the
+  same moment, and a file whose keys were all misspelled did the same, because
+  unknown keys were ignored. Refused now, each with a reason and a next step: no
+  YAML document, no `name`, no rules after inheritance, an unknown key, or an
+  `extends` naming a policy that does not exist. Parse errors name the YAML path
+  rather than the Go type, so the tool's own diagnostics are no longer where the
+  schema leaks.
+- **`extends` silently discarded most of the policy file.** The merge copied a
+  hand-picked eight rule fields; measured against the current schema it dropped
+  13 of 16 overridden fields plus the whole `weights` block, so a file extending
+  `modern` to ban AES, require an 8192-bit RSA key or forbid a signature
+  algorithm was accepted, reported under its own name, and evaluated against the
+  base policy's looser rules. The overlay is applied by decoding the document
+  onto a copy of the base now, so it cannot drift as rule fields are added. The
+  inheritance example in `docs/policies.md` was one of the cases that did not
+  work.
+- **`docs/policies.md` documented four keys that do not exist.**
+  `cipher.preferredCipherSuites`, `quantum.requireFullPqc`,
+  `quantum.requiredSignatureAlgorithms` and `certificate.requireCT` (the tag is
+  `requireCt`) were all silently ignored, so a policy written from the complete
+  example in that document applied fewer rules than it appeared to. Now that
+  unknown keys are refused, such a policy would be rejected outright, so the
+  document is corrected and two tests keep it honest: every YAML block in it is
+  put through the real loader, and every key in the schema has to appear in it.
+  Five keys the schema defines were also missing from the document.
+- **A policy rule whose input was never measured was failed as if it were zero.**
+  `tlsanalyzer google.com --skip-quantum --policy cnsa-2.0-2035` printed
+  `Quantum Ready: not assessed` and `[HIGH] Quantum readiness score below
+  minimum, Expected: >= 90 | Actual: 0` in the same report, against a host whose
+  full scan reports 64. The assessment now records whether it ran; the rule is
+  skipped and named, with its reason, and the whole verdict is marked
+  incomplete. That matters because the policy score deducts from 100, so a rule
+  that is not evaluated can only raise it: measured on the same host and policy,
+  the skipped run scores higher, and both the status and the score now say the
+  number is not comparable.
+- **Three more consumers read the same unmeasured value as a measurement.**
+  Sweeping every reader of the quantum score found the SARIF reporter publishing
+  a `QUANTUM_VULNERABLE` finding with an empty message into the format CI systems
+  act on, and the HTML report drawing a Quantum Risk Assessment section with an
+  empty risk level badge styled as low risk and a score of 0 out of 100. Both are
+  guarded, and `riskClass` no longer returns the reassuring class for a level it
+  does not recognise. A cross-surface test now asserts over text, JSON, SARIF and
+  HTML at once.
+- **`--policy` non-compliance exited 0, so no CI gate was possible.** The tool
+  could report 35 HIGH violations and let a pipeline through, and the exit codes
+  were documented nowhere. A policy that is not satisfied, or that could not be
+  fully evaluated, exits 2 now; a scan that could not complete exits 1; both are
+  documented in `--help`, the README and `docs/policies.md`. A scan failure
+  outranks the policy gate, because a target that was never reached carries no
+  verdict.
+- **A batch sweep in `--format json` exited 0 with an unreachable target**, while
+  the same sweep in text format exited 1. Released 0.3.0 exits 0 in both formats,
+  so this release's own batch fix had landed on one of the two output paths.
+- **The HTML report painted supported TLS 1.0 and TLS 1.1 rows with the same
+  green check as TLS 1.3**, while the text report marked them "Supported
+  (Deprecated)" and the vulnerability list flagged TLS 1.0 HIGH. The
+  `.status-warn` class was defined in the stylesheet and used nowhere, so the
+  warning styling was intended and lost. The icon and the badge now read one
+  shared predicate, asserted against both reports.
+- **The text report discarded the per-violation remediation that JSON carried**,
+  so the default output named every problem and no fix.
+- **`--policy` and `--policy-file` both named a policy and only one was applied**,
+  with nothing saying which. Passing both is an error.
 
 - **The CBOM did not validate against CycloneDX 1.6.** A scan of a host offering
   any non-AEAD cipher suite produced a document declaring `specVersion: 1.6` that
@@ -126,13 +222,28 @@ where noted; what changed is that a reader can now reconcile them.
 
 ### Added
 
+- **`tlsanalyzer print-policy <name>`** prints a built-in policy in exactly the
+  shape `--policy-file` accepts. That matters more now that unknown keys are
+  refused: a user needs a correct starting point, not just a stricter parser. All
+  five built-in policies round-trip through it back into the loader.
 - **Releases now publish `checksums.txt`.** Up to 0.3.0 a release carried five
   archives and nothing else, so a downloaded archive could not be checked against
   anything. Download the archives and the file into one directory and run
-  `shasum -a 256 -c checksums.txt`.
+  `shasum -a 256 -c --ignore-missing checksums.txt`. The flag is required:
+  without it the archives you did not download are reported as failures and the
+  command exits 1.
 
 ### Changed
 
+- **The suite reported for TLS 1.3 is marked as the one this scan negotiated.**
+  Go offers all three TLS 1.3 suites and ignores per-suite configuration, so the
+  suite reported is chosen by this scanner's client preference and not the
+  server's. Measured against openssl 3.6.1: example.com, cloudflare.com and
+  google.com each negotiate `TLS_AES_256_GCM_SHA384` with a client that offers
+  AES-256 first, while this scanner reports `TLS_AES_128_GCM_SHA256` for all
+  three. The verdict is unchanged, since a server that accepts a 128-bit suite is
+  reported as accepting one; what changes is that the evidence no longer claims
+  to be the server's preference.
 - **The CycloneDX enum check reads the spec instead of a copy of it.** The schema
   test hand-wrote the enum lists and validated a fixture holding one AEAD suite,
   which is the single shape whose primitive was legal, so it passed for three

@@ -62,7 +62,36 @@ A score that does not match intuition is a broken score, not a finding.
 - [ ] `publicKeyBits` is non-zero and matches
       `openssl x509 -noout -text | grep "Public-Key"` for both an EC and an RSA
       certificate. EC certificates previously reported 0.
-- [ ] `TLS_AES_128_GCM_SHA256` reports `bits: 128`, not 256.
+- [ ] `TLS_AES_128_GCM_SHA256` reports `bits: 128`, not 256, and is marked
+      `negotiated: true`. It is the suite this scanner's client preference
+      selects, not the server's: openssl offering AES-256 first negotiates
+      `TLS_AES_256_GCM_SHA384` with the same host. A scan warning has to say so.
+
+### 5a. The two checks a disabled handshake verification would skip
+
+The scanner handshakes with verification off on purpose. Both checks it would
+otherwise skip have to run, and each must be reported whatever its outcome.
+
+- [ ] `tlsanalyzer wrong.host.badssl.com` reports the name check as failed, the
+      certificate dimension as `0/25`, and a `CERT_NAME_MISMATCH` HIGH finding.
+      Ground truth: `echo | openssl s_client -connect wrong.host.badssl.com:443
+      -servername wrong.host.badssl.com -verify_hostname wrong.host.badssl.com`
+      reports `verify error:num=62:hostname mismatch`. Note the flag:
+      `s_client` does not verify the hostname without it and reports
+      `Verification: OK`, which looks exactly like the tool being right.
+- [ ] Positive control on the same certificate:
+      `-verify_hostname badssl.com` reports `Verification: OK`.
+- [ ] `tlsanalyzer untrusted-root.badssl.com` reports the chain as not trusted,
+      the certificate dimension as `0/25`, and a `CERT_CHAIN_UNTRUSTED` HIGH
+      finding. openssl reports `verify error:num=19`.
+- [ ] `tlsanalyzer example.com --sni cloudflare.com` reports the certificate as
+      valid for `cloudflare.com`, and a scan warning names both that name and
+      the target, because "Target: example.com" and "valid for cloudflare.com"
+      are not the same claim.
+- [ ] Acceptance control: a well-configured public host (example.com,
+      cloudflare.com, github.com) reports both checks passing and the same
+      certificate score as the previous release. A guard that refuses real input
+      is a false clean of the opposite kind.
 
 ## 6. Determinism
 
@@ -73,7 +102,7 @@ A score that does not match intuition is a broken score, not a finding.
       at least four hosts of visibly different latency, run
       `tlsanalyzer --targets hosts.txt --format json | jq -r '.[].target'` three
       times at the default concurrency and once at `--concurrency 1`. All four
-      runs list the hosts in file order. Before 0.3.1 the order varied between
+      runs list the hosts in file order. Before 0.4.0 the order varied between
       identical runs, including at `--concurrency 1`.
 
 ## 6a. The numbers reconcile
@@ -130,6 +159,37 @@ a local build cannot prove the release does.
       in help text or the README is actually registered.
 - [ ] `tlsanalyzer policies` lists policies, and each name is accepted by
       `--policy`.
+- [ ] `tlsanalyzer print-policy <name>` for every listed policy produces YAML
+      that `--policy-file` then accepts. A starting point the parser rejects is
+      worse than none.
+- [ ] Every YAML key in `docs/policies.md` is a key the loader accepts, and every
+      key in the schema appears in that document. Both directions are enforced by
+      tests; check one by hand, because the document is the only description of
+      the schema now that unknown keys are refused.
+- [ ] A policy file that cannot be understood is refused rather than reported
+      compliant: an empty file, a file with no `name`, a file with no rules, a
+      file with a misspelled key, and an `extends` naming a policy that does not
+      exist. Each names the problem and a next step. Before 0.4.0 an empty file
+      reported `COMPLIANT 100/100` and exit 0.
+- [ ] `--policy` and `--policy-file` together is an error, not a silent win for
+      one of them.
+
+### 8a. Exit codes
+
+- [ ] `tlsanalyzer example.com --policy strict; echo $?` prints 2. A compliance
+      check that cannot fail a build is not a gate, and this exited 0 before
+      0.4.0.
+- [ ] A host that satisfies the policy exits 0, so the gate is not simply always
+      failing.
+- [ ] `--skip-quantum` against a policy with a `minQuantumScore` exits 2 and the
+      report lists the rule under "Not evaluated" with its reason. A verdict that
+      skipped rules has not established compliance, and the policy score only
+      rises when a rule is not evaluated.
+- [ ] An unreachable host exits 1, not 2, with or without `--policy`. A target
+      that was never reached carries no verdict.
+- [ ] A `--targets` sweep containing an unreachable host exits non-zero in
+      **both** `--format text` and `--format json`. Before 0.4.0 the JSON path
+      exited 0, so the fix had landed on one of the two output paths.
 - [ ] Bad input fails cleanly: unreachable host, invalid port, unknown policy,
       unknown format. No panics and no stack traces.
 - [ ] An error prints the message alone, not the usage block after it. Check

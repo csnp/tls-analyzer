@@ -61,7 +61,7 @@ tlsanalyzer version
 
 Download pre-built binaries from [Releases](https://github.com/csnp/qramm-tls-analyzer/releases).
 
-Every release from 0.3.1 also publishes `checksums.txt`. Download it into the same
+Every release from 0.4.0 also publishes `checksums.txt`. Download it into the same
 directory as the archive and verify before extracting:
 
 ```bash
@@ -93,8 +93,25 @@ Expected output: Security grade, quantum risk score, CNSA 2.0 timeline.
 |---------|-------------|
 | **Protocol Analysis** | TLS 1.0, 1.1, 1.2, 1.3 version detection with deprecation warnings |
 | **Cipher Suite Evaluation** | Strength assessment, forward secrecy verification, weak algorithm detection |
-| **Certificate Analysis** | Validity, chain verification, key strength, signature algorithm assessment |
+| **Certificate Analysis** | Name verification against the requested name, chain verification against the host trust store, validity, key strength, signature algorithm assessment |
 | **Vulnerability Detection** | BEAST, POODLE, weak ciphers, expired certificates, and more |
+
+The scan handshakes with verification disabled on purpose, so it can connect to
+and describe a certificate a verifying client would refuse. The two checks that
+disabling verification would otherwise skip are run separately and reported
+separately, whatever their outcome including when they did not run:
+
+- **Name check.** The certificate has to be valid for the name that was actually
+  requested, which is the `--sni` value when one is given and the target
+  otherwise. When the two differ, the report says which name was verified.
+- **Chain trust.** The presented chain has to build to a root the scanning
+  machine trusts, for server authentication. The verdict is therefore
+  machine-dependent: a certificate from an internal CA is reported untrusted
+  unless that CA is installed on the machine running the scan, and a scan
+  warning says so.
+
+Either check failing scores the certificate dimension zero, for the same reason
+expiry does: no client will use the certificate.
 
 ### Quantum Readiness
 
@@ -137,9 +154,16 @@ computer exists, while a signature cannot be forged after the fact.
 
 ```bash
 ./tlsanalyzer policies                                    # List available policies
+./tlsanalyzer print-policy strict > custom.yaml           # A valid starting point
 ./tlsanalyzer yourdomain.com --policy cnsa-2.0-2027       # CNSA 2.0 compliance check
 ./tlsanalyzer yourdomain.com --policy-file custom.yaml    # Custom policy file
 ```
+
+A policy that is not satisfied exits 2, so `--policy` can gate a pipeline
+directly. A policy file is validated before the scan runs, and one that cannot
+be understood is refused rather than reported as compliant: unknown keys, a
+missing `name`, and a policy with no rules are all errors. See
+[docs/policies.md](docs/policies.md) for the schema.
 
 ### Batch Scanning
 
@@ -174,8 +198,8 @@ Sample terminal output:
 
   Target: example.com
   IP: 104.20.23.154
-  Scanned: 2026-07-27 14:43:06 MDT
-  Duration: 452.647084ms
+  Scanned: 2026-07-30 14:11:25 MDT
+  Duration: 143.383583ms
 
 ───────────────────────────────────────────────────────────────
   OVERALL GRADE
@@ -217,23 +241,35 @@ Sample terminal output:
       ✓ New NSS Systems (2027-01-01)
       ◐ TLS 1.3 Required (2030-01-02)
          └─ Legacy protocol still enabled: TLS 1.2
+         └─ Legacy protocol still enabled: TLS 1.1
+         └─ Legacy protocol still enabled: TLS 1.0
       — Legacy System Update (2033-01-01)
          └─ PQC certificates not yet available
       — Full PQC Transition (2035-01-01)
          └─ PQC certificates not yet available
 
-    Algorithm Status:
-      [approved    ] key-exchange: X25519MLKEM768
-      [transitional] key-exchange: X25519
-      [transitional] signature: ECDSA-SHA256
-      [deprecated  ] signature-key: ECDSA
-               Replace with: ML-DSA certificates (when available)
+───────────────────────────────────────────────────────────────
+  CERTIFICATE
+───────────────────────────────────────────────────────────────
+
+    Status:      ✓ Valid
+    Subject:     CN=example.com
+    Issuer:      CN=Cloudflare TLS Issuing ECC CA 3,O=SSL Corporation,C=US
+    Valid:       2026-07-29 to 2026-10-27
+    Key:         ECDSA 256-bit
+    Signature:   ECDSA-SHA256
+    SANs:        example.com, *.example.com
+    Name check:  ✓ valid for example.com
+    Chain trust: ✓ chains to a root this host trusts
+    Quantum:     ✗ Quantum Vulnerable
 ```
 
-Abridged: the real report also lists the protocol, cipher suite, certificate,
-quantum risk, vulnerability, recommendation and scan coverage sections, every
-enumerated key exchange group and cipher suite, and the remaining milestone gaps.
-Generated with `tlsanalyzer example.com --no-color` on the 0.3.1 build.
+Abridged by cutting whole sections, not by editing lines: the real report also
+carries the CNSA 2.0 algorithm status listing, which repeats one line per
+accepted suite, plus the protocol, cipher suite, quantum risk, vulnerability,
+recommendation and scan coverage sections, and every enumerated key exchange
+group and cipher suite. Generated with `tlsanalyzer example.com --no-color` on
+the 0.4.0 build.
 
 The score breakdown reconciles: the four dimensions total 66 of 100 points, the
 vulnerability findings deduct 45, and the headline is 66 - 45 = 21. Adding
@@ -253,7 +289,11 @@ Other formats: `--format json` for automation, `--format cbom` for [CycloneDX CB
 | `cnsa-2.0-2030` | CNSA 2.0 with TLS 1.3 required |
 | `cnsa-2.0-2035` | CNSA 2.0 full PQC transition |
 
-Custom policies can be created in YAML format. See [docs/policies.md](docs/policies.md) for details.
+Custom policies are YAML. `tlsanalyzer print-policy <name>` prints any built-in
+policy in exactly the shape `--policy-file` accepts, which is the recommended
+starting point: keys the schema does not define are refused rather than ignored.
+`extends` inherits a built-in policy, and every key the file sets overrides the
+inherited one. See [docs/policies.md](docs/policies.md) for the full schema.
 
 ## CNSA 2.0 Timeline
 
@@ -301,7 +341,7 @@ is not comparable with a full scan's.
 
 TLS 1.3 alone earns the full protocol dimension. TLS 1.2 alongside it is neither
 a bonus nor a penalty, so disabling TLS 1.2 does not cost points, and only
-deprecated versions deduct. Before 0.3.1 a TLS 1.3-only server was capped at 15
+deprecated versions deduct. Before 0.4.0 a TLS 1.3-only server was capped at 15
 of 25, which penalised the configuration the `strict` and `cnsa-2.0-2030`
 policies require.
 
@@ -329,8 +369,9 @@ USAGE:
   tlsanalyzer [command]
 
 COMMANDS:
-  policies    List available security policies
-  version     Print version information
+  policies      List available security policies
+  print-policy  Print a built-in policy as YAML, to copy as a starting point
+  version       Print version information
 
 FLAGS:
   -f, --format string      Output format: text, json, sarif, cbom, html (default "text")
@@ -349,7 +390,16 @@ FLAGS:
       --targets string     File containing list of targets
   -c, --concurrency int    Concurrent scans for batch mode (default 10)
   -h, --help              Help for tlsanalyzer
+
+EXIT CODES:
+  0  scanned, and any policy applied was fully evaluated and satisfied
+  1  the scan could not be completed
+  2  a policy was applied and the target did not satisfy it, or the policy
+     could not be fully evaluated
 ```
+
+`--policy` and `--policy-file` both name a policy, so passing both is an error
+rather than one silently winning.
 
 ## CI/CD Integration
 

@@ -72,7 +72,7 @@ func TestScoreProtocols(t *testing.T) {
 			wantMax:   25,
 		},
 		{
-			// This asserted 15 until 0.3.1, which pinned a scoring inversion
+			// This asserted 15 until 0.4.0, which pinned a scoring inversion
 			// rather than a judgement: TLS 1.3-only is the strictest available
 			// configuration and the one the `strict` and `cnsa-2.0-2030` policies
 			// require, and it was capped at 15 of 25 because the model wanted
