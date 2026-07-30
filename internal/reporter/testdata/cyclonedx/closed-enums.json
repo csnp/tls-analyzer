@@ -1,0 +1,63 @@
+{
+  "_provenance": {
+    "source": "https://raw.githubusercontent.com/CycloneDX/specification/master/schema/bom-1.6.schema.json",
+    "specVersion": "http://cyclonedx.org/schema/bom-1.6.schema.json",
+    "extracted": "the closed enums internal/reporter/cbom.go can emit a non-member value into",
+    "note": "Values are copied verbatim from the published schema, not retyped from memory. Refresh by re-running the extraction against the URL above."
+  },
+  "primitive": [
+    "drbg",
+    "mac",
+    "block-cipher",
+    "stream-cipher",
+    "signature",
+    "hash",
+    "pke",
+    "xof",
+    "kdf",
+    "key-agree",
+    "kem",
+    "ae",
+    "combiner",
+    "other",
+    "unknown"
+  ],
+  "mode": [
+    "cbc",
+    "ecb",
+    "ccm",
+    "gcm",
+    "cfb",
+    "ofb",
+    "ctr",
+    "other",
+    "unknown"
+  ],
+  "assetType": [
+    "algorithm",
+    "certificate",
+    "protocol",
+    "related-crypto-material"
+  ],
+  "relatedCryptoMaterialType": [
+    "private-key",
+    "public-key",
+    "secret-key",
+    "key",
+    "ciphertext",
+    "signature",
+    "digest",
+    "initialization-vector",
+    "nonce",
+    "seed",
+    "salt",
+    "shared-secret",
+    "tag",
+    "additional-data",
+    "password",
+    "credential",
+    "token",
+    "other",
+    "unknown"
+  ]
+}

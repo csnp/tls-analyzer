@@ -3,28 +3,69 @@ package reporter
 import (
 	"bytes"
 	"encoding/json"
+	"os"
+	"path/filepath"
 	"regexp"
+	"slices"
 	"testing"
 	"time"
 
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
-// cycloneDXPrimitives is the closed enum CycloneDX 1.6 allows for
-// cryptoProperties.algorithmProperties.primitive. Emitting anything outside it
-// makes the whole document fail schema validation, which is how this tool
-// shipped a CBOM containing the non-member value "kex".
-var cycloneDXPrimitives = map[string]bool{
-	"drbg": true, "mac": true, "block-cipher": true, "stream-cipher": true,
-	"signature": true, "hash": true, "pke": true, "xof": true, "kdf": true,
-	"key-agree": true, "kem": true, "ae": true, "combiner": true,
-	"other": true, "unknown": true,
+// closedEnums holds the CycloneDX 1.6 enums this reporter can emit a non-member
+// value into, read from a copy of the published schema in testdata rather than
+// retyped here.
+//
+// The previous version of this file hand-wrote the same lists. That is a test
+// asserting the author's belief about the spec instead of the spec, and it is
+// half of why an invalid document shipped: the lists happened to be right, but
+// nothing tied them to the schema, so a wrong entry would have been invisible.
+// The other half was the input space, covered by
+// TestCBOMPrimitivesAreInEnumForEveryCipherSuiteShape below.
+type closedEnums struct {
+	Primitive                 []string `json:"primitive"`
+	Mode                      []string `json:"mode"`
+	AssetType                 []string `json:"assetType"`
+	RelatedCryptoMaterialType []string `json:"relatedCryptoMaterialType"`
 }
 
-// cycloneDXAssetTypes is the closed enum for cryptoProperties.assetType.
-var cycloneDXAssetTypes = map[string]bool{
-	"algorithm": true, "certificate": true, "protocol": true,
-	"related-crypto-material": true,
+func loadClosedEnums(t *testing.T) closedEnums {
+	t.Helper()
+
+	body, err := os.ReadFile(filepath.Join("testdata", "cyclonedx", "closed-enums.json"))
+	if err != nil {
+		t.Fatalf("reading the vendored CycloneDX enums failed: %v", err)
+	}
+
+	var enums closedEnums
+	if err := json.Unmarshal(body, &enums); err != nil {
+		t.Fatalf("parsing the vendored CycloneDX enums failed: %v", err)
+	}
+
+	// A mis-extracted or truncated file would silently accept everything, which
+	// is the failure mode a hand-written list has.
+	if len(enums.Primitive) == 0 || len(enums.Mode) == 0 || len(enums.AssetType) == 0 {
+		t.Fatal("the vendored CycloneDX enums are empty, so membership checks would pass vacuously")
+	}
+	for _, member := range []string{"block-cipher", "stream-cipher", "ae"} {
+		if !slices.Contains(enums.Primitive, member) {
+			t.Fatalf("the vendored primitive enum is missing %q, so it is not the published enum", member)
+		}
+	}
+	if slices.Contains(enums.Primitive, "cipher") {
+		t.Fatal(`the vendored primitive enum contains "cipher", which the published schema does not`)
+	}
+
+	return enums
+}
+
+func memberSet(values []string) map[string]bool {
+	set := make(map[string]bool, len(values))
+	for _, v := range values {
+		set[v] = true
+	}
+	return set
 }
 
 var serialNumberPattern = regexp.MustCompile(
@@ -36,6 +77,10 @@ var serialNumberPattern = regexp.MustCompile(
 // found in 0.3.0: a primitive outside the enum, empty bom-ref strings, and a
 // serial number that is not a UUID.
 func TestCBOMConformsToCycloneDX(t *testing.T) {
+	enums := loadClosedEnums(t)
+	cycloneDXPrimitives := memberSet(enums.Primitive)
+	cycloneDXAssetTypes := memberSet(enums.AssetType)
+
 	result := sampleResultForCBOM()
 
 	var buf bytes.Buffer
@@ -181,5 +226,120 @@ func sampleResultForCBOM() *types.ScanResult {
 			NotBefore:          time.Now().Add(-24 * time.Hour),
 			NotAfter:           time.Now().Add(24 * time.Hour),
 		},
+	}
+}
+
+// TestCBOMPrimitivesAreInEnumForEveryCipherSuiteShape is the test that would
+// have caught the invalid document.
+//
+// TestCBOMConformsToCycloneDX already checked enum membership, and passed, because
+// its fixture holds one AEAD suite (`TLS_AES_128_GCM_SHA256`, no separate MAC) and
+// that is the one shape whose primitive was legal. A real scan of example.com
+// produced 17 components with `primitive: "cipher"` and 2 with `mode: "stream"`,
+// neither a member of its enum, so the whole document failed validation.
+//
+// This drives every encryption value the scanner can assign, crossed with a MAC
+// present and absent, and asserts nothing outside the published enums is emitted.
+// Checking the enum is not enough on its own: the inputs have to reach it.
+func TestCBOMPrimitivesAreInEnumForEveryCipherSuiteShape(t *testing.T) {
+	enums := loadClosedEnums(t)
+	primitives := memberSet(enums.Primitive)
+	modes := memberSet(enums.Mode)
+
+	// Every value internal/scanner assigns to CipherSuite.Encryption, with a
+	// representative real suite name for each.
+	suites := []types.CipherSuite{
+		{ID: 0x1301, Name: "TLS_AES_128_GCM_SHA256", Encryption: "AES-GCM", Bits: 128},
+		{ID: 0x1303, Name: "TLS_CHACHA20_POLY1305_SHA256", Encryption: "ChaCha20-Poly1305", Bits: 256},
+		{ID: 0xC02F, Name: "TLS_ECDHE_RSA_WITH_AES_128_GCM_SHA256", Encryption: "AES-GCM", Bits: 128, MAC: "SHA256"},
+		{ID: 0xC013, Name: "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA", Encryption: "AES", Bits: 128, MAC: "SHA1"},
+		{ID: 0xC028, Name: "TLS_ECDHE_RSA_WITH_AES_256_CBC_SHA384", Encryption: "AES", Bits: 256, MAC: "SHA384"},
+		{ID: 0xCCA8, Name: "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256", Encryption: "ChaCha20-Poly1305", Bits: 256, MAC: "SHA256"},
+		{ID: 0x000A, Name: "TLS_RSA_WITH_3DES_EDE_CBC_SHA", Encryption: "3DES", Bits: 168, MAC: "SHA1"},
+		{ID: 0x0005, Name: "TLS_RSA_WITH_RC4_128_SHA", Encryption: "RC4", Bits: 128, MAC: "SHA1"},
+		// An encryption value the scanner does not currently produce must still
+		// fall back to a legal value rather than pass itself through.
+		{ID: 0xFFFF, Name: "TLS_SOMETHING_UNRECOGNISED", Encryption: "Camellia", Bits: 128, MAC: "SHA256"},
+	}
+
+	for _, cs := range suites {
+		t.Run(cs.Name, func(t *testing.T) {
+			result := sampleResultForCBOM()
+			result.CipherSuites = []types.CipherSuite{cs}
+
+			var buf bytes.Buffer
+			if err := (&CBOMReporter{}).Report(&buf, result); err != nil {
+				t.Fatalf("report: %v", err)
+			}
+
+			var doc struct {
+				Components []struct {
+					Name             string `json:"name"`
+					CryptoProperties struct {
+						AlgorithmProperties *struct {
+							Primitive string `json:"primitive"`
+							Mode      string `json:"mode"`
+						} `json:"algorithmProperties"`
+					} `json:"cryptoProperties"`
+				} `json:"components"`
+			}
+			if err := json.Unmarshal(buf.Bytes(), &doc); err != nil {
+				t.Fatalf("CBOM is not valid JSON: %v", err)
+			}
+
+			var checked bool
+			for _, c := range doc.Components {
+				if c.Name != cs.Name {
+					continue
+				}
+				checked = true
+				props := c.CryptoProperties.AlgorithmProperties
+				if props == nil {
+					t.Fatalf("%s emitted no algorithmProperties", cs.Name)
+				}
+				if !primitives[props.Primitive] {
+					t.Errorf("%s (encryption %q, mac %q) emitted primitive %q, which is not in the CycloneDX enum; one non-member value invalidates the whole document",
+						cs.Name, cs.Encryption, cs.MAC, props.Primitive)
+				}
+				// mode is omitempty, so an absent mode is legal; a present one
+				// must be a member.
+				if props.Mode != "" && !modes[props.Mode] {
+					t.Errorf("%s emitted mode %q, which is not in the CycloneDX enum", cs.Name, props.Mode)
+				}
+			}
+			if !checked {
+				t.Fatalf("no component was emitted for %s, so nothing was asserted", cs.Name)
+			}
+		})
+	}
+}
+
+// TestCBOMCipherClassification pins the classification itself, not just its
+// legality: "other" for everything would satisfy the enum check above while
+// telling a consumer nothing.
+func TestCBOMCipherClassification(t *testing.T) {
+	tests := []struct {
+		suite         types.CipherSuite
+		wantPrimitive string
+		wantMode      string
+	}{
+		{types.CipherSuite{Name: "TLS_AES_128_GCM_SHA256", Encryption: "AES-GCM"}, "ae", "gcm"},
+		{types.CipherSuite{Name: "TLS_CHACHA20_POLY1305_SHA256", Encryption: "ChaCha20-Poly1305"}, "ae", ""},
+		{types.CipherSuite{Name: "TLS_ECDHE_RSA_WITH_AES_128_CBC_SHA", Encryption: "AES", MAC: "SHA1"}, "block-cipher", "cbc"},
+		{types.CipherSuite{Name: "TLS_RSA_WITH_3DES_EDE_CBC_SHA", Encryption: "3DES", MAC: "SHA1"}, "block-cipher", "cbc"},
+		{types.CipherSuite{Name: "TLS_RSA_WITH_RC4_128_SHA", Encryption: "RC4", MAC: "SHA1"}, "stream-cipher", ""},
+		{types.CipherSuite{Name: "TLS_ECDHE_RSA_WITH_CHACHA20_POLY1305_SHA256", Encryption: "ChaCha20-Poly1305", MAC: "SHA256"}, "stream-cipher", ""},
+		{types.CipherSuite{Name: "TLS_SOMETHING_UNRECOGNISED", Encryption: "Camellia", MAC: "SHA256"}, "other", ""},
+	}
+
+	for _, tt := range tests {
+		t.Run(tt.suite.Name+"/"+tt.suite.Encryption, func(t *testing.T) {
+			if got := cipherPrimitive(tt.suite); got != tt.wantPrimitive {
+				t.Errorf("cipherPrimitive = %q, want %q", got, tt.wantPrimitive)
+			}
+			if got := cipherMode(tt.suite); got != tt.wantMode {
+				t.Errorf("cipherMode = %q, want %q", got, tt.wantMode)
+			}
+		})
 	}
 }
