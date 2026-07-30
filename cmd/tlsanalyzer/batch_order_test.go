@@ -36,9 +36,13 @@ func reverseCompletionScan(ctx context.Context, target string) (*types.ScanResul
 	return &types.ScanResult{Target: target}, nil
 }
 
-// runBatch collects a batch run's JSON output as the list of targets it reported,
-// in the order they were reported.
-func runBatch(t *testing.T, targetConcurrency int, scan scanFunc) []string {
+// runBatch collects a batch run's JSON output as the list of targets it
+// reported, in the order they were reported, along with the run's outcome.
+//
+// The outcome is returned rather than fataled on, because a run containing a
+// failed target is supposed to produce one, and swallowing it here is what let
+// the JSON output path exit 0 on a failed target while the text path exited 1.
+func runBatch(t *testing.T, targetConcurrency int, scan scanFunc) ([]string, error) {
 	t.Helper()
 
 	previousFormat, previousConcurrency, previousSkipCNSA2 := outputFormat, concurrency, skipCNSA2
@@ -48,12 +52,9 @@ func runBatch(t *testing.T, targetConcurrency int, scan scanFunc) []string {
 	}()
 
 	var buf bytes.Buffer
-	err := scanBatchTargets(context.Background(), scan,
+	outcome := scanBatchTargets(context.Background(), scan,
 		analyzer.NewCNSA2Analyzer(), analyzer.NewPolicyEvaluator(),
 		batchTargets, nil, &buf)
-	if err != nil {
-		t.Fatalf("batch scan failed: %v", err)
-	}
 
 	// Only the target is decoded, so a failure here is unambiguously about
 	// ordering rather than about any other field's representation.
@@ -68,14 +69,17 @@ func runBatch(t *testing.T, targetConcurrency int, scan scanFunc) []string {
 	for _, result := range results {
 		reported = append(reported, result.Target)
 	}
-	return reported
+	return reported, outcome
 }
 
 // TestBatchOutputFollowsInputOrder guards the defect where batch output was
 // collected in completion order, so two identical runs produced different output
 // and a --targets sweep could not be diffed in CI.
 func TestBatchOutputFollowsInputOrder(t *testing.T) {
-	reported := runBatch(t, len(batchTargets), reverseCompletionScan)
+	reported, err := runBatch(t, len(batchTargets), reverseCompletionScan)
+	if err != nil {
+		t.Fatalf("batch scan failed with every target succeeding: %v", err)
+	}
 
 	if !reflect.DeepEqual(reported, batchTargets) {
 		t.Errorf("batch output is in completion order, not input order:\n  got  %v\n  want %v",
@@ -89,9 +93,12 @@ func TestBatchOutputFollowsInputOrder(t *testing.T) {
 // slot in the order goroutines queued for it.
 func TestBatchOutputFollowsInputOrderAtConcurrencyOne(t *testing.T) {
 	for run := 0; run < 3; run++ {
-		reported := runBatch(t, 1, func(ctx context.Context, target string) (*types.ScanResult, error) {
+		reported, err := runBatch(t, 1, func(ctx context.Context, target string) (*types.ScanResult, error) {
 			return &types.ScanResult{Target: target}, nil
 		})
+		if err != nil {
+			t.Fatalf("run %d failed with every target succeeding: %v", run+1, err)
+		}
 
 		if !reflect.DeepEqual(reported, batchTargets) {
 			t.Fatalf("run %d at --concurrency 1 returned a different order:\n  got  %v\n  want %v",
@@ -103,12 +110,25 @@ func TestBatchOutputFollowsInputOrderAtConcurrencyOne(t *testing.T) {
 // TestBatchOutputKeepsFailedTargetsInPlace checks that a target whose scan fails
 // holds its slot, so an error row does not shuffle the rest of the report.
 func TestBatchOutputKeepsFailedTargetsInPlace(t *testing.T) {
-	reported := runBatch(t, len(batchTargets), func(ctx context.Context, target string) (*types.ScanResult, error) {
+	reported, err := runBatch(t, len(batchTargets), func(ctx context.Context, target string) (*types.ScanResult, error) {
 		if target == batchTargets[2] {
 			return nil, context.DeadlineExceeded
 		}
 		return reverseCompletionScan(ctx, target)
 	})
+
+	// The JSON output path returned the encoder's error and nothing else, so a
+	// sweep that could not reach a host exited 0 while the same sweep in text
+	// format exited 1. Verified on released 0.3.0 (both formats exit 0) and on
+	// this branch before the fix (text 1, JSON 0), so the batch fix landed on
+	// one of the two output paths.
+	if err == nil {
+		t.Error("a batch run in --format json with an unreachable target reported success, " +
+			"so 'tlsanalyzer --targets hosts.txt --format json && deploy' proceeds on a " +
+			"scan that never reached the host")
+	} else if !strings.Contains(err.Error(), batchTargets[2]) {
+		t.Errorf("the error does not name the target that failed: %v", err)
+	}
 
 	if !reflect.DeepEqual(reported, batchTargets) {
 		t.Errorf("a failed target moved the surrounding rows:\n  got  %v\n  want %v",

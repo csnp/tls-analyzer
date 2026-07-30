@@ -5,6 +5,7 @@ import (
 	"bufio"
 	"context"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net"
@@ -49,10 +50,71 @@ var (
 	concurrency  int
 )
 
+// Exit codes. A compliance check that cannot fail a build is not a gate, and
+// policy non-compliance exited 0, so --policy could report 35 HIGH violations
+// and still let a pipeline through. The codes are separate so a job can tell a
+// failed policy from a scan that could not run at all, and they are documented
+// in --help and the README rather than only here.
+const (
+	exitScanFailed   = 1
+	exitPolicyFailed = 2
+)
+
+// policyGateError reports that a policy was applied and the target either did
+// not satisfy it or could not be fully evaluated against it. Both are failures
+// of the gate: a verdict that skipped rules has not established compliance, and
+// the policy score only rises when a rule is not evaluated.
+type policyGateError struct{ message string }
+
+func (e *policyGateError) Error() string { return e.message }
+
 func main() {
 	if err := rootCmd.Execute(); err != nil {
-		os.Exit(1)
+		var gate *policyGateError
+		if errors.As(err, &gate) {
+			os.Exit(exitPolicyFailed)
+		}
+		os.Exit(exitScanFailed)
 	}
+}
+
+// policyOutcome turns policy results into the process outcome.
+//
+// Scan failures are the caller's to report first: a target that was never
+// reached has no policy verdict, and reporting it as non-compliant would be a
+// verdict about nothing.
+func policyOutcome(results []*types.ScanResult) error {
+	var failed, incomplete []string
+
+	for _, result := range results {
+		if result == nil || result.PolicyResult == nil {
+			continue
+		}
+		if !result.PolicyResult.Compliant {
+			failed = append(failed, result.Target)
+		} else if !result.PolicyResult.Complete {
+			// A compliant verdict that skipped rules has not established
+			// compliance with the policy, only with the part of it that ran.
+			incomplete = append(incomplete, result.Target)
+		}
+	}
+
+	switch {
+	case len(failed) > 0 && len(incomplete) > 0:
+		return &policyGateError{fmt.Sprintf(
+			"policy not satisfied by %s; and not fully evaluated against %s",
+			strings.Join(failed, ", "), strings.Join(incomplete, ", "))}
+	case len(failed) > 0:
+		return &policyGateError{fmt.Sprintf(
+			"policy not satisfied by %s", strings.Join(failed, ", "))}
+	case len(incomplete) > 0:
+		return &policyGateError{fmt.Sprintf(
+			"policy could not be fully evaluated against %s, so compliance is not "+
+				"established. See the rules listed as not evaluated",
+			strings.Join(incomplete, ", "))}
+	}
+
+	return nil
 }
 
 var rootCmd = &cobra.Command{
@@ -74,6 +136,15 @@ Quantum Ready grades:
   Q   partial: some post-quantum protection available
   Q-  limited: minimal post-quantum protection
   QV  vulnerable: classical key exchange only
+
+TLS Security grades:
+  A+ 95-100   A 85-94   B 75-84   C 60-74   D 40-59   F below 40
+
+Exit codes:
+  0  scanned, and any policy applied was fully evaluated and satisfied
+  1  the scan could not be completed
+  2  a policy was applied and the target did not satisfy it, or the policy
+     could not be fully evaluated, which does not establish compliance
 
 Examples:
   tlsanalyzer example.com
@@ -331,9 +402,14 @@ func scanSingleTarget(ctx context.Context, scan scanFunc, cnsa2 *analyzer.CNSA2A
 	// provenance rather than the scanner package default.
 	result.ScannerVersion = version
 
-	// Create reporter and output
+	// Create reporter and output. The report is written before any gate result
+	// is returned, so a failing policy still prints the findings that explain it.
 	rep := createReporter()
-	return rep.Report(output, result)
+	if err := rep.Report(output, result); err != nil {
+		return err
+	}
+
+	return policyOutcome([]*types.ScanResult{result})
 }
 
 func scanBatchTargets(ctx context.Context, scan scanFunc, cnsa2 *analyzer.CNSA2Analyzer, policyEval *analyzer.PolicyEvaluator, targets []string, policy *types.Policy, output io.Writer) error {
@@ -417,7 +493,10 @@ func scanBatchTargets(ctx context.Context, scan scanFunc, cnsa2 *analyzer.CNSA2A
 		if !jsonCompact {
 			encoder.SetIndent("", "  ")
 		}
-		return encoder.Encode(results)
+		if err := encoder.Encode(results); err != nil {
+			return err
+		}
+		return batchOutcome(results)
 	}
 
 	rep := createReporter()
@@ -449,7 +528,8 @@ func batchOutcome(results []*types.ScanResult) error {
 
 	switch len(failed) {
 	case 0:
-		return nil
+		// Nothing failed to scan, so any remaining failure is the policy gate's.
+		return policyOutcome(results)
 	case len(results):
 		return fmt.Errorf("no targets could be scanned (%d of %d failed): %s",
 			len(failed), len(results), strings.Join(failed, ", "))
