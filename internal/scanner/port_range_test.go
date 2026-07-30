@@ -1,6 +1,9 @@
 package scanner
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
 // TestParseTargetRejectsAPortOutsideTheTCPRange guards the defect where an
 // out-of-range port was accepted, reached the dialer, and produced
@@ -30,11 +33,27 @@ func TestParseTargetRejectsAPortOutsideTheTCPRange(t *testing.T) {
 // the user typed and scanned a port they never asked for. Same class as the
 // --format fallback fixed in 0.3.0.
 func TestParseTargetRejectsANonNumericPort(t *testing.T) {
-	for _, target := range []string{"example.com:abc", "example.com:https", "example.com:"} {
-		if _, port, err := parseTarget(target); err == nil {
+	for _, target := range []string{"example.com:abc", "example.com:https"} {
+		_, port, err := parseTarget(target)
+		if err == nil {
 			t.Errorf("parseTarget(%q) returned port %d with no error, so an unusable "+
 				"port was reinterpreted as the default rather than refused", target, port)
+			continue
 		}
+
+		// The message has to quote what was rejected. Falling through to the
+		// range check instead would report "invalid port 0", which names a value
+		// the user never typed.
+		offending := target[strings.LastIndex(target, ":")+1:]
+		if !strings.Contains(err.Error(), offending) {
+			t.Errorf("parseTarget(%q) failed with %q, which does not name the rejected port %q",
+				target, err, offending)
+		}
+	}
+
+	if _, port, err := parseTarget("example.com:"); err == nil {
+		t.Errorf("parseTarget(\"example.com:\") returned port %d with no error; a colon "+
+			"with no port after it fell back to the default", port)
 	}
 }
 

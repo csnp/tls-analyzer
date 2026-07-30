@@ -76,8 +76,28 @@ jobs:
         with:
           path: artifacts
 
+      # Releases up to 0.3.0 carried five archives and nothing else, so a
+      # downloaded archive could not be checked against anything. Names are
+      # recorded without their directory prefix, so a user who downloads the
+      # archives and this file into one directory can run
+      # "shasum -a 256 -c checksums.txt" directly.
+      - name: Generate checksums
+        working-directory: artifacts
+        run: |
+          find . -type f \( -name '*.tar.gz' -o -name '*.zip' \) | sort | while read -r archive; do
+            ( cd "$(dirname "$archive")" && sha256sum "$(basename "$archive")" )
+          done > ../checksums.txt
+          echo "Published checksums:"
+          cat ../checksums.txt
+          if [ "$(wc -l < ../checksums.txt)" -lt 5 ]; then
+            echo "Expected a checksum for each of the five archives"
+            exit 1
+          fi
+
       - name: Create Release
         uses: softprops/action-gh-release@v1
         with:
-          files: artifacts/**/*
+          files: |
+            artifacts/**/*
+            checksums.txt
           generate_release_notes: true

@@ -61,6 +61,21 @@ tlsanalyzer version
 
 Download pre-built binaries from [Releases](https://github.com/csnp/qramm-tls-analyzer/releases).
 
+Every release from 0.3.1 also publishes `checksums.txt`. Download it into the same
+directory as the archive and verify before extracting:
+
+```bash
+# macOS
+shasum -a 256 -c --ignore-missing checksums.txt
+# Linux
+sha256sum -c --ignore-missing checksums.txt
+```
+
+`--ignore-missing` is needed because the file lists all five archives and you will
+normally have downloaded one. Without it, the four you did not download are
+reported as failures and the command exits non-zero. Expected output is
+`<archive>: OK`.
+
 ### Run Your First Scan
 
 ```bash
@@ -168,12 +183,16 @@ Sample terminal output:
 
   TLS Security:     F    (21/100)
   Quantum Ready:    Q
+                    Q+ ready, Q partial, Q- limited, QV vulnerable
 
   Score Breakdown:
     Protocol Support     [████████░░░░░░░░░░░░] 10/25
     Cipher Strength      [████████████░░░░░░░░] 15/25
     Certificate          [████████████████████] 25/25
     Quantum Readiness    [████████████░░░░░░░░] 16/25
+    Dimension subtotal                          66/100
+    Vulnerability penalty                       -45  (1 HIGH x 15, 6 MEDIUM x 5)
+    TLS Security score                          21/100
 
 ───────────────────────────────────────────────────────────────
   CNSA 2.0 COMPLIANCE TIMELINE
@@ -181,10 +200,19 @@ Sample terminal output:
 
     Current Phase:      New NSS Systems
     Timeline Score:     84/100
-    Days to Deadline:   157
+    Days to Deadline:   154
     Next Action:        Legacy protocol still enabled: TLS 1.2
+    Scope:              milestone status reports whether this server can negotiate
+                        the algorithms a milestone requires. A milestone can be met
+                        while the server also still accepts weaker options, so a
+                        policy evaluation of the same target year, which requires
+                        every accepted protocol and cipher suite to qualify, can
+                        report non-compliant against the same deadline. Read the
+                        milestones for adoption and the policy evaluation for
+                        exclusivity.
 
     Milestones:
+      legend: ✓ met, ◐ partial, ○ in progress, ✗ not met, — not yet required
       ○ Preparation Phase (2025-12-31)
       ✓ New NSS Systems (2027-01-01)
       ◐ TLS 1.3 Required (2030-01-02)
@@ -201,6 +229,17 @@ Sample terminal output:
       [deprecated  ] signature-key: ECDSA
                Replace with: ML-DSA certificates (when available)
 ```
+
+Abridged: the real report also lists the protocol, cipher suite, certificate,
+quantum risk, vulnerability, recommendation and scan coverage sections, every
+enumerated key exchange group and cipher suite, and the remaining milestone gaps.
+Generated with `tlsanalyzer example.com --no-color` on the 0.3.1 build.
+
+The score breakdown reconciles: the four dimensions total 66 of 100 points, the
+vulnerability findings deduct 45, and the headline is 66 - 45 = 21. Adding
+`--policy cnsa-2.0-2027` prints a second CNSA 2.0 verdict, which can disagree
+with the timeline milestone above because the two have different scope. Both
+print a scope note saying which question they answer.
 
 Other formats: `--format json` for automation, `--format cbom` for [CycloneDX CBOM](https://cyclonedx.org/capabilities/cbom/), `--format html` for shareable reports, `--format sarif` for GitHub Security.
 
@@ -245,19 +284,36 @@ The tool tracks compliance against NSA's Commercial National Security Algorithm 
 |-------|-------|-------------|
 | **A+** | 95-100 | Exceptional security with quantum readiness |
 | **A** | 85-94 | Excellent configuration |
-| **B** | 70-84 | Good with minor improvements needed |
-| **C** | 55-69 | Adequate but significant improvements recommended |
-| **D** | 40-54 | Poor configuration, security issues present |
+| **B** | 75-84 | Good with minor improvements needed |
+| **C** | 60-74 | Adequate but significant improvements recommended |
+| **D** | 40-59 | Poor configuration, security issues present |
 | **F** | 0-39 | Failing, critical vulnerabilities |
+
+The score is the four dimensions above, each worth 25 points and normalised to
+100, less a vulnerability penalty of 30 points per CRITICAL finding, 15 per HIGH
+and 5 per MEDIUM. LOW and INFO findings do not move it. The report prints the
+subtotal, the penalty and the final score as separate lines so the arithmetic can
+be checked. A dimension that was skipped with `--skip-quantum` contributes
+neither points nor maximum, so the subtotal is normalised over what actually ran.
+Skipping the vulnerability checks with `--skip-vulns` leaves the penalty
+unmeasured rather than zero, so the score is then reported as an upper bound and
+is not comparable with a full scan's.
 
 ### Quantum Readiness Grade
 
-| Grade | Description |
-|-------|-------------|
-| **Q+** | Full PQC ready (ML-KEM key exchange + ML-DSA certificates) |
-| **Q** | Hybrid PQC key exchange enabled |
-| **Q-** | Partially quantum-ready |
-| **QV** | Quantum vulnerable (classical cryptography only) |
+Derived from the 0-100 quantum risk score, which is weighted 80 percent key
+exchange and 20 percent certificate.
+
+| Grade | Quantum score | Description |
+|-------|---------------|-------------|
+| **Q+** | 80-100 | Ready: full PQC (ML-KEM key exchange and ML-DSA certificates) |
+| **Q** | 50-79 | Partial: hybrid PQC key exchange in place |
+| **Q-** | 20-49 | Limited post-quantum protection |
+| **QV** | 0-19 | Vulnerable: classical cryptography only |
+
+No publicly trusted CA issues ML-DSA certificates yet, so Q+ is not reachable
+with a public certificate today. A server with hybrid PQC key exchange correctly
+reports Q.
 
 ## CLI Reference
 
@@ -274,7 +330,8 @@ FLAGS:
   -f, --format string      Output format: text, json, sarif, cbom, html (default "text")
   -o, --output string      Output file (default: stdout)
   -t, --timeout int        Connection timeout in seconds (default 30)
-  -p, --port int           Target port (default 443)
+  -p, --port int           Target port, 1-65535, overrides a port in the
+                           target (default 443)
       --sni string         Server Name Indication (SNI)
       --no-color           Disable colored output
       --compact            Compact JSON output

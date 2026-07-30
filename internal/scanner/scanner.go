@@ -26,7 +26,7 @@ import (
 // Version is the scanner library default. Binaries built from cmd/tlsanalyzer
 // override the value recorded in reports with their own release version,
 // injected at build time.
-const Version = "0.3.0"
+const Version = "0.3.1"
 
 // Scanner performs TLS analysis on targets.
 type Scanner struct {

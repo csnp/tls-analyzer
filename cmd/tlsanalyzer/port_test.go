@@ -3,6 +3,8 @@ package main
 import (
 	"strings"
 	"testing"
+
+	"github.com/csnp/qramm-tls-analyzer/internal/scanner"
 )
 
 // TestRuntimeErrorsDoNotPrintTheUsageBlock guards the defect where every error,
@@ -93,5 +95,19 @@ func TestValidateFormat(t *testing.T) {
 		if err := validateFormat(format); err == nil {
 			t.Errorf("validateFormat(%q) accepted an unsupported format", format)
 		}
+	}
+}
+
+// TestVersionLiteralsAgree keeps the two version strings from drifting.
+//
+// The release workflow injects only main.version with -ldflags, so
+// scanner.Version is whatever the source says. main stamps its own value onto
+// every report, which is why a stale scanner.Version does not reach CLI output,
+// but a consumer importing the library reads it directly and would be told a
+// version that was never released.
+func TestVersionLiteralsAgree(t *testing.T) {
+	if version != scanner.Version {
+		t.Errorf("cmd/tlsanalyzer reports version %q while internal/scanner reports %q; "+
+			"bump both when releasing", version, scanner.Version)
 	}
 }

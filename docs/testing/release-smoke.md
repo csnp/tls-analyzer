@@ -69,6 +69,50 @@ A score that does not match intuition is a broken score, not a finding.
 - [ ] Run the same scan five times. The `protocols` array order and the
       `preferred` marker are identical every run. Concurrency previously made
       both vary between runs.
+- [ ] Batch output follows the targets file, not completion order. With a file of
+      at least four hosts of visibly different latency, run
+      `tlsanalyzer --targets hosts.txt --format json | jq -r '.[].target'` three
+      times at the default concurrency and once at `--concurrency 1`. All four
+      runs list the hosts in file order. Before 0.3.1 the order varied between
+      identical runs, including at `--concurrency 1`.
+
+## 6a. The numbers reconcile
+
+Every number a reader can add up has to add up, and a number that was not
+measured must not read as a measurement.
+
+- [ ] The score breakdown closes: the dimension lines total the printed
+      `Dimension subtotal`, and `subtotal - Vulnerability penalty` equals the
+      printed `TLS Security score` and the headline. Use a host with findings, for
+      example `tlsanalyzer example.com`, where 66 - 45 = 21.
+- [ ] The penalty line itemises the severities behind it, and the counts match the
+      VULNERABILITIES section.
+- [ ] `--skip-vulns` prints `upper bound, vulnerability checks skipped` beside the
+      grade and `not measured` on the penalty line. Declining a check must never
+      read as a better result: it previously moved example.com from F (21/100) to
+      C (66/100) with no qualifier.
+- [ ] `--skip-quantum` normalises the subtotal over the three dimensions that ran
+      and says one dimension was not assessed.
+- [ ] `--policy cnsa-2.0-2027` on a host with hybrid key exchange and weaker
+      suites still on offer: the policy verdict and the CNSA 2.0 timeline
+      milestone for the same year may differ, and BOTH print a `Scope:` note that
+      says what they cover and names the other. Two opposite verdicts for one
+      deadline with no scope stated is the defect this closes.
+- [ ] The report keys its own markers: the milestone list carries a glyph legend
+      and the grade block explains Q+, Q, Q- and QV.
+
+## 6b. Published artifact
+
+Verify the artifact users download, not a local build. CI injects the version, so
+a local build cannot prove the release does.
+
+- [ ] The release carries `checksums.txt` plus all five archives.
+- [ ] Download one archive and the checksums file into an empty directory, then
+      `shasum -a 256 -c --ignore-missing checksums.txt` reports OK.
+      `--ignore-missing` is required, since the file lists all five.
+- [ ] The extracted binary's `version` reports the tag being released, and the
+      commit matches the tagged commit.
+- [ ] Re-run one behaviour that changed in this release on the downloaded binary.
 
 ## 7. Output formats
 
@@ -88,6 +132,22 @@ A score that does not match intuition is a broken score, not a finding.
       `--policy`.
 - [ ] Bad input fails cleanly: unreachable host, invalid port, unknown policy,
       unknown format. No panics and no stack traces.
+- [ ] An error prints the message alone, not the usage block after it. Check
+      `--format bogus`, an unreachable host, and `-p 0`: each is one line on
+      stderr. A mistyped flag adds a pointer to `--help`.
+- [ ] Port range is enforced on both routes. `-p 0`, `-p -5` and `-p 70000` are
+      refused naming the flag; `host:70000` and `host:abc` are refused naming the
+      value; `-p 1`, `-p 65535` and `host:8443` are accepted. An out-of-range port
+      previously reached the dialer and was reported as an unreachable host.
+
+## 9. Test integrity
+
+- [ ] `git ls-files --others -- '*_test.go'` prints nothing. A test file git does
+      not track is a test CI never runs, while the local suite still passes
+      because Go does not consult git. An unanchored `tlsanalyzer` pattern in
+      `.gitignore` hid the whole `cmd/tlsanalyzer` test file for a full release.
+      CI enforces this too; check it here so a local run cannot look greener than
+      the pipeline.
 
 ## Result
 

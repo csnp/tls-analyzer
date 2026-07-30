@@ -5,6 +5,91 @@ All notable changes to QRAMM TLS Analyzer are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.3.1] - 2026-07-30
+
+Reporting release. The verdicts and scores a scan produces are unchanged except
+where noted; what changed is that a reader can now reconcile them.
+
+### Fixed
+
+- **The score breakdown could not be added up to the score it sat under.** The
+  vulnerability penalty was applied to the grade and never printed, so a
+  breakdown reading `Protocol 10 + Cipher 15 + Certificate 25 + Quantum 16 = 66`
+  appeared under a headline of `21/100` with nothing to account for the
+  difference. The report now prints the dimension subtotal, the penalty itemised
+  by severity (`-45  (1 HIGH x 15, 6 MEDIUM x 5)`), and the final score, and the
+  arithmetic between them closes. When a dimension was skipped the subtotal also
+  shows the raw points, because four dimensions worth 25 each do not total 100
+  when one of them did not run. When the penalty exceeds the subtotal the report
+  says the score is held at zero rather than leaving the arithmetic open. The
+  same three rows are in the HTML report, and `grade.dimensionScore`,
+  `grade.vulnerabilityPenalty` and `grade.penalties` are in JSON.
+- **One report gave two opposite verdicts for the same standard and the same
+  deadline.** `cnsa-2.0-2027: NON-COMPLIANT, 0/100, 16 violations` printed above
+  `New NSS Systems (2027-01-01): compliant`. Both were defensible, because they
+  measure different things: a policy requires every protocol and cipher suite the
+  server still accepts to qualify, while a milestone asks whether the required
+  algorithms are available at all. Neither said so. Each verdict now carries a
+  scope note that states what it covers and names the other, so a reader who sees
+  one can find and interpret the other. Also in JSON as `policyResult.scope` and
+  `cnsa2Timeline.scope`.
+- **The New NSS Systems milestone reported compliance against a requirement it
+  did not check.** Its own requirement list names AES-256, but an absent 256-bit
+  suite recorded no gap, so a server whose strongest suite was 128-bit was
+  reported compliant. The gap is now recorded, and the milestone reads `partial`
+  instead. A scan that enumerated no suites at all still records no gap, because
+  missing evidence is not a measured absence. This changes the verdict only for
+  servers offering a hybrid post-quantum group and no 256-bit encryption.
+- **`--skip-vulns` raised the grade.** Declining to run the vulnerability checks
+  removed their penalties, so on cloudflare.com the reported result moved from
+  `F (21/100)` to `C (66/100)` purely by looking at less. The penalty cannot be
+  known when the check did not run, so the score is now labelled
+  `upper bound, vulnerability checks skipped` and the breakdown records the
+  penalty as `not measured` rather than as none. `grade.vulnerabilitiesAssessed`
+  carries the same distinction in JSON.
+- **Batch output was collected in completion order**, so two identical runs
+  produced different output and a `--targets` sweep could not be diffed in CI.
+  It did not follow the input order at `--concurrency 1` either, because the
+  semaphore does not hand out its slot in the order goroutines queued for it.
+  Each target now writes to a fixed slot, and a target whose scan fails holds its
+  place instead of shuffling the rows around it.
+- **An out-of-range or non-numeric port was accepted.** `-p 0`, `-p -5` and
+  `-p 70000` all reached the dialer and failed with "no TLS connection could be
+  established to example.com:-5 (host unreachable, port closed, or not speaking
+  TLS)", which describes the host rather than the rejected argument. Separately,
+  a port that was not a number silently fell back to 443, so `example.com:abc`
+  reported the target the user typed and scanned a port they never named. Both
+  are now refused, and both routes are validated in the one place the flag and
+  the target meet.
+- **Every error printed the full usage block after the message**, roughly thirty
+  lines of stderr for a one-line failure. Runtime errors now print the error
+  alone. A mistyped flag points at `--help` rather than listing every flag.
+- **The quantum readiness grades and the milestone status glyphs had no key.**
+  `Quantum Ready: Q` and a column of `✓ ◐ ○ ✗ —` appeared with nothing to say
+  whether either was a good result. Both are now explained in the report, and the
+  quantum grades in `--help`.
+- **`pkg/types.Duration` marshalled but could not be read back.** It had a
+  `MarshalJSON` and no `UnmarshalJSON`, so a consumer importing the public types
+  could not decode the tool's own `--format json` output into them.
+
+### Added
+
+- **Releases now publish `checksums.txt`.** Up to 0.3.0 a release carried five
+  archives and nothing else, so a downloaded archive could not be checked against
+  anything. Download the archives and the file into one directory and run
+  `shasum -a 256 -c checksums.txt`.
+
+### Changed
+
+- **CI fails when a test file is not tracked by git.** The `.gitignore` binary
+  patterns were unanchored, so `tlsanalyzer` matched the `cmd/tlsanalyzer`
+  directory as well as the built binary and excluded everything in it.
+  `cmd/tlsanalyzer/port_test.go`, which holds the regression tests for two of the
+  0.3.0 release blockers, was never committed and never ran in CI, while the
+  local suite passed throughout because Go does not consult git. The patterns are
+  now anchored to the repository root, the two files are committed, and a CI step
+  fails on any untracked `_test.go` and prints the rule responsible.
+
 ## [0.3.0] - 2026-07-27
 
 ### Fixed (found by the second pre-release fresh-user pass)
