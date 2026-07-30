@@ -271,3 +271,55 @@ func TestTLS13OnlyReachesTheProtocolMaximum(t *testing.T) {
 			"TLS 1.3-only server", withLegacy, score)
 	}
 }
+
+// TestSkippingADimensionIsNotPresentedAsABetterResult guards the second
+// score-laundering path. Excluding a skipped dimension keeps the score honest
+// about what it measured, but it also renormalises over the remaining dimensions,
+// and quantum readiness is the one most servers score worst on. So
+// --skip-quantum RAISED the reported grade: github.com moved from D (40/100) to
+// C (61/100) and a well-configured host reached A+ (100/100), on a tool whose
+// purpose is post-quantum readiness.
+//
+// --skip-vulns was already labelled. This asserts the same treatment here, since
+// an asymmetry means one laundering path is disclosed and the other is not.
+func TestSkippingADimensionIsNotPresentedAsABetterResult(t *testing.T) {
+	// A configuration that scores well everywhere except quantum readiness, which
+	// is what makes dropping the dimension raise the total.
+	fixture := func() *types.ScanResult {
+		result := penalisedResult()
+		result.Vulnerabilities = nil
+		result.QuantumRisk = types.QuantumRiskAssessment{Score: 0, Level: types.RiskCritical}
+		return result
+	}
+
+	assessed := fixture()
+	assessed.Grade = New(nil).calculateGrade(assessed)
+
+	skippedConfig := DefaultConfig()
+	skippedConfig.CheckQuantum = false
+	skipped := fixture()
+	skipped.Grade = New(skippedConfig).calculateGrade(skipped)
+
+	if skipped.Grade.Score <= assessed.Grade.Score {
+		t.Fatalf("this fixture no longer demonstrates the defect: skipping the quantum "+
+			"dimension gave %d/100 against %d/100 with it, so there is nothing to qualify",
+			skipped.Grade.Score, assessed.Grade.Score)
+	}
+
+	out := renderTextReport(t, skipped)
+	lower := strings.ToLower(out)
+
+	if !strings.Contains(lower, "not comparable") {
+		t.Errorf("a grade of %d/100 with the quantum dimension dropped, against %d/100 "+
+			"with it, is printed with no indication that it is not comparable with a full scan",
+			skipped.Grade.Score, assessed.Grade.Score)
+	}
+	if !strings.Contains(out, "Quantum Readiness") {
+		t.Error("the report does not name the dimension that was not assessed")
+	}
+
+	// The label must not be printed for a full scan, or it says nothing.
+	if strings.Contains(strings.ToLower(renderTextReport(t, assessed)), "not comparable") {
+		t.Error("a full scan is also labelled not comparable, which makes the label vacuous")
+	}
+}

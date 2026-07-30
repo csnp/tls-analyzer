@@ -214,11 +214,20 @@ func (r *TextReporter) printGrade(w io.Writer, grade types.Grade) {
 	letterColor := r.gradeColor(grade.Letter)
 	quantumColor := r.quantumGradeColor(grade.QuantumGrade)
 
-	// A score computed without the vulnerability checks is an upper bound, not a
-	// better result. Saying so beside the number is what stops --skip-vulns
-	// reading as an improvement.
+	// Say beside the number what it does not account for. A score computed
+	// without the vulnerability checks is an upper bound rather than a better
+	// result, and a score normalized over fewer dimensions is not comparable in
+	// either direction: dropping quantum readiness, the dimension most servers
+	// score worst on, RAISED the reported grade as far as A+ (100/100).
 	basis := ""
-	if !grade.VulnerabilitiesAssessed {
+	switch {
+	case len(grade.SkippedDimensions) > 0 && !grade.VulnerabilitiesAssessed:
+		basis = r.color(colorYellow, fmt.Sprintf("  not comparable: %s and the vulnerability checks were skipped",
+			strings.Join(grade.SkippedDimensions, " and ")))
+	case len(grade.SkippedDimensions) > 0:
+		basis = r.color(colorYellow, fmt.Sprintf("  not comparable: %s was not assessed",
+			strings.Join(grade.SkippedDimensions, " and ")))
+	case !grade.VulnerabilitiesAssessed:
 		basis = r.color(colorYellow, "  upper bound, vulnerability checks skipped")
 	}
 
@@ -253,9 +262,10 @@ func (r *TextReporter) printScoreReconciliation(w io.Writer, grade types.Grade) 
 	const labelWidth = 44
 
 	subtotal := fmt.Sprintf("%d/100", grade.DimensionScore)
-	if grade.DimensionMaxPoints != 100 && grade.DimensionMaxPoints > 0 {
-		subtotal += fmt.Sprintf("  (%d of %d points; one dimension was not assessed)",
-			grade.DimensionPoints, grade.DimensionMaxPoints)
+	if len(grade.SkippedDimensions) > 0 && grade.DimensionMaxPoints > 0 {
+		subtotal += fmt.Sprintf("  (%d of %d points; %s not assessed)",
+			grade.DimensionPoints, grade.DimensionMaxPoints,
+			strings.Join(grade.SkippedDimensions, " and "))
 	}
 	fmt.Fprintf(w, "    %-*s%s\n", labelWidth, "Dimension subtotal", subtotal)
 

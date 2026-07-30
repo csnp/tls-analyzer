@@ -51,6 +51,7 @@ func (s *Scanner) calculateGrade(result *types.ScanResult) types.Grade {
 	// the grade a whole band and reported a quantum score of 0 for servers that
 	// verifiably negotiate a hybrid ML-KEM group. A check that was not run
 	// contributes neither points nor maximum.
+	var skippedDimensions []string
 	if s.config.CheckQuantum {
 		quantumScore := result.QuantumRisk.Score / 4 // Scale 0-100 to 0-25
 		factors = append(factors, types.GradeFactor{
@@ -61,6 +62,13 @@ func (s *Scanner) calculateGrade(result *types.ScanResult) types.Grade {
 		})
 		totalScore += quantumScore
 		maxTotal += 25
+	} else {
+		// Excluding the dimension keeps the score honest about what it measured,
+		// but it also renormalizes over the remaining dimensions, and quantum
+		// readiness is the one most servers score worst on. So skipping it RAISES
+		// the reported grade. Recording which dimension was dropped is what lets
+		// the report say the number is not comparable with a full scan's.
+		skippedDimensions = append(skippedDimensions, "Quantum Readiness")
 	}
 
 	// Normalize the dimensions to a percentage.
@@ -99,6 +107,7 @@ func (s *Scanner) calculateGrade(result *types.ScanResult) types.Grade {
 		DimensionScore:     dimensionScore,
 		DimensionPoints:    totalScore,
 		DimensionMaxPoints: maxTotal,
+		SkippedDimensions:  skippedDimensions,
 
 		VulnerabilityPenalty: penaltyTotal,
 		Penalties:            penalties,

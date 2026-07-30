@@ -63,6 +63,35 @@ where noted; what changed is that a reader can now reconcile them.
   instead. A scan that enumerated no suites at all still records no gap, because
   missing evidence is not a measured absence. This changes the verdict only for
   servers offering a hybrid post-quantum group and no 256-bit encryption.
+- **`--skip-quantum` raised the grade, on a post-quantum readiness tool.**
+  Excluding a skipped dimension keeps the score honest about what it measured, but
+  it also renormalises over the dimensions that remain, and quantum readiness is
+  the one most servers score worst on. So declining the assessment moved
+  github.com from `D (40/100)` to `C (61/100)`, and a well-configured host reached
+  `A+ (100/100)` by not looking. The raise is inherent to excluding a dimension and
+  is unchanged; what is new is that the score now says it is not comparable with a
+  full scan's and names the dimension that did not run, both on the headline and in
+  the breakdown. `grade.skippedDimensions` carries the same in JSON.
+- **A `--targets` sweep graded hosts it never reached, and exited 0.** Every
+  unreachable host rendered as a finished assessment: `TLS Security: (0/100)` with
+  a blank letter, a quantum score of 0 and an unticked hybrid PQC line, for a host
+  that did not resolve. The reason was on the result and in `--format json` all
+  along; the text renderer, the default format, discarded it. A sweep during a DNS
+  blip therefore produced a confident failing row per host and a success exit, so
+  `tlsanalyzer --targets hosts.txt && deploy` proceeded on a scan that measured
+  nothing. The same defect 0.3.0 fixed for the single-target path, surviving in
+  batch because the error travels on the result rather than as a returned error. An
+  unscanned target now renders a `NOT SCANNED` block with the reason and no grade,
+  and batch exits non-zero naming every target that failed.
+- **`--concurrency` and `--timeout` accepted values the tool could not act on.**
+  `--concurrency 0` hung forever on an unbuffered semaphore with nothing on either
+  stream, `--concurrency -1` panicked out of `make()` with a stack trace that also
+  printed absolute source paths, and `--timeout 0` or a negative value meant no
+  timeout at all, so one unresponsive host wedged a whole sweep. `--port` was the
+  only numeric flag that was checked; all three are now refused by name. Flag
+  validation also moved ahead of target collection, so
+  `tlsanalyzer --concurrency 0` no longer answers that it has no targets while
+  saying nothing about the value it cannot use.
 - **`--skip-vulns` raised the grade.** Declining to run the vulnerability checks
   removed their penalties, so on cloudflare.com the reported result moved from
   `F (21/100)` to `C (66/100)` purely by looking at less. The penalty cannot be

@@ -212,6 +212,14 @@ type Grade struct {
 	DimensionPoints    int `json:"dimensionPoints"`
 	DimensionMaxPoints int `json:"dimensionMaxPoints"`
 
+	// SkippedDimensions names the dimensions that did not run, so Score is
+	// normalized over a different set from a full scan's and the two are not
+	// comparable in either direction. Skipping the quantum assessment removed the
+	// dimension most servers score worst on, which RAISED the reported grade:
+	// github.com moved from D (40/100) to C (61/100) and a well-configured host
+	// reached A+ (100/100) purely by declining to look.
+	SkippedDimensions []string `json:"skippedDimensions,omitempty"`
+
 	// VulnerabilityPenalty is the total number of points deducted from
 	// DimensionScore for detected vulnerabilities, as a positive number. The
 	// penalty was previously applied but never reported, so a breakdown reading
