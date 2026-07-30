@@ -885,12 +885,34 @@ func parseTarget(target string) (string, int, error) {
 		return "", 0, err
 	}
 
-	port := 443
-	if portStr != "" {
-		fmt.Sscanf(portStr, "%d", &port)
+	// A port that is not a number silently fell back to 443, so
+	// "example.com:abc" reported Target example.com:abc and Port 443 and scanned
+	// a port the user never named. The same class as the --format fallback fixed
+	// in 0.3.0: an unusable argument must be refused, not reinterpreted.
+	port, convErr := strconv.Atoi(portStr)
+	if convErr != nil {
+		return "", 0, fmt.Errorf(
+			"invalid port %q: must be a number between 1 and 65535", portStr)
+	}
+	if err := ValidatePort(port); err != nil {
+		return "", 0, err
 	}
 
 	return host, port, nil
+}
+
+// ValidatePort rejects a port outside the TCP range.
+//
+// An out-of-range port reached the dialer and produced "no TLS connection could
+// be established to example.com:-5 (host unreachable, port closed, or not
+// speaking TLS)", which describes the host rather than the rejected argument.
+// This is the single check behind both the -p/--port flag and a port written
+// into the target, so neither route can accept what the other refuses.
+func ValidatePort(port int) error {
+	if port < 1 || port > 65535 {
+		return fmt.Errorf("invalid port %d: must be between 1 and 65535", port)
+	}
+	return nil
 }
 
 // sha256Fingerprint returns the SHA-256 fingerprint of a DER-encoded

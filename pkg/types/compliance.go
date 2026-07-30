@@ -20,6 +20,12 @@ type CNSA2Timeline struct {
 	// Current assessment date
 	AssessmentDate time.Time `json:"assessmentDate"`
 
+	// Scope states what question the milestone statuses answer. Without it, this
+	// section and a policy evaluation of the same standard can print opposite
+	// verdicts for the same deadline with nothing to tell a reader that they
+	// measure different things.
+	Scope string `json:"scope"`
+
 	// Milestone compliance status
 	Milestones []CNSA2Milestone `json:"milestones"`
 

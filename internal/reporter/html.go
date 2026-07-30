@@ -24,6 +24,9 @@ func (r *HTMLReporter) Report(w io.Writer, result *types.ScanResult) error {
 		"formatTime":    formatTime,
 		"progressBar":   progressBar,
 		"statusIcon":    statusIcon,
+		// Shared with the text reporter so the two cannot describe the same
+		// deduction differently.
+		"describePenalties": describePenalties,
 	}).Parse(htmlTemplate)
 	if err != nil {
 		return fmt.Errorf("failed to parse template: %w", err)
@@ -429,6 +432,29 @@ const htmlTemplate = `<!DOCTYPE html>
                         <td>{{.Details}}</td>
                     </tr>
                     {{end}}
+                    <tr>
+                        <td><strong>Dimension subtotal</strong></td>
+                        <td><strong>{{.Grade.DimensionScore}}/100</strong></td>
+                        <td>{{.Grade.DimensionPoints}} of {{.Grade.DimensionMaxPoints}} available points</td>
+                    </tr>
+                    <tr>
+                        <td><strong>Vulnerability penalty</strong></td>
+                        {{if not .Grade.VulnerabilitiesAssessed}}
+                        <td><strong>not measured</strong></td>
+                        <td>Vulnerability checks were skipped, so the score below is an upper bound and is not comparable with a full scan.</td>
+                        {{else if .Grade.VulnerabilityPenalty}}
+                        <td><strong>-{{.Grade.VulnerabilityPenalty}}</strong></td>
+                        <td>{{describePenalties .Grade.Penalties}}</td>
+                        {{else}}
+                        <td><strong>none</strong></td>
+                        <td>No vulnerability findings deducted points.</td>
+                        {{end}}
+                    </tr>
+                    <tr>
+                        <td><strong>TLS Security score</strong></td>
+                        <td><strong>{{.Grade.Score}}/100</strong></td>
+                        <td>{{if .Grade.PenaltyFloored}}The penalty exceeded the subtotal, so the score is held at 0.{{end}}</td>
+                    </tr>
                 </tbody>
             </table>
         </section>

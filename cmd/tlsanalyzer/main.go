@@ -6,6 +6,7 @@ import (
 	"context"
 	"encoding/json"
 	"fmt"
+	"io"
 	"net"
 	"os"
 	"os/signal"
@@ -66,6 +67,12 @@ It analyzes:
   • CNSA 2.0 compliance timeline
   • Security vulnerabilities and misconfigurations
 
+Quantum Ready grades:
+  Q+  ready: hybrid or full PQC key exchange in place
+  Q   partial: some post-quantum protection available
+  Q-  limited: minimal post-quantum protection
+  QV  vulnerable: classical key exchange only
+
 Examples:
   tlsanalyzer example.com
   tlsanalyzer example.com:8443
@@ -76,6 +83,12 @@ Examples:
   tlsanalyzer --targets hosts.txt --format json`,
 	Args: cobra.MaximumNArgs(1),
 	RunE: runScan,
+
+	// A runtime failure is not a usage mistake. Every error, including an
+	// unreachable host, printed the error and then the whole ~30 line usage
+	// block after it, which buried the one line that mattered. Cobra still
+	// prints "Error: ..." itself; --help remains the way to see usage.
+	SilenceUsage: true,
 }
 
 var versionCmd = &cobra.Command{
@@ -114,6 +127,12 @@ var policiesCmd = &cobra.Command{
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(policiesCmd)
+
+	// Suppressing the usage block leaves a flag mistake with no next step, so
+	// point at --help explicitly rather than printing every flag.
+	rootCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		return fmt.Errorf("%w\nRun 'tlsanalyzer --help' to see the available flags", err)
+	})
 
 	// Output options
 	rootCmd.Flags().StringVarP(&outputFormat, "format", "f", "text",
@@ -176,7 +195,14 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// Apply --port only when the user actually passed it, so that targets
 	// written as host:port keep working and the default never silently
 	// rewrites them.
+	//
+	// The value is range-checked here, before any network work, so that the error
+	// names the flag. A port written into the target itself is checked by the
+	// scanner when it parses the target, which is the one place both routes meet.
 	if cmd.Flags().Changed("port") {
+		if err := scanner.ValidatePort(port); err != nil {
+			return fmt.Errorf("--port: %w", err)
+		}
 		for i, target := range targets {
 			targets[i] = applyPortOverride(target, port)
 		}
@@ -240,15 +266,24 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// Determine if batch mode
 	if len(targets) == 1 {
 		// Single target mode
-		return scanSingleTarget(ctx, s, cnsa2Analyzer, policyEvaluator, targets[0], policy, output)
+		return scanSingleTarget(ctx, s.Scan, cnsa2Analyzer, policyEvaluator, targets[0], policy, output)
 	}
 
 	// Batch mode
-	return scanBatchTargets(ctx, s, cnsa2Analyzer, policyEvaluator, targets, policy, output)
+	return scanBatchTargets(ctx, s.Scan, cnsa2Analyzer, policyEvaluator, targets, policy, output)
 }
 
-func scanSingleTarget(ctx context.Context, s *scanner.Scanner, cnsa2 *analyzer.CNSA2Analyzer, policyEval *analyzer.PolicyEvaluator, target string, policy *types.Policy, output *os.File) error {
-	result, err := s.Scan(ctx, target)
+// scanFunc performs one scan.
+//
+// The batch and single paths take the scan as a function rather than a
+// *scanner.Scanner so that output ordering can be tested against a completion
+// order that is deliberately the reverse of the input order. Nothing else can
+// prove the ordering fix, because a real scan finishes in whatever order the
+// network allows.
+type scanFunc func(ctx context.Context, target string) (*types.ScanResult, error)
+
+func scanSingleTarget(ctx context.Context, scan scanFunc, cnsa2 *analyzer.CNSA2Analyzer, policyEval *analyzer.PolicyEvaluator, target string, policy *types.Policy, output io.Writer) error {
+	result, err := scan(ctx, target)
 	if err != nil {
 		return fmt.Errorf("scan failed: %w", err)
 	}
@@ -272,9 +307,13 @@ func scanSingleTarget(ctx context.Context, s *scanner.Scanner, cnsa2 *analyzer.C
 	return rep.Report(output, result)
 }
 
-func scanBatchTargets(ctx context.Context, s *scanner.Scanner, cnsa2 *analyzer.CNSA2Analyzer, policyEval *analyzer.PolicyEvaluator, targets []string, policy *types.Policy, output *os.File) error {
-	results := make([]*types.ScanResult, 0, len(targets))
-	var mu sync.Mutex
+func scanBatchTargets(ctx context.Context, scan scanFunc, cnsa2 *analyzer.CNSA2Analyzer, policyEval *analyzer.PolicyEvaluator, targets []string, policy *types.Policy, output io.Writer) error {
+	// Results are written to a fixed slot per target, so batch output follows the
+	// order of the targets file. Appending as each scan finished produced an order
+	// that varied between identical runs, and did so even at --concurrency 1,
+	// because the semaphore does not hand out slots in the order goroutines
+	// queued for them. That made a --targets sweep undiffable in CI.
+	results := make([]*types.ScanResult, len(targets))
 	var wg sync.WaitGroup
 
 	// Semaphore for concurrency control
@@ -285,15 +324,15 @@ func scanBatchTargets(ctx context.Context, s *scanner.Scanner, cnsa2 *analyzer.C
 	completed := 0
 	var progressMu sync.Mutex
 
-	for _, target := range targets {
+	for i, target := range targets {
 		wg.Add(1)
-		go func(t string) {
+		go func(slot int, t string) {
 			defer wg.Done()
 
 			sem <- struct{}{}        // Acquire
 			defer func() { <-sem }() // Release
 
-			result, err := s.Scan(ctx, t)
+			result, err := scan(ctx, t)
 			if err != nil {
 				result = &types.ScanResult{
 					Target:         t,
@@ -319,9 +358,7 @@ func scanBatchTargets(ctx context.Context, s *scanner.Scanner, cnsa2 *analyzer.C
 				result.ScannerVersion = version
 			}
 
-			mu.Lock()
-			results = append(results, result)
-			mu.Unlock()
+			results[slot] = result
 
 			// Update progress
 			progressMu.Lock()
@@ -330,7 +367,7 @@ func scanBatchTargets(ctx context.Context, s *scanner.Scanner, cnsa2 *analyzer.C
 				fmt.Fprintf(os.Stderr, "\rScanning: %d/%d targets completed", completed, total)
 			}
 			progressMu.Unlock()
-		}(target)
+		}(i, target)
 	}
 
 	wg.Wait()

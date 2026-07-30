@@ -126,9 +126,15 @@ type PolicyViolation struct {
 
 // PolicyResult contains the results of policy evaluation.
 type PolicyResult struct {
-	PolicyName string            `json:"policyName"`
-	Compliant  bool              `json:"compliant"`
-	Score      int               `json:"score"`
+	PolicyName string `json:"policyName"`
+	Compliant  bool   `json:"compliant"`
+	Score      int    `json:"score"`
+
+	// Scope states what this verdict covers. A policy evaluation of a CNSA 2.0
+	// target year and the CNSA 2.0 timeline section can disagree about the same
+	// deadline because they ask different questions, and neither said so.
+	Scope string `json:"scope"`
+
 	Violations []PolicyViolation `json:"violations"`
 	Warnings   []PolicyViolation `json:"warnings"`
 }

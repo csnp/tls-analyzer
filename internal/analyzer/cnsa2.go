@@ -134,12 +134,30 @@ var CNSA2Milestones = []struct {
 	},
 }
 
+// CNSA2TimelineScope states what a milestone status answers for.
+//
+// This section and a policy evaluation of the same CNSA 2.0 target year
+// previously printed opposite verdicts for the same deadline, with nothing to
+// tell a reader they were answering different questions: "cnsa-2.0-2027:
+// NON-COMPLIANT, 0/100, 16 violations" beside "New NSS Systems (2027-01-01):
+// compliant". Both are defensible, because a milestone asks whether the required
+// algorithms are available at all while a policy asks whether everything the
+// server still accepts qualifies. Each verdict now states its own scope and
+// names the other.
+const CNSA2TimelineScope = "milestone status reports whether this server can " +
+	"negotiate the algorithms a milestone requires. A milestone can be met while " +
+	"the server also still accepts weaker options, so a policy evaluation of the " +
+	"same target year, which requires every accepted protocol and cipher suite to " +
+	"qualify, can report non-compliant against the same deadline. Read the " +
+	"milestones for adoption and the policy evaluation for exclusivity."
+
 // Analyze performs CNSA 2.0 compliance analysis.
 func (a *CNSA2Analyzer) Analyze(result *types.ScanResult) *types.CNSA2Timeline {
 	now := time.Now()
 
 	timeline := &types.CNSA2Timeline{
 		AssessmentDate: now,
+		Scope:          CNSA2TimelineScope,
 		Milestones:     make([]types.CNSA2Milestone, 0),
 		Findings:       make([]types.CNSA2Finding, 0),
 	}
@@ -198,12 +216,22 @@ func (a *CNSA2Analyzer) analyzeMilestone(result *types.ScanResult, m struct {
 			milestone.Gap = append(milestone.Gap, "ML-KEM key exchange not detected")
 		}
 
-		// Check symmetric
+		// Check symmetric strength. An absent 256-bit suite previously recorded
+		// no gap at all, so a server offering only 128-bit suites was reported
+		// compliant against a milestone whose own requirement list names AES-256.
+		// The gap is only recorded when suites were actually observed: an
+		// unobserved cipher list is not a measured absence.
+		hasAES256 := false
 		for _, cs := range result.CipherSuites {
 			if cs.Bits >= 256 {
+				hasAES256 = true
 				milestone.Current = append(milestone.Current, "AES-256 encryption detected")
 				break
 			}
+		}
+		if !hasAES256 && len(result.CipherSuites) > 0 {
+			milestone.Gap = append(milestone.Gap,
+				"no 256-bit symmetric cipher suite detected (CNSA 2.0 requires AES-256)")
 		}
 
 		if len(milestone.Gap) == 0 && hasHybridPQC {

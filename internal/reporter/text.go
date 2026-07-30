@@ -58,7 +58,7 @@ func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
 	// Quantum risk assessment. Omitted entirely when it was not run, rather
 	// than rendered from a zero-valued assessment, which reported a server with
 	// hybrid ML-KEM key exchange as quantum vulnerable.
-	if result.Grade.QuantumGrade != "not assessed" {
+	if result.Grade.QuantumGrade != types.QuantumGradeNotAssessed {
 		r.printQuantumRisk(w, result.QuantumRisk)
 	}
 
@@ -80,6 +80,58 @@ func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
 	}
 
 	return nil
+}
+
+// printScope renders a wrapped scope note under a section heading.
+//
+// Scope text is prose rather than a field value, so it is wrapped with a hanging
+// indent instead of printed as one long line. The indent is per-caller so the
+// note lines up with the value column of the section it belongs to.
+func (r *TextReporter) printScope(w io.Writer, label, text string, indent int) {
+	const width = 60
+
+	for i, line := range wrapText(text, width) {
+		if i == 0 {
+			fmt.Fprintf(w, "    %-*s%s\n", indent-4, label, r.color(colorDim, line))
+			continue
+		}
+		fmt.Fprintf(w, "%*s%s\n", indent, "", r.color(colorDim, line))
+	}
+}
+
+// wrapText breaks text into lines of at most width characters on word
+// boundaries. A word longer than width is left whole on its own line rather than
+// split, so an algorithm name or URL is never broken.
+func wrapText(text string, width int) []string {
+	words := strings.Fields(text)
+	if len(words) == 0 {
+		return nil
+	}
+
+	lines := make([]string, 0, len(words)/8+1)
+	line := words[0]
+	for _, word := range words[1:] {
+		if len(line)+1+len(word) > width {
+			lines = append(lines, line)
+			line = word
+			continue
+		}
+		line += " " + word
+	}
+
+	return append(lines, line)
+}
+
+// milestoneLegend keys the milestone status glyphs, which appeared with no
+// explanation anywhere in the output or in --help.
+func (r *TextReporter) milestoneLegend() string {
+	return fmt.Sprintf("%s met, %s partial, %s in progress, %s not met, %s not yet required",
+		r.color(colorGreen, "✓"),
+		r.color(colorYellow, "◐"),
+		r.color(colorBlue, "○"),
+		r.color(colorRed, "✗"),
+		r.color(colorDim, "—"),
+	)
 }
 
 // printScanWarnings renders the limits on what this scan could observe.
@@ -119,6 +171,11 @@ func (r *TextReporter) printHeader(w io.Writer, result *types.ScanResult) {
 	fmt.Fprintf(w, "  %s %s\n\n", r.color(colorDim, "Duration:"), result.Duration.String())
 }
 
+// quantumGradeLegend explains the quantum readiness letters, which appeared in
+// the report and in --help with no key anywhere, so a reader could not tell
+// whether Q was a good result.
+const quantumGradeLegend = "Q+ ready, Q partial, Q- limited, QV vulnerable"
+
 func (r *TextReporter) printGrade(w io.Writer, grade types.Grade) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold, "OVERALL GRADE"))
@@ -128,11 +185,23 @@ func (r *TextReporter) printGrade(w io.Writer, grade types.Grade) {
 	letterColor := r.gradeColor(grade.Letter)
 	quantumColor := r.quantumGradeColor(grade.QuantumGrade)
 
-	fmt.Fprintf(w, "  TLS Security:     %s  (%d/100)\n",
+	// A score computed without the vulnerability checks is an upper bound, not a
+	// better result. Saying so beside the number is what stops --skip-vulns
+	// reading as an improvement.
+	basis := ""
+	if !grade.VulnerabilitiesAssessed {
+		basis = r.color(colorYellow, "  upper bound, vulnerability checks skipped")
+	}
+
+	fmt.Fprintf(w, "  TLS Security:     %s  (%d/100)%s\n",
 		r.color(letterColor+colorBold, fmt.Sprintf("%-3s", grade.Letter)),
-		grade.Score)
-	fmt.Fprintf(w, "  Quantum Ready:    %s\n\n",
+		grade.Score, basis)
+	fmt.Fprintf(w, "  Quantum Ready:    %s\n",
 		r.color(quantumColor+colorBold, grade.QuantumGrade))
+	if grade.QuantumGrade != types.QuantumGradeNotAssessed {
+		fmt.Fprintf(w, "                    %s\n", r.color(colorDim, quantumGradeLegend))
+	}
+	fmt.Fprintln(w)
 
 	// Factors breakdown
 	fmt.Fprintf(w, "  %s\n", r.color(colorDim, "Score Breakdown:"))
@@ -140,7 +209,52 @@ func (r *TextReporter) printGrade(w io.Writer, grade types.Grade) {
 		bar := r.progressBar(f.Score, f.MaxScore, 20)
 		fmt.Fprintf(w, "    %-20s %s %d/%d\n", f.Category, bar, f.Score, f.MaxScore)
 	}
+	r.printScoreReconciliation(w, grade)
 	fmt.Fprintln(w)
+}
+
+// printScoreReconciliation closes the arithmetic between the dimension
+// breakdown and the headline score.
+//
+// The dimensions above summed to 66 while the headline read 21/100, because a
+// real and consistently applied vulnerability penalty sat between them and was
+// never printed. The normalization is shown too, since a skipped dimension
+// changes the denominator and four dimensions worth 25 each then do not total 100.
+func (r *TextReporter) printScoreReconciliation(w io.Writer, grade types.Grade) {
+	const labelWidth = 44
+
+	subtotal := fmt.Sprintf("%d/100", grade.DimensionScore)
+	if grade.DimensionMaxPoints != 100 && grade.DimensionMaxPoints > 0 {
+		subtotal += fmt.Sprintf("  (%d of %d points; one dimension was not assessed)",
+			grade.DimensionPoints, grade.DimensionMaxPoints)
+	}
+	fmt.Fprintf(w, "    %-*s%s\n", labelWidth, "Dimension subtotal", subtotal)
+
+	penalty := "none"
+	switch {
+	case !grade.VulnerabilitiesAssessed:
+		penalty = r.color(colorYellow, "not measured (vulnerability checks skipped)")
+	case grade.VulnerabilityPenalty > 0:
+		penalty = fmt.Sprintf("-%d  (%s)",
+			grade.VulnerabilityPenalty, describePenalties(grade.Penalties))
+	}
+	fmt.Fprintf(w, "    %-*s%s\n", labelWidth, "Vulnerability penalty", penalty)
+
+	final := fmt.Sprintf("%d/100", grade.Score)
+	if grade.PenaltyFloored {
+		final += "  (the penalty exceeded the subtotal, so the score is held at 0)"
+	}
+	fmt.Fprintf(w, "    %-*s%s\n", labelWidth, "TLS Security score", final)
+}
+
+// describePenalties renders the per-severity deduction, for example
+// "1 HIGH x 15, 6 MEDIUM x 5".
+func describePenalties(penalties []types.GradePenalty) string {
+	parts := make([]string, 0, len(penalties))
+	for _, p := range penalties {
+		parts = append(parts, fmt.Sprintf("%d %s x %d", p.Count, p.Severity, p.PointsEach))
+	}
+	return strings.Join(parts, ", ")
 }
 
 func (r *TextReporter) gradeColor(letter string) string {
@@ -402,7 +516,11 @@ func (r *TextReporter) printPolicyResult(w io.Writer, pr *types.PolicyResult) {
 
 	fmt.Fprintf(w, "    Policy:     %s\n", r.color(colorBold, pr.PolicyName))
 	fmt.Fprintf(w, "    Status:     %s\n", complianceStatus)
-	fmt.Fprintf(w, "    Score:      %d/100\n\n", pr.Score)
+	fmt.Fprintf(w, "    Score:      %d/100\n", pr.Score)
+	if pr.Scope != "" {
+		r.printScope(w, "Scope:", pr.Scope, 16)
+	}
+	fmt.Fprintln(w)
 
 	// Violations
 	if len(pr.Violations) > 0 {
@@ -433,10 +551,16 @@ func (r *TextReporter) printCNSA2Timeline(w io.Writer, timeline *types.CNSA2Time
 	fmt.Fprintf(w, "    Current Phase:      %s\n", r.color(colorCyan, timeline.CurrentPhase))
 	fmt.Fprintf(w, "    Timeline Score:     %d/100\n", timeline.TimelineScore)
 	fmt.Fprintf(w, "    Days to Deadline:   %d\n", timeline.DaysToNextDeadline)
-	fmt.Fprintf(w, "    Next Action:        %s\n\n", timeline.NextAction)
+	fmt.Fprintf(w, "    Next Action:        %s\n", timeline.NextAction)
+	if timeline.Scope != "" {
+		r.printScope(w, "Scope:", timeline.Scope, 24)
+	}
+	fmt.Fprintln(w)
 
-	// Milestones
+	// Milestones. The status glyphs had no key anywhere in the output or in
+	// --help, so a reader could not tell what they meant.
 	fmt.Fprintf(w, "    %s\n", r.color(colorBold, "Milestones:"))
+	fmt.Fprintf(w, "      %s\n", r.color(colorDim, "legend: "+r.milestoneLegend()))
 	for _, m := range timeline.Milestones {
 		statusIcon := r.color(colorGreen, "✓")
 		statusColor := colorGreen

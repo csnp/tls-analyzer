@@ -2,6 +2,8 @@
 package types
 
 import (
+	"encoding/json"
+	"fmt"
 	"time"
 )
 
@@ -52,6 +54,34 @@ type Duration struct {
 // MarshalJSON implements json.Marshaler.
 func (d Duration) MarshalJSON() ([]byte, error) {
 	return []byte(`"` + d.String() + `"`), nil
+}
+
+// UnmarshalJSON implements json.Unmarshaler.
+//
+// Without it this type marshalled but could not be read back, so a consumer
+// importing this package could not decode the tool's own JSON output into the
+// tool's own public types: json.Unmarshal failed with "cannot unmarshal string
+// into Go struct field ScanResult.duration of type types.Duration".
+func (d *Duration) UnmarshalJSON(data []byte) error {
+	var text string
+	if err := json.Unmarshal(data, &text); err != nil {
+		// Accept a plain nanosecond count as well, which is what a consumer
+		// re-encoding the value with the standard time.Duration marshaller emits.
+		var nanoseconds int64
+		if numErr := json.Unmarshal(data, &nanoseconds); numErr != nil {
+			return err
+		}
+		d.Duration = time.Duration(nanoseconds)
+		return nil
+	}
+
+	parsed, err := time.ParseDuration(text)
+	if err != nil {
+		return fmt.Errorf("invalid duration %q: %w", text, err)
+	}
+	d.Duration = parsed
+
+	return nil
 }
 
 // Protocol represents a TLS protocol version.
@@ -169,7 +199,45 @@ type Grade struct {
 	Score        int           `json:"score"`        // 0-100
 	QuantumGrade string        `json:"quantumGrade"` // Separate quantum readiness grade
 	Factors      []GradeFactor `json:"factors"`
+
+	// DimensionScore is the score across the dimensions in Factors, normalized
+	// to 0-100, before any vulnerability penalty. Score cannot be reconciled
+	// from Factors alone: a skipped dimension changes the denominator, and the
+	// penalty is applied after normalization.
+	DimensionScore int `json:"dimensionScore"`
+
+	// DimensionPoints and DimensionMaxPoints are the raw point total and
+	// available points behind DimensionScore, so a reader can see why four
+	// dimensions worth 25 each do not always total 100.
+	DimensionPoints    int `json:"dimensionPoints"`
+	DimensionMaxPoints int `json:"dimensionMaxPoints"`
+
+	// VulnerabilityPenalty is the total number of points deducted from
+	// DimensionScore for detected vulnerabilities, as a positive number. The
+	// penalty was previously applied but never reported, so a breakdown reading
+	// 10 + 15 + 25 + 16 = 66 printed under a headline of 21/100 with nothing to
+	// account for the difference.
+	VulnerabilityPenalty int `json:"vulnerabilityPenalty"`
+
+	// Penalties itemizes VulnerabilityPenalty by severity.
+	Penalties []GradePenalty `json:"penalties,omitempty"`
+
+	// PenaltyFloored records that the penalty exceeded DimensionScore and Score
+	// was held at zero, so the printed arithmetic would not otherwise close.
+	PenaltyFloored bool `json:"penaltyFloored,omitempty"`
+
+	// VulnerabilitiesAssessed is false when the vulnerability checks did not
+	// run, which makes the penalty unmeasured rather than zero. Score is then an
+	// upper bound on what a full scan would report and is not comparable with
+	// one. Declining a check must not read as an improvement.
+	VulnerabilitiesAssessed bool `json:"vulnerabilitiesAssessed"`
 }
+
+// QuantumGradeNotAssessed is the QuantumGrade value used when the quantum risk
+// assessment did not run. The reporters branch on it to omit a section rather
+// than render a zero-valued assessment, so it is defined once here instead of
+// repeated as a literal in each package that compares it.
+const QuantumGradeNotAssessed = "not assessed"
 
 // GradeFactor explains a component of the grade.
 type GradeFactor struct {
@@ -177,6 +245,15 @@ type GradeFactor struct {
 	Score    int    `json:"score"`
 	MaxScore int    `json:"maxScore"`
 	Details  string `json:"details"`
+}
+
+// GradePenalty itemizes one severity's contribution to the vulnerability
+// penalty, so the deduction can be traced to the findings that caused it.
+type GradePenalty struct {
+	Severity    Severity `json:"severity"`
+	Count       int      `json:"count"`
+	PointsEach  int      `json:"pointsEach"`
+	PointsTotal int      `json:"pointsTotal"`
 }
 
 // Recommendation provides actionable guidance.

@@ -63,27 +63,29 @@ func (s *Scanner) calculateGrade(result *types.ScanResult) types.Grade {
 		maxTotal += 25
 	}
 
-	// Calculate final percentage
-	finalScore := 0
+	// Normalize the dimensions to a percentage.
+	dimensionScore := 0
 	if maxTotal > 0 {
-		finalScore = (totalScore * 100) / maxTotal
+		dimensionScore = (totalScore * 100) / maxTotal
+	}
+	if dimensionScore > 100 {
+		dimensionScore = 100
+	}
+	if dimensionScore < 0 {
+		dimensionScore = 0
 	}
 
-	// Apply vulnerability penalties
-	for _, vuln := range result.Vulnerabilities {
-		switch vuln.Severity {
-		case types.SeverityCritical:
-			finalScore -= 30
-		case types.SeverityHigh:
-			finalScore -= 15
-		case types.SeverityMedium:
-			finalScore -= 5
-		}
-	}
+	// Apply vulnerability penalties, and record them. The deduction is real and
+	// consistently applied, but it was never reported, so a breakdown printing
+	// "Protocol 10 + Cipher 15 + Certificate 25 + Quantum 16" under a headline of
+	// 21/100 gave a reader no way to reconcile the two numbers.
+	penalties, penaltyTotal := vulnerabilityPenalties(result.Vulnerabilities)
 
-	// Clamp score
+	finalScore := dimensionScore - penaltyTotal
+	penaltyFloored := false
 	if finalScore < 0 {
 		finalScore = 0
+		penaltyFloored = true
 	}
 	if finalScore > 100 {
 		finalScore = 100
@@ -93,6 +95,20 @@ func (s *Scanner) calculateGrade(result *types.ScanResult) types.Grade {
 		Letter:  scoresToLetter(finalScore),
 		Score:   finalScore,
 		Factors: factors,
+
+		DimensionScore:     dimensionScore,
+		DimensionPoints:    totalScore,
+		DimensionMaxPoints: maxTotal,
+
+		VulnerabilityPenalty: penaltyTotal,
+		Penalties:            penalties,
+		PenaltyFloored:       penaltyFloored,
+
+		// A skipped check leaves the penalty unmeasured, not zero. Recording
+		// which it was is what stops "--skip-vulns" reading as an improvement:
+		// on cloudflare.com it moved the reported grade from F (21/100) to
+		// C (66/100) purely by declining to look.
+		VulnerabilitiesAssessed: s.config.CheckVulns,
 	}
 
 	// Only assign a quantum letter when the assessment ran. Deriving one from a
@@ -101,10 +117,54 @@ func (s *Scanner) calculateGrade(result *types.ScanResult) types.Grade {
 	if s.config.CheckQuantum {
 		grade.QuantumGrade = quantumScoreToLetter(result.QuantumRisk.Score)
 	} else {
-		grade.QuantumGrade = "not assessed"
+		grade.QuantumGrade = types.QuantumGradeNotAssessed
 	}
 
 	return grade
+}
+
+// vulnerabilityPenaltyPoints is the deduction applied per finding at each
+// severity, in the order the breakdown prints them. LOW and INFO findings do not
+// move the score, which is why they are absent rather than listed as zero.
+var vulnerabilityPenaltyPoints = []struct {
+	Severity types.Severity
+	Points   int
+}{
+	{types.SeverityCritical, 30},
+	{types.SeverityHigh, 15},
+	{types.SeverityMedium, 5},
+}
+
+// vulnerabilityPenalties itemizes the score deduction by severity and returns
+// the total. Splitting it out is what lets the report show the penalty as its
+// own line instead of leaving it as the unexplained gap between the dimension
+// subtotal and the headline score.
+func vulnerabilityPenalties(vulns []types.Vulnerability) ([]types.GradePenalty, int) {
+	counts := make(map[types.Severity]int, len(vulnerabilityPenaltyPoints))
+	for _, v := range vulns {
+		counts[v.Severity]++
+	}
+
+	var (
+		itemized []types.GradePenalty
+		total    int
+	)
+	for _, p := range vulnerabilityPenaltyPoints {
+		count := counts[p.Severity]
+		if count == 0 {
+			continue
+		}
+		points := count * p.Points
+		itemized = append(itemized, types.GradePenalty{
+			Severity:    p.Severity,
+			Count:       count,
+			PointsEach:  p.Points,
+			PointsTotal: points,
+		})
+		total += points
+	}
+
+	return itemized, total
 }
 
 func scoreProtocols(protocols []types.Protocol) (int, int) {

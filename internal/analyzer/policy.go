@@ -60,11 +60,26 @@ func (e *PolicyEvaluator) ListPolicies() []string {
 	return names
 }
 
+// PolicyEvaluationScope states what a policy verdict covers.
+//
+// A policy evaluation of a CNSA 2.0 target year and the CNSA 2.0 timeline
+// section previously printed opposite verdicts for the same deadline with
+// nothing to distinguish them. This evaluation is the stricter of the two: every
+// protocol and cipher suite the server still accepts must satisfy the rules, so
+// one weak suite that remains on offer is a violation even when a compliant
+// suite is also available and is the one normally negotiated.
+const PolicyEvaluationScope = "every protocol and cipher suite this server " +
+	"accepts is evaluated, so a weak suite that is still offered is a violation " +
+	"even when a compliant suite is available and preferred. The CNSA 2.0 " +
+	"timeline section answers the narrower question of whether the required " +
+	"algorithms are available at all, so the two can differ on the same deadline."
+
 // Evaluate evaluates a scan result against a policy.
 func (e *PolicyEvaluator) Evaluate(result *types.ScanResult, policy *types.Policy) *types.PolicyResult {
 	pr := &types.PolicyResult{
 		PolicyName: policy.Name,
 		Compliant:  true,
+		Scope:      PolicyEvaluationScope,
 		Violations: make([]types.PolicyViolation, 0),
 		Warnings:   make([]types.PolicyViolation, 0),
 	}
