@@ -274,15 +274,6 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if policyName != "" || policyFile != "" {
 		evaluator := analyzer.NewPolicyEvaluator()
 		if policyFile != "" {
-			// Both flags name a policy and only one can be applied. Silently
-			// dropping --policy meant a run could be evaluated against a
-			// different policy than the one the command line most visibly asked
-			// for, with nothing in the output saying so.
-			if policyName != "" {
-				return fmt.Errorf(
-					"--policy %s and --policy-file %s both name a policy, and only one can be "+
-						"applied. Pass one of them", policyName, policyFile)
-			}
 			policy, err = evaluator.LoadPolicy(policyFile)
 			if err != nil {
 				return fmt.Errorf("failed to load policy: %w", err)
@@ -544,6 +535,16 @@ func validateFlags(cmd *cobra.Command) error {
 
 	if timeout < 1 {
 		return fmt.Errorf("--timeout: invalid value %d: must be at least 1 second", timeout)
+	}
+
+	// Both flags name a policy and only one can be applied. --policy-file won
+	// silently, so a run could be evaluated against a different policy than the
+	// one the command line most visibly asked for, with nothing in the output
+	// saying which had been used.
+	if policyName != "" && policyFile != "" {
+		return fmt.Errorf(
+			"--policy %s and --policy-file %s both name a policy, and only one can be applied. "+
+				"Pass one of them", policyName, policyFile)
 	}
 
 	return nil
