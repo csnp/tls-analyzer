@@ -83,8 +83,14 @@ func riskClass(level types.RiskLevel) string {
 		return "risk-high"
 	case types.RiskMedium:
 		return "risk-medium"
-	default:
+	case types.RiskLow:
 		return "risk-low"
+	default:
+		// A level this function does not recognise is not a low risk, it is an
+		// unknown one. Defaulting to the reassuring class styled an empty risk
+		// level green, which is how an assessment that never ran was painted as
+		// the best possible outcome.
+		return "risk-unknown"
 	}
 }
 
@@ -317,6 +323,7 @@ const htmlTemplate = `<!DOCTYPE html>
         .risk-high { background: #7b341e; color: #fbd38d; }
         .risk-medium { background: #744210; color: #faf089; }
         .risk-low { background: #22543d; color: #9ae6b4; }
+        .risk-unknown { background: #2d3748; color: #cbd5e0; }
 
         .vuln-item, .rec-item {
             padding: 1rem;
@@ -431,7 +438,11 @@ const htmlTemplate = `<!DOCTYPE html>
             <div class="grade-box quantum-grade">
                 <div class="grade-label">Quantum Readiness</div>
                 <div class="grade-letter">{{.Grade.QuantumGrade}}</div>
+                {{if .QuantumRisk.Assessed}}
                 <div class="grade-score">{{.QuantumRisk.Score}}/100</div>
+                {{else}}
+                <div class="grade-score">not assessed</div>
+                {{end}}
             </div>
         </div>
 
@@ -507,6 +518,7 @@ const htmlTemplate = `<!DOCTYPE html>
             </table>
         </section>
 
+        {{if .QuantumRisk.Assessed}}
         <section>
             <h2 class="quantum">Quantum Risk Assessment</h2>
             <div class="quantum-details">
@@ -544,6 +556,15 @@ const htmlTemplate = `<!DOCTYPE html>
                 <div class="quantum-metric-value">{{.QuantumRisk.TimeToAction}}</div>
             </div>
         </section>
+        {{else}}
+        <section>
+            <h2 class="quantum">Quantum Risk Assessment</h2>
+            <p>This scan did not assess quantum readiness, so this report says nothing
+            about it. The section was previously drawn from a zero-valued assessment,
+            which showed an empty risk level styled as low risk and a score of 0 out of
+            100. Re-run without --skip-quantum to measure it.</p>
+        </section>
+        {{end}}
 
         {{if .Vulnerabilities}}
         <section>

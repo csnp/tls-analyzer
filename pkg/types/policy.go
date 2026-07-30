@@ -138,11 +138,35 @@ type PolicyViolation struct {
 	Remediation string   `json:"remediation"`
 }
 
+// SkippedPolicyRule records a rule that was not evaluated because the input it
+// reads was not measured in this scan.
+//
+// A rule whose input was not measured is neither passed nor failed, and it must
+// not be treated as either. Reading an unmeasured quantum score as the number 0
+// produced "[HIGH] Quantum readiness score below minimum, Expected: >= 90 |
+// Actual: 0" in the same report that said "Quantum Ready: not assessed".
+type SkippedPolicyRule struct {
+	Rule   string `json:"rule"`
+	Reason string `json:"reason"`
+}
+
 // PolicyResult contains the results of policy evaluation.
 type PolicyResult struct {
 	PolicyName string `json:"policyName"`
 	Compliant  bool   `json:"compliant"`
 	Score      int    `json:"score"`
+
+	// Complete is false when at least one rule was skipped, which makes both
+	// Compliant and Score answers about a smaller set of rules than the policy
+	// defines. Score is computed by deducting from 100, so a skipped rule can
+	// only raise it, and declining a check must never read as an improvement.
+	//
+	// The zero value is the cautious one: a PolicyResult that nothing filled in
+	// does not claim to be a complete evaluation.
+	Complete bool `json:"complete"`
+
+	// SkippedRules names what was not evaluated and why.
+	SkippedRules []SkippedPolicyRule `json:"skippedRules,omitempty"`
 
 	// Scope states what this verdict covers. A policy evaluation of a CNSA 2.0
 	// target year and the CNSA 2.0 timeline section can disagree about the same

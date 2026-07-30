@@ -189,6 +189,11 @@ func (e *PolicyEvaluator) Evaluate(result *types.ScanResult, policy *types.Polic
 	// Set compliant flag
 	pr.Compliant = len(pr.Violations) == 0
 
+	// A verdict that skipped rules is about a smaller set than the policy
+	// defines, so it is not comparable with a full evaluation in either
+	// direction.
+	pr.Complete = len(pr.SkippedRules) == 0
+
 	// Calculate score
 	pr.Score = e.calculateScore(pr, policy)
 
@@ -447,16 +452,33 @@ func (e *PolicyEvaluator) evaluateQuantum(result *types.ScanResult, rules *types
 		}
 	}
 
-	// Check minimum quantum score
-	if rules.MinQuantumScore > 0 && result.QuantumRisk.Score < rules.MinQuantumScore {
-		pr.Violations = append(pr.Violations, types.PolicyViolation{
-			Rule:        "quantum.minQuantumScore",
-			Severity:    types.SeverityHigh,
-			Description: "Quantum readiness score below minimum",
-			Expected:    fmt.Sprintf(">= %d", rules.MinQuantumScore),
-			Actual:      fmt.Sprintf("%d", result.QuantumRisk.Score),
-			Remediation: "Enable PQC key exchange to improve quantum readiness",
-		})
+	// Check minimum quantum score.
+	//
+	// The score is the one policy input that a scan can decline to measure, and
+	// an unmeasured assessment is a zero-valued struct. Reading that zero as a
+	// measurement raised "Expected: >= 90 | Actual: 0" against a host whose
+	// full scan reports 64, in the same report that said the assessment had not
+	// run, while the scan-coverage note claimed the assessment was excluded.
+	if rules.MinQuantumScore > 0 {
+		switch {
+		case !result.QuantumRisk.Assessed:
+			pr.SkippedRules = append(pr.SkippedRules, types.SkippedPolicyRule{
+				Rule: "quantum.minQuantumScore",
+				Reason: fmt.Sprintf(
+					"the quantum risk assessment did not run in this scan, so there is no "+
+						"score to compare against the minimum of %d. Re-run without "+
+						"--skip-quantum to evaluate this rule", rules.MinQuantumScore),
+			})
+		case result.QuantumRisk.Score < rules.MinQuantumScore:
+			pr.Violations = append(pr.Violations, types.PolicyViolation{
+				Rule:        "quantum.minQuantumScore",
+				Severity:    types.SeverityHigh,
+				Description: "Quantum readiness score below minimum",
+				Expected:    fmt.Sprintf(">= %d", rules.MinQuantumScore),
+				Actual:      fmt.Sprintf("%d", result.QuantumRisk.Score),
+				Remediation: "Enable PQC key exchange to improve quantum readiness",
+			})
+		}
 	}
 
 	// Check PQC certificate requirement

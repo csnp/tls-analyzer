@@ -589,20 +589,34 @@ func (r *TextReporter) printPolicyResult(w io.Writer, pr *types.PolicyResult) {
 		complianceStatus = r.color(colorRed+colorBold, "✗ NON-COMPLIANT")
 	}
 
+	// A verdict that skipped rules is about a smaller set than the policy
+	// defines, and the score is computed by deducting from 100, so a skipped
+	// rule can only raise it. Say so beside both numbers rather than only in the
+	// list further down.
+	incomplete := ""
+	if !pr.Complete {
+		incomplete = r.color(colorYellow, fmt.Sprintf(
+			"  not comparable: %d rule(s) were not evaluated", len(pr.SkippedRules)))
+	}
+
 	fmt.Fprintf(w, "    Policy:     %s\n", r.color(colorBold, pr.PolicyName))
-	fmt.Fprintf(w, "    Status:     %s\n", complianceStatus)
-	fmt.Fprintf(w, "    Score:      %d/100\n", pr.Score)
+	fmt.Fprintf(w, "    Status:     %s%s\n", complianceStatus, incomplete)
+	fmt.Fprintf(w, "    Score:      %d/100%s\n", pr.Score, incomplete)
 	if pr.Scope != "" {
 		r.printScope(w, "Scope:", pr.Scope, 16)
 	}
 	fmt.Fprintln(w)
 
-	// Violations
+	// Violations. The remediation is carried in JSON and was dropped here, so
+	// the default output named every problem and no fix.
 	if len(pr.Violations) > 0 {
 		fmt.Fprintf(w, "    %s (%d)\n", r.color(colorRed+colorBold, "Violations"), len(pr.Violations))
 		for _, v := range pr.Violations {
 			fmt.Fprintf(w, "      • [%s] %s\n", v.Severity, v.Description)
 			fmt.Fprintf(w, "        Expected: %s | Actual: %s\n", v.Expected, v.Actual)
+			if v.Remediation != "" {
+				fmt.Fprintf(w, "        %s %s\n", r.color(colorDim, "Fix:"), v.Remediation)
+			}
 		}
 		fmt.Fprintln(w)
 	}
@@ -612,6 +626,21 @@ func (r *TextReporter) printPolicyResult(w io.Writer, pr *types.PolicyResult) {
 		fmt.Fprintf(w, "    %s (%d)\n", r.color(colorYellow+colorBold, "Warnings"), len(pr.Warnings))
 		for _, v := range pr.Warnings {
 			fmt.Fprintf(w, "      • [%s] %s\n", v.Severity, v.Description)
+			if v.Remediation != "" {
+				fmt.Fprintf(w, "        %s %s\n", r.color(colorDim, "Fix:"), v.Remediation)
+			}
+		}
+		fmt.Fprintln(w)
+	}
+
+	// Rules that were not evaluated at all. Neither passed nor failed, and the
+	// reason has to be visible or the verdict reads as covering the whole policy.
+	if len(pr.SkippedRules) > 0 {
+		fmt.Fprintf(w, "    %s (%d)\n",
+			r.color(colorYellow+colorBold, "Not evaluated"), len(pr.SkippedRules))
+		for _, s := range pr.SkippedRules {
+			fmt.Fprintf(w, "      • %s\n", s.Rule)
+			r.printScope(w, "", s.Reason, 8)
 		}
 		fmt.Fprintln(w)
 	}

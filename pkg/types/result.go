@@ -231,6 +231,19 @@ const (
 
 // QuantumRiskAssessment provides quantum-specific risk analysis.
 type QuantumRiskAssessment struct {
+	// Assessed is false when the assessment did not run, which makes every
+	// other field in this struct unmeasured rather than zero.
+	//
+	// Nothing recorded that distinction before, so a zero-valued assessment
+	// looked exactly like a measured score of 0 and reached four consumers as
+	// one: the policy evaluator raised a HIGH violation reading "Actual: 0" in
+	// the same report that said "Quantum Ready: not assessed"; the SARIF
+	// reporter emitted a QUANTUM_VULNERABLE finding with an empty message into
+	// a format CI systems act on; and the HTML report drew a Quantum Risk
+	// Assessment section with an empty risk level styled as low risk. A
+	// consumer that reads Score without reading this is reading a sentinel.
+	Assessed bool `json:"assessed"`
+
 	Score           int       `json:"score"`           // 0-100, higher = more quantum-ready
 	Level           RiskLevel `json:"level"`           // CRITICAL, HIGH, MEDIUM, LOW
 	KeyExchangeRisk string    `json:"keyExchangeRisk"` // Risk from key exchange

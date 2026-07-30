@@ -39,7 +39,10 @@ var HybridKeyExchanges = map[string]struct {
 // assessQuantumRisk performs quantum-specific risk analysis.
 func (s *Scanner) assessQuantumRisk(result *types.ScanResult) types.QuantumRiskAssessment {
 	assessment := types.QuantumRiskAssessment{
-		Details: []string{},
+		// This function only runs when the assessment was asked for, so
+		// reaching it is what makes the result a measurement.
+		Assessed: true,
+		Details:  []string{},
 	}
 
 	var keyExchangeScore int = 0

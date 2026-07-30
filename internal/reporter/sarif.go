@@ -135,8 +135,13 @@ func (r *SARIFReporter) buildRules(result *types.ScanResult) []sarifRule {
 		})
 	}
 
-	// Add quantum risk rule if applicable
-	if result.QuantumRisk.Score < 50 {
+	// Add quantum risk rule if applicable.
+	//
+	// Assessed is checked first because an assessment that did not run leaves a
+	// zero-valued struct, and 0 < 50. SARIF is the format a CI system acts on,
+	// so --skip-quantum used to publish a QUANTUM_VULNERABLE finding, with an
+	// empty message body, about a measurement that never happened.
+	if result.QuantumRisk.Assessed && result.QuantumRisk.Score < 50 {
 		rules = append(rules, sarifRule{
 			ID:               "QUANTUM_VULNERABLE",
 			Name:             "Quantum Vulnerability",
@@ -176,8 +181,9 @@ func (r *SARIFReporter) buildResults(result *types.ScanResult) []sarifResult {
 		})
 	}
 
-	// Add quantum risk result
-	if result.QuantumRisk.Score < 50 {
+	// Add quantum risk result. Guarded for the same reason as the rule above:
+	// a rule with no result and a result with no rule are both invalid SARIF.
+	if result.QuantumRisk.Assessed && result.QuantumRisk.Score < 50 {
 		details := "Quantum Risk Assessment:\n"
 		for _, d := range result.QuantumRisk.Details {
 			details += "- " + d + "\n"
