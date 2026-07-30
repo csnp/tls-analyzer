@@ -1,7 +1,10 @@
 package analyzer
 
 import (
+	"bytes"
+	"errors"
 	"fmt"
+	"io"
 	"os"
 	"strings"
 
@@ -22,27 +25,114 @@ func NewPolicyEvaluator() *PolicyEvaluator {
 }
 
 // LoadPolicy loads a policy from a YAML file.
+//
+// Every failure here is an error rather than a default, because the caller is
+// about to render a compliance verdict from whatever this returns. An empty
+// file used to produce {"policyName": "", "compliant": true, "score": 100} and
+// exit 0 against a host that --policy strict failed with 35 HIGH violations at
+// the same moment, and a file whose keys were all misspelled produced the same
+// green pass. A gate that passes on an input it did not understand is the worst
+// direction available to it.
 func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
 		return nil, fmt.Errorf("failed to read policy file: %w", err)
 	}
 
-	var policy types.Policy
-	if err := yaml.Unmarshal(data, &policy); err != nil {
-		return nil, fmt.Errorf("failed to parse policy YAML: %w", err)
+	policy, err := e.decodePolicy(data, types.Policy{})
+	if err != nil {
+		return nil, err
 	}
 
-	// Handle extends
+	// extends overlays this file onto a built-in policy. The overlay is applied
+	// by decoding the same document a second time on top of a copy of the base,
+	// so every key the file sets wins and every key it omits is inherited.
+	//
+	// The previous merge copied a hand-picked eight of the rule fields and
+	// silently dropped the rest, so a file extending "modern" to ban AES, raise
+	// the minimum RSA key size or forbid a signature algorithm was accepted,
+	// reported under its own name, and evaluated against the base policy's
+	// looser rules. Decoding onto the base cannot drift as rule fields are
+	// added, which is how that gap opened.
 	if policy.Extends != "" {
-		basePolicy, ok := e.policies[policy.Extends]
+		base, ok := e.policies[policy.Extends]
 		if !ok {
-			return nil, fmt.Errorf("base policy not found: %s", policy.Extends)
+			return nil, fmt.Errorf(
+				"policy %q extends %q, which is not a built-in policy. Available: %s",
+				policy.Name, policy.Extends, strings.Join(e.ListPolicies(), ", "))
 		}
-		policy = e.mergePolicy(basePolicy, policy)
+		policy, err = e.decodePolicy(data, base)
+		if err != nil {
+			return nil, err
+		}
+	}
+
+	if err := validatePolicy(&policy, path); err != nil {
+		return nil, err
 	}
 
 	return &policy, nil
+}
+
+// decodePolicy decodes the document onto the given starting policy, refusing
+// any key the schema does not define.
+//
+// Unknown keys were previously ignored, so three plausible hand-written
+// spellings of the same policy (flat camelCase, nested by prefix, flat
+// snake_case) each produced a compliant verdict with no rule having been
+// applied, and the real schema was only discoverable by forcing type errors
+// that leak Go type names.
+func (e *PolicyEvaluator) decodePolicy(data []byte, onto types.Policy) (types.Policy, error) {
+	dec := yaml.NewDecoder(bytes.NewReader(data))
+	dec.KnownFields(true)
+
+	if err := dec.Decode(&onto); err != nil {
+		if errors.Is(err, io.EOF) {
+			// An empty document decodes without error and leaves the target
+			// untouched, which is how an empty file became a passing policy.
+			return onto, fmt.Errorf("the policy file contains no YAML document")
+		}
+		return onto, fmt.Errorf("failed to parse policy YAML: %s\n"+
+			"Run 'tlsanalyzer print-policy modern' to see a valid policy to start from",
+			schemaPathsInErrors.Replace(err.Error()))
+	}
+
+	return onto, nil
+}
+
+// schemaPathsInErrors rewrites the Go type names the YAML decoder reports into
+// the YAML paths a user actually writes. Which struct a key belongs to is an
+// implementation detail, and naming it in an error made the tool's own
+// diagnostics the place where the schema leaked: the fresh-user pass on this
+// tool found the real shape of a policy only by provoking type errors.
+//
+// PolicyRules is listed before Policy because a replacer resolves overlapping
+// patterns in argument order.
+var schemaPathsInErrors = strings.NewReplacer(
+	"type types.ProtocolRules", "'rules.protocol'",
+	"type types.CipherRules", "'rules.cipher'",
+	"type types.CertificateRules", "'rules.certificate'",
+	"type types.QuantumRules", "'rules.quantum'",
+	"type types.ScoringWeights", "'weights'",
+	"type types.PolicyRules", "'rules'",
+	"type types.Policy", "the top level of a policy file",
+)
+
+// validatePolicy refuses a policy that cannot produce a meaningful verdict.
+func validatePolicy(policy *types.Policy, path string) error {
+	if strings.TrimSpace(policy.Name) == "" {
+		return fmt.Errorf("policy file %s sets no 'name'. A report has to be able to say which "+
+			"policy it applied, and an unnamed policy was reported as an empty policy name "+
+			"beside a compliant verdict", path)
+	}
+
+	if policy.Rules.IsEmpty() {
+		return fmt.Errorf("policy %q in %s defines no rules, so nothing can fail it and a "+
+			"compliant verdict from it would mean nothing. Add at least one rule, or use "+
+			"'extends' to inherit one of the built-in policies", policy.Name, path)
+	}
+
+	return nil
 }
 
 // GetPolicy returns a built-in policy by name.
@@ -449,45 +539,4 @@ func (e *PolicyEvaluator) getHighestProtocol(protocols []types.Protocol) string 
 	}
 
 	return highest
-}
-
-func (e *PolicyEvaluator) mergePolicy(base, overlay types.Policy) types.Policy {
-	// Start with base
-	merged := base
-	merged.Name = overlay.Name
-	merged.Version = overlay.Version
-	merged.Description = overlay.Description
-
-	// Merge rules (overlay takes precedence for non-empty values)
-	if overlay.Rules.Protocol.MinVersion != "" {
-		merged.Rules.Protocol.MinVersion = overlay.Rules.Protocol.MinVersion
-	}
-	if len(overlay.Rules.Protocol.BannedVersions) > 0 {
-		merged.Rules.Protocol.BannedVersions = overlay.Rules.Protocol.BannedVersions
-	}
-	if len(overlay.Rules.Protocol.RequiredVersions) > 0 {
-		merged.Rules.Protocol.RequiredVersions = overlay.Rules.Protocol.RequiredVersions
-	}
-
-	if overlay.Rules.Cipher.MinKeySize > 0 {
-		merged.Rules.Cipher.MinKeySize = overlay.Rules.Cipher.MinKeySize
-	}
-	if overlay.Rules.Cipher.RequireForwardSecrecy {
-		merged.Rules.Cipher.RequireForwardSecrecy = true
-	}
-	if len(overlay.Rules.Cipher.RequiredKeyExchange) > 0 {
-		merged.Rules.Cipher.RequiredKeyExchange = overlay.Rules.Cipher.RequiredKeyExchange
-	}
-
-	if overlay.Rules.Quantum.MinQuantumScore > 0 {
-		merged.Rules.Quantum.MinQuantumScore = overlay.Rules.Quantum.MinQuantumScore
-	}
-	if overlay.Rules.Quantum.RequireHybridKeyExchange {
-		merged.Rules.Quantum.RequireHybridKeyExchange = true
-	}
-	if overlay.Rules.Quantum.CNSA2TargetYear > 0 {
-		merged.Rules.Quantum.CNSA2TargetYear = overlay.Rules.Quantum.CNSA2TargetYear
-	}
-
-	return merged
 }

@@ -10,6 +10,7 @@ import (
 	"net"
 	"os"
 	"os/signal"
+	"sort"
 	"strconv"
 	"strings"
 	"sync"
@@ -21,6 +22,7 @@ import (
 	"github.com/csnp/qramm-tls-analyzer/internal/scanner"
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 	"github.com/spf13/cobra"
+	"gopkg.in/yaml.v3"
 )
 
 var (
@@ -124,9 +126,42 @@ var policiesCmd = &cobra.Command{
 	},
 }
 
+// printPolicyCmd emits a built-in policy in the exact shape --policy-file
+// accepts.
+//
+// The policy schema was documented nowhere, and unknown keys were silently
+// ignored, so a hand-written policy could be accepted, applied to nothing and
+// reported as compliant. Unknown keys are refused now, which makes having a
+// correct starting point part of the fix rather than a convenience.
+var printPolicyCmd = &cobra.Command{
+	Use:   "print-policy [name]",
+	Short: "Print a built-in policy as YAML, to copy as a starting point",
+	Args:  cobra.ExactArgs(1),
+	RunE: func(cmd *cobra.Command, args []string) error {
+		evaluator := analyzer.NewPolicyEvaluator()
+		policy, ok := evaluator.GetPolicy(args[0])
+		if !ok {
+			names := evaluator.ListPolicies()
+			sort.Strings(names)
+			return fmt.Errorf("unknown policy: %s. Available: %s", args[0], strings.Join(names, ", "))
+		}
+
+		out, err := yaml.Marshal(policy)
+		if err != nil {
+			return fmt.Errorf("failed to render policy as YAML: %w", err)
+		}
+
+		fmt.Printf("# Built-in policy %q, in the shape --policy-file accepts.\n", policy.Name)
+		fmt.Print("# Every key below is part of the schema. Any other key is refused.\n")
+		fmt.Print(string(out))
+		return nil
+	},
+}
+
 func init() {
 	rootCmd.AddCommand(versionCmd)
 	rootCmd.AddCommand(policiesCmd)
+	rootCmd.AddCommand(printPolicyCmd)
 
 	// Suppressing the usage block leaves a flag mistake with no next step, so
 	// point at --help explicitly rather than printing every flag.
@@ -239,6 +274,15 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if policyName != "" || policyFile != "" {
 		evaluator := analyzer.NewPolicyEvaluator()
 		if policyFile != "" {
+			// Both flags name a policy and only one can be applied. Silently
+			// dropping --policy meant a run could be evaluated against a
+			// different policy than the one the command line most visibly asked
+			// for, with nothing in the output saying so.
+			if policyName != "" {
+				return fmt.Errorf(
+					"--policy %s and --policy-file %s both name a policy, and only one can be "+
+						"applied. Pass one of them", policyName, policyFile)
+			}
 			policy, err = evaluator.LoadPolicy(policyFile)
 			if err != nil {
 				return fmt.Errorf("failed to load policy: %w", err)

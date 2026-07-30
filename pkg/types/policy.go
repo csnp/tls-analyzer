@@ -1,5 +1,7 @@
 package types
 
+import "reflect"
+
 // Policy defines organizational TLS security requirements.
 type Policy struct {
 	// Metadata
@@ -30,6 +32,18 @@ type PolicyRules struct {
 
 	// Quantum/PQC requirements
 	Quantum QuantumRules `json:"quantum" yaml:"quantum"`
+}
+
+// IsEmpty reports whether no rule at all is set, which makes the policy one
+// that nothing can fail. A compliant verdict from such a policy carries no
+// information, so a policy file that produces one is refused at load.
+//
+// The comparison is against the zero value rather than a list of fields, so a
+// rule field added later is covered without anyone remembering to come back
+// here. Hand-maintained field lists are what let the extends merge silently
+// drop most of a policy file.
+func (r PolicyRules) IsEmpty() bool {
+	return reflect.DeepEqual(r, PolicyRules{})
 }
 
 // ProtocolRules defines TLS protocol requirements.
