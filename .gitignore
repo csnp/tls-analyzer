@@ -1,6 +1,13 @@
-# Binaries
-tlsanalyzer
-tlsanalyzer.exe
+# Binaries.
+#
+# These patterns are anchored to the repository root with a leading slash. An
+# unanchored "tlsanalyzer" also matches the cmd/tlsanalyzer DIRECTORY, which
+# silently excluded every file in it: cmd/tlsanalyzer/port_test.go, the
+# regression tests for the 0.3.0 --port and --format fixes, was never committed
+# and never ran in CI, while the local suite passed because Go does not consult
+# git. See the "test files are tracked" step in .github/workflows/ci.yml.
+/tlsanalyzer
+/tlsanalyzer.exe
 *.exe
 *.dll
 *.so

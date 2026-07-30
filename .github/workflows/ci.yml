@@ -17,6 +17,23 @@ jobs:
         with:
           go-version: '1.25'
 
+      # A test file that git does not track is a test CI never runs, while the
+      # local suite still passes because Go does not consult git. An unanchored
+      # "tlsanalyzer" pattern in .gitignore matched the cmd/tlsanalyzer directory
+      # and hid its whole test file for a full release.
+      - name: Every test file is tracked
+        run: |
+          untracked=$(git ls-files --others -- '*_test.go')
+          if [ -n "$untracked" ]; then
+            echo "These test files are not tracked by git, so CI never runs them:"
+            echo "$untracked"
+            echo
+            echo "Check .gitignore for a pattern that matches them:"
+            echo "$untracked" | xargs -r git check-ignore -v || true
+            exit 1
+          fi
+          echo "All $(git ls-files -- '*_test.go' | wc -l | tr -d ' ') test files are tracked."
+
       - name: Verify dependencies
         run: go mod verify
 
