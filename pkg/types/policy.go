@@ -186,7 +186,7 @@ var DefaultPolicies = map[string]Policy{
 		Rules: PolicyRules{
 			Protocol: ProtocolRules{
 				MinVersion:     "TLS 1.2",
-				BannedVersions: []string{"SSL 3.0", "TLS 1.0", "TLS 1.1"},
+				BannedVersions: []string{"TLS 1.0", "TLS 1.1"},
 			},
 			Cipher: CipherRules{
 				MinKeySize:            128,
@@ -214,7 +214,7 @@ var DefaultPolicies = map[string]Policy{
 			Protocol: ProtocolRules{
 				MinVersion:       "TLS 1.3",
 				RequiredVersions: []string{"TLS 1.3"},
-				BannedVersions:   []string{"SSL 3.0", "TLS 1.0", "TLS 1.1", "TLS 1.2"},
+				BannedVersions:   []string{"TLS 1.0", "TLS 1.1", "TLS 1.2"},
 			},
 			Cipher: CipherRules{
 				MinKeySize:            256,
@@ -269,7 +269,7 @@ var DefaultPolicies = map[string]Policy{
 			Protocol: ProtocolRules{
 				MinVersion:       "TLS 1.3",
 				RequiredVersions: []string{"TLS 1.3"},
-				BannedVersions:   []string{"SSL 3.0", "TLS 1.0", "TLS 1.1", "TLS 1.2"},
+				BannedVersions:   []string{"TLS 1.0", "TLS 1.1", "TLS 1.2"},
 			},
 			Cipher: CipherRules{
 				MinKeySize:            256,

@@ -36,6 +36,31 @@ itself, and those are what set the version.
   names are a free-form space rather than a closed set, so those are matched
   without regard to case instead: `sha1` banned nothing while `SHA1` banned two
   suites on the same host, with nothing in the output saying which had happened.
+- **A protocol version the policy said MUST be supported produced only a
+  warning.** `requiredVersions: ["TLS 1.3"]` against a server without TLS 1.3
+  reported `COMPLIANT` and exit 0, while the same report printed
+  `TLS 1.3  Not Supported` and `Fix: Enable TLS 1.3`. Two built-in CNSA 2.0
+  policies require TLS 1.3, so a CI gate on either was green whatever the server
+  did. It is a violation now. `certificate.minValidityDays` and
+  `quantum.requirePqcCertificates` remain warnings, which is deliberate in both
+  cases and is now stated in `docs/policies.md` rather than left to be
+  discovered: the first is a renewal threshold rather than a compliance failure,
+  and no publicly trusted CA issues a post-quantum certificate yet.
+- **Algorithm names were matched literally, so the separators decided whether a
+  rule applied.** Banning `SHA-256`, which is the spelling NIST uses and the one
+  this tool's own remediation text teaches, silently did nothing against a
+  certificate whose signature field reads `SHA256-RSA`, and reported
+  `COMPLIANT 100/100`. Algorithm, cipher suite and signature names are now
+  compared on their letters and digits alone, so `SHA-256`, `SHA256`, `sha_256`
+  and `Sha 256` all name the same thing.
+- **Three ways to write a policy that constrains nothing, and one restrictive
+  rule that was refused.** A rules block whose only key was `cnsa2TargetYear`, a
+  rule set to an empty list, and a list whose only item was blank each loaded and
+  reported `COMPLIANT 100/100` against a host that satisfied nothing, which is
+  exactly what the "defines no rules" guard exists to prevent. The same guard
+  refused `allowSelfSigned: false`, the restrictive setting every built-in policy
+  uses, because Go cannot tell an unset field from one set to its zero value.
+  Whether the document declares a rule is now read from the YAML instead.
 - **Six rule fields were declared, documented, printed by `print-policy`, and
   never read.** `protocol.maxVersion`, `certificate.maxValidityDays`,
   `certificate.requiredSignatureAlgorithms`, `cipher.allowedCipherSuites` and
@@ -53,11 +78,14 @@ itself, and those are what set the version.
   rather than reporting a requirement met by a scanner that never looked.
 - **Banning SSL 2.0 or SSL 3.0 passed without being tested.** Go's TLS stack will
   not offer either protocol, so the scanner never reports one and the ban could
-  not fire. The built-in `modern` policy bans SSL 3.0, so that rule had passed on
-  every host ever scanned without once being checked. Both are still accepted in
-  a policy file, because banning them is a reasonable requirement, and each now
-  raises a warning that names the limitation and points at `openssl s_client
-  -ssl3` to check it another way.
+  not fire. `modern`, `strict` and `cnsa-2.0-2030` all banned SSL 3.0, so that
+  rule had passed on every host ever scanned without once being checked. The
+  built-in policies no longer declare it, because a policy shipped with the tool
+  should only state what the tool can check. Both names are still accepted in a
+  policy file you write, and each records the rule as not evaluated, marking the
+  verdict incomplete and exiting 2, the same way `certificate.requireCt` does.
+  The reason points at a scanner with legacy protocol support rather than at
+  `openssl s_client -ssl3`, which OpenSSL 3.x no longer accepts.
 - **The certificate name and chain were asserted, not verified.** The scanner
   handshakes with verification disabled on purpose, so it can connect to and
   describe a certificate a verifying client would refuse. Nothing replaced the

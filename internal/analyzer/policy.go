@@ -68,11 +68,56 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 		}
 	}
 
-	if err := validatePolicy(&policy, path); err != nil {
+	if err := validatePolicy(&policy, path, declaresARule(data) || policy.Extends != ""); err != nil {
 		return nil, err
 	}
 
 	return &policy, nil
+}
+
+// declaresARule reports whether the document actually writes a rule, read from
+// the YAML rather than inferred from the decoded struct.
+//
+// Presence cannot be recovered from the decoded value, because Go cannot tell an
+// unset field from one set to its zero value. That inversion refused
+// `allowSelfSigned: false`, the restrictive setting every built-in policy uses,
+// as "defines no rules", while accepting `allowSelfSigned: true`. It also let
+// three things through that mean nothing: a rules block whose only key is
+// `cnsa2TargetYear`, which is a label rather than a constraint; an empty list;
+// and a list whose only item is blank. Each loaded and reported COMPLIANT
+// 100/100 against a host that satisfied nothing.
+func declaresARule(data []byte) bool {
+	var doc struct {
+		Rules map[string]map[string]yaml.Node `yaml:"rules"`
+	}
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		// A document that does not parse is refused elsewhere with a better
+		// message; do not let this check turn that into "defines no rules".
+		return true
+	}
+
+	for _, section := range doc.Rules {
+		for key, node := range section {
+			// A label enforces nothing on its own, so a policy consisting only of
+			// one is as empty as a policy with no rules at all.
+			if key == "cnsa2TargetYear" {
+				continue
+			}
+			if node.Kind == yaml.SequenceNode {
+				for _, item := range node.Content {
+					if item.Kind == yaml.ScalarNode && strings.TrimSpace(item.Value) != "" &&
+						item.Tag != "!!null" {
+						return true
+					}
+				}
+				continue
+			}
+			if node.Kind == yaml.ScalarNode && node.Tag != "!!null" {
+				return true
+			}
+		}
+	}
+	return false
 }
 
 // decodePolicy decodes the document onto the given starting policy, refusing
@@ -119,12 +164,40 @@ var schemaPathsInErrors = strings.NewReplacer(
 	"type types.Policy", "the top level of a policy file",
 )
 
-// containsFold reports whether substr occurs in s, ignoring case. Algorithm
-// names reach this package from three sources that disagree on case (the
-// scanner's own tables, the x509 package's signature algorithm strings, and a
-// policy file a human typed), so an exact-case match silently dropped rules.
+// normalizeAlgorithmName reduces an algorithm, cipher suite or signature name to
+// its letters and digits, lowercased, so that the separators different sources
+// use do not decide whether a rule applies.
+//
+// The names reach this package from sources that disagree on both case and
+// punctuation: the scanner's own tables, the x509 package's signature algorithm
+// strings, and a policy file a human typed. "SHA-256" is the spelling NIST uses
+// and the spelling this tool's own remediation text teaches ("Reissue
+// certificate with SHA-256 or stronger signature"), while the certificate field
+// reads "SHA256-RSA". Matching those literally meant the rule silently did
+// nothing, so banning SHA-256 reported COMPLIANT against a SHA256-RSA
+// certificate. Unlike protocol versions these names are not a closed set, so
+// they cannot be refused at load time: banning an algorithm the server does not
+// use is a legitimate rule that simply does not fire.
+func normalizeAlgorithmName(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range strings.ToLower(s) {
+		if (r >= 'a' && r <= 'z') || (r >= '0' && r <= '9') {
+			b.WriteRune(r)
+		}
+	}
+	return b.String()
+}
+
+// containsFold reports whether substr occurs in s once both are normalized.
 func containsFold(s, substr string) bool {
-	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+	return strings.Contains(normalizeAlgorithmName(s), normalizeAlgorithmName(substr))
+}
+
+// equalFoldAlgorithm reports whether two algorithm or suite names are the same
+// once both are normalized.
+func equalFoldAlgorithm(a, b string) bool {
+	return normalizeAlgorithmName(a) == normalizeAlgorithmName(b)
 }
 
 // protocolVersionOrder ranks the protocol versions the scanner reports. It is
@@ -183,6 +256,35 @@ func knownProtocolVersions() string {
 	return strings.Join(append(extra, ordered...), ", ")
 }
 
+// closestProtocolVersion picks the accepted spelling nearest to what the user
+// wrote, so the error can contrast the two. Comparing the rejected value against
+// a hardcoded example produced `"TLSv1.2" and "TLSv1.2" are not the same value`
+// for the exact typo this check exists to catch.
+func closestProtocolVersion(value string) string {
+	normalized := normalizeAlgorithmName(value)
+	best, bestScore := "TLS 1.2", -1
+	names := make([]string, 0, len(protocolVersionOrder)+len(unprobeableProtocolVersions))
+	for name := range knownProtocolVersionNames() {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	for _, name := range names {
+		candidate := normalizeAlgorithmName(name)
+		score := 0
+		for i := 0; i < len(candidate) && i < len(normalized); i++ {
+			if candidate[len(candidate)-1-i] == normalized[len(normalized)-1-i] {
+				score++
+				continue
+			}
+			break
+		}
+		if score > bestScore {
+			best, bestScore = name, score
+		}
+	}
+	return best
+}
+
 // validateProtocolVersionValues refuses a protocol version this tool does not
 // recognise.
 //
@@ -217,9 +319,9 @@ func validateProtocolVersionValues(rules *types.ProtocolRules) error {
 			if !known[value] {
 				return fmt.Errorf("rules.protocol.%s has the value %q, which is not a protocol "+
 					"version this tool recognises. Accepted values are: %s. Spelling and spacing "+
-					"both matter, so %q and \"TLSv1.2\" are not the same value, and an "+
-					"unrecognised one would silently match nothing and leave the rule out of "+
-					"the verdict", field.name, value, knownProtocolVersions(), value)
+					"both matter, so %q is not the same value as %q, and an unrecognised one "+
+					"would silently match nothing and leave the rule out of the verdict",
+					field.name, value, knownProtocolVersions(), value, closestProtocolVersion(value))
 			}
 		}
 	}
@@ -227,14 +329,14 @@ func validateProtocolVersionValues(rules *types.ProtocolRules) error {
 }
 
 // validatePolicy refuses a policy that cannot produce a meaningful verdict.
-func validatePolicy(policy *types.Policy, path string) error {
+func validatePolicy(policy *types.Policy, path string, declaresRule bool) error {
 	if strings.TrimSpace(policy.Name) == "" {
 		return fmt.Errorf("policy file %s sets no 'name'. A report has to be able to say which "+
 			"policy it applied, and an unnamed policy was reported as an empty policy name "+
 			"beside a compliant verdict", path)
 	}
 
-	if policy.Rules.IsEmpty() {
+	if !declaresRule {
 		return fmt.Errorf("policy %q in %s defines no rules, so nothing can fail it and a "+
 			"compliant verdict from it would mean nothing. Add at least one rule, or use "+
 			"'extends' to inherit one of the built-in policies", policy.Name, path)
@@ -342,14 +444,14 @@ func (e *PolicyEvaluator) evaluateProtocol(result *types.ScanResult, rules *type
 		// version simply never appears in a result and the rule passed on every
 		// host. Say so rather than counting silence as compliance.
 		if reason, cannotProbe := unprobeableProtocolVersions[banned]; cannotProbe {
-			pr.Warnings = append(pr.Warnings, types.PolicyViolation{
-				Rule:        "protocol.bannedVersions",
-				Severity:    types.SeverityMedium,
-				Description: "Banned protocol version could not be tested",
-				Expected:    banned + " disabled",
-				Actual:      "not tested: " + reason,
-				Remediation: "Confirm " + banned + " is disabled using a tool that can " +
-					"offer it, for example: openssl s_client -ssl3 -connect " + result.Host + ":443",
+			pr.SkippedRules = append(pr.SkippedRules, types.SkippedPolicyRule{
+				Rule: "protocol.bannedVersions",
+				Reason: fmt.Sprintf(
+					"%s is banned by this policy, but %s. The rule is not evaluated rather "+
+						"than counted as satisfied. Confirm it with a scanner built with "+
+						"legacy protocol support, such as nmap's ssl-enum-ciphers script; "+
+						"OpenSSL 3.x removed the -ssl2 and -ssl3 client options, so "+
+						"s_client cannot answer this either", banned, reason),
 			})
 			continue
 		}
@@ -396,10 +498,15 @@ func (e *PolicyEvaluator) evaluateProtocol(result *types.ScanResult, rules *type
 				break
 			}
 		}
+		// A version the policy says MUST be supported, and that the scan shows is
+		// not, is a violation. It was a warning, so the verdict read COMPLIANT
+		// with exit 0 while the same report printed "TLS 1.3  Not Supported" and
+		// "Fix: Enable TLS 1.3". Two built-in CNSA 2.0 policies require TLS 1.3,
+		// so a CI gate on either was green whatever the server did.
 		if !found {
-			pr.Warnings = append(pr.Warnings, types.PolicyViolation{
+			pr.Violations = append(pr.Violations, types.PolicyViolation{
 				Rule:        "protocol.requiredVersions",
-				Severity:    types.SeverityMedium,
+				Severity:    types.SeverityHigh,
 				Description: "Required protocol version not supported",
 				Expected:    required + " enabled",
 				Actual:      required + " not detected",
@@ -442,8 +549,8 @@ func (e *PolicyEvaluator) evaluateCipher(result *types.ScanResult, rules *types.
 		// protocol versions are, and an exact-case match meant "sha1" banned
 		// nothing while "SHA1" banned seven suites on the same host.
 		for _, banned := range rules.BannedAlgorithms {
-			if containsFold(cs.Name, banned) || strings.EqualFold(cs.Encryption, banned) ||
-				strings.EqualFold(cs.MAC, banned) {
+			if containsFold(cs.Name, banned) || equalFoldAlgorithm(cs.Encryption, banned) ||
+				equalFoldAlgorithm(cs.MAC, banned) {
 				pr.Violations = append(pr.Violations, types.PolicyViolation{
 					Rule:        "cipher.bannedAlgorithms",
 					Severity:    types.SeverityHigh,
@@ -457,7 +564,7 @@ func (e *PolicyEvaluator) evaluateCipher(result *types.ScanResult, rules *types.
 
 		// Check banned cipher suites
 		for _, banned := range rules.BannedCipherSuites {
-			if strings.EqualFold(cs.Name, banned) {
+			if equalFoldAlgorithm(cs.Name, banned) {
 				pr.Violations = append(pr.Violations, types.PolicyViolation{
 					Rule:        "cipher.bannedCipherSuites",
 					Severity:    types.SeverityHigh,
@@ -480,7 +587,7 @@ func (e *PolicyEvaluator) evaluateCipher(result *types.ScanResult, rules *types.
 		for _, cs := range result.CipherSuites {
 			allowed := false
 			for _, permitted := range rules.AllowedCipherSuites {
-				if strings.EqualFold(cs.Name, permitted) {
+				if equalFoldAlgorithm(cs.Name, permitted) {
 					allowed = true
 					break
 				}
@@ -503,7 +610,7 @@ func (e *PolicyEvaluator) evaluateCipher(result *types.ScanResult, rules *types.
 		found := false
 		for _, ke := range result.KeyExchanges {
 			for _, required := range rules.RequiredKeyExchange {
-				if strings.EqualFold(ke.Name, required) || strings.EqualFold(ke.PQCAlgorithm, required) {
+				if equalFoldAlgorithm(ke.Name, required) || equalFoldAlgorithm(ke.PQCAlgorithm, required) {
 					found = true
 					break
 				}
@@ -738,7 +845,7 @@ func (e *PolicyEvaluator) evaluateQuantum(result *types.ScanResult, rules *types
 		found := false
 		for _, ke := range result.KeyExchanges {
 			for _, required := range rules.RequiredKeyExchangeAlgorithms {
-				if strings.EqualFold(ke.Name, required) || strings.EqualFold(ke.PQCAlgorithm, required) {
+				if equalFoldAlgorithm(ke.Name, required) || equalFoldAlgorithm(ke.PQCAlgorithm, required) {
 					found = true
 					break
 				}

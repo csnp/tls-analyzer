@@ -127,12 +127,17 @@ func TestLegitimateProtocolVersionValuesStillLoad(t *testing.T) {
 	}
 }
 
-// TestBanningAnUnprobeableVersionWarnsRatherThanPasses covers the sibling the
-// value sweep turned up. Go's TLS stack cannot offer SSL 2.0 or SSL 3.0, so the
-// scanner never reports them and a ban on one could never fire. The built-in
-// "modern" policy bans SSL 3.0, so that rule had passed on every host ever
-// scanned without being tested once.
-func TestBanningAnUnprobeableVersionWarnsRatherThanPasses(t *testing.T) {
+// TestBanningAnUnprobeableVersionIsNotEvaluated covers the sibling the value
+// sweep turned up. Go's TLS stack cannot offer SSL 2.0 or SSL 3.0, so the
+// scanner never reports them and a ban on one could never fire. Three of the
+// five built-in policies banned SSL 3.0, so that rule had passed on every host
+// ever scanned without being tested once.
+//
+// It is recorded as not evaluated rather than as a warning. A warning left the
+// verdict complete and the exit code 0, which contradicts this tool's own
+// documented contract that a policy which could not be fully evaluated exits 2,
+// and was inconsistent with certificate.requireCt, an identical situation.
+func TestBanningAnUnprobeableVersionIsNotEvaluated(t *testing.T) {
 	e := NewPolicyEvaluator()
 	policy := &types.Policy{
 		Name: "t",
@@ -148,20 +153,49 @@ func TestBanningAnUnprobeableVersionWarnsRatherThanPasses(t *testing.T) {
 			"either, since that would be an equally unfounded claim: %+v", v)
 	}
 
-	var warned bool
-	for _, w := range pr.Warnings {
-		if w.Rule == "protocol.bannedVersions" && strings.Contains(w.Actual, "not tested") {
-			warned = true
-			if !strings.Contains(w.Remediation, "openssl") {
-				t.Errorf("the warning has to say how to check it another way, or it is a "+
-					"dead end: %q", w.Remediation)
+	var skipped bool
+	for _, s := range pr.SkippedRules {
+		if s.Rule == "protocol.bannedVersions" {
+			skipped = true
+			if !strings.Contains(s.Reason, "SSL 3.0") {
+				t.Errorf("the reason must name the version it could not test: %q", s.Reason)
+			}
+			// OpenSSL 3.x removed -ssl2 and -ssl3, so citing s_client here was a
+			// command no reader could run.
+			if strings.Contains(s.Reason, "s_client -ssl3") {
+				t.Errorf("the reason cites a command that does not exist on OpenSSL 3.x: %q",
+					s.Reason)
 			}
 		}
 	}
-	if !warned {
-		t.Error("banning SSL 3.0 produced no warning, so silence was counted as compliance. " +
-			"The scanner never offers SSL 3.0, so the absence of a result is not evidence " +
-			"the server has it disabled")
+	if !skipped {
+		t.Error("banning SSL 3.0 was not recorded as unevaluated, so silence was counted " +
+			"as compliance. The scanner never offers SSL 3.0, so the absence of a result " +
+			"is not evidence the server has it disabled")
+	}
+	if pr.Complete {
+		t.Error("a verdict carrying a rule that could not be tested must not be marked " +
+			"complete, or the exit code claims a full evaluation that did not happen")
+	}
+}
+
+// TestBuiltInPoliciesOnlyDeclareRulesThisScannerCanEvaluate keeps the built-ins
+// honest. They banned SSL 3.0, which this scanner cannot probe, so every
+// evaluation of modern, strict and cnsa-2.0-2030 carried an untested rule. A
+// policy shipped with the tool should declare what the tool can actually check.
+func TestBuiltInPoliciesOnlyDeclareRulesThisScannerCanEvaluate(t *testing.T) {
+	e := NewPolicyEvaluator()
+	for _, name := range e.ListPolicies() {
+		policy, ok := e.GetPolicy(name)
+		if !ok {
+			t.Fatalf("built-in %q disappeared", name)
+		}
+		for _, banned := range policy.Rules.Protocol.BannedVersions {
+			if _, cannotProbe := unprobeableProtocolVersions[banned]; cannotProbe {
+				t.Errorf("built-in policy %q bans %q, which this scanner cannot probe, so "+
+					"every evaluation of it carries a rule that was never tested", name, banned)
+			}
+		}
 	}
 }
 
@@ -274,6 +308,106 @@ func TestPreviouslyUnevaluatedRulesNowFire(t *testing.T) {
 			if got.Expected == "" || got.Remediation == "" {
 				t.Errorf("violation %s must say what was expected and what to do about it, "+
 					"got Expected=%q Remediation=%q", tt.wantViolation, got.Expected, got.Remediation)
+			}
+		})
+	}
+}
+
+// TestAnUnmetRequiredVersionIsAViolation covers a rule the docs describe as a
+// MUST that only ever produced a warning, so the verdict read COMPLIANT with
+// exit 0 while the same report printed "TLS 1.3  Not Supported" and
+// "Fix: Enable TLS 1.3". Two built-in CNSA 2.0 policies require TLS 1.3, so a CI
+// gate on either was green whatever the server did.
+func TestAnUnmetRequiredVersionIsAViolation(t *testing.T) {
+	e := NewPolicyEvaluator()
+	scan := scanForRuleValues()
+	for i := range scan.Protocols {
+		if scan.Protocols[i].Version == "TLS 1.3" {
+			scan.Protocols[i].Supported = false
+		}
+	}
+
+	pr := e.Evaluate(scan, &types.Policy{
+		Name:  "t",
+		Rules: types.PolicyRules{Protocol: types.ProtocolRules{RequiredVersions: []string{"TLS 1.3"}}},
+	})
+
+	if findViolation(pr, "protocol.requiredVersions") == nil {
+		t.Fatal("a version the policy says MUST be supported, and that the scan shows is " +
+			"not, produced no violation, so the verdict was compliant against a server " +
+			"the tool knew did not satisfy it")
+	}
+	if pr.Compliant {
+		t.Error("the verdict is compliant despite an unmet requirement")
+	}
+}
+
+// TestAlgorithmSeparatorsDoNotDecideWhetherARuleApplies covers the half of the
+// value problem that validation cannot reach. "SHA-256" is the spelling NIST
+// uses and the one this tool's own remediation text teaches, while the
+// certificate field reads "SHA256-RSA", so banning SHA-256 silently did nothing
+// and reported COMPLIANT against a certificate signed with exactly that.
+func TestAlgorithmSeparatorsDoNotDecideWhetherARuleApplies(t *testing.T) {
+	e := NewPolicyEvaluator()
+	scan := scanForRuleValues() // certificate signature is ECDSA-SHA256
+
+	for _, spelling := range []string{"SHA256", "SHA-256", "sha-256", "sha_256", "Sha 256"} {
+		t.Run(spelling, func(t *testing.T) {
+			pr := e.Evaluate(scan, &types.Policy{
+				Name: "t",
+				Rules: types.PolicyRules{Certificate: types.CertificateRules{
+					BannedSignatureAlgorithms: []string{spelling}}},
+			})
+			if findViolation(pr, "certificate.bannedSignatureAlgorithms") == nil {
+				t.Fatalf("banning %q did not fire against ECDSA-SHA256, so whether the rule "+
+					"applies depends on the separators a user happened to type", spelling)
+			}
+		})
+	}
+
+	// Acceptance control: normalising must not make unrelated names collide.
+	pr := e.Evaluate(scan, &types.Policy{
+		Name: "t",
+		Rules: types.PolicyRules{Certificate: types.CertificateRules{
+			BannedSignatureAlgorithms: []string{"MD5", "SHA-1"}}},
+	})
+	if v := findViolation(pr, "certificate.bannedSignatureAlgorithms"); v != nil {
+		t.Errorf("normalisation made an unrelated algorithm match ECDSA-SHA256: %+v", v)
+	}
+}
+
+// TestAPolicyThatConstrainsNothingIsRefused covers three ways a document got
+// past the "defines no rules" guard and produced COMPLIANT 100/100 against a
+// host that satisfied nothing, plus the inverse: the guard refused
+// `allowSelfSigned: false`, the restrictive setting every built-in uses, because
+// Go cannot tell an unset field from one set to its zero value.
+func TestAPolicyThatConstrainsNothingIsRefused(t *testing.T) {
+	e := NewPolicyEvaluator()
+
+	refused := map[string]string{
+		"only a target year label": "name: t\nrules:\n  quantum:\n    cnsa2TargetYear: 2035\n",
+		"an empty list":            "name: t\nrules:\n  protocol:\n    bannedVersions: []\n",
+		"a list of one blank item": "name: t\nrules:\n  protocol:\n    bannedVersions:\n      -\n",
+	}
+	for name, body := range refused {
+		t.Run("refused/"+name, func(t *testing.T) {
+			if _, err := e.LoadPolicy(writePolicyFile(t, body)); err == nil {
+				t.Fatal("a policy that constrains nothing was accepted, so it can only ever " +
+					"report a compliant verdict that means nothing")
+			}
+		})
+	}
+
+	accepted := map[string]string{
+		"a restrictive boolean": "name: t\nrules:\n  certificate:\n    allowSelfSigned: false\n",
+		"a zero minimum":        "name: t\nrules:\n  quantum:\n    minQuantumScore: 0\n",
+		"a false requirement":   "name: t\nrules:\n  cipher:\n    requireForwardSecrecy: false\n",
+	}
+	for name, body := range accepted {
+		t.Run("accepted/"+name, func(t *testing.T) {
+			if _, err := e.LoadPolicy(writePolicyFile(t, body)); err != nil {
+				t.Fatalf("a rule set to its zero value is still a rule the user wrote, and it "+
+					"was refused: %v", err)
 			}
 		})
 	}

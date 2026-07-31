@@ -83,13 +83,13 @@ rules:
     # Minimum acceptable TLS version
     minVersion: TLS 1.2
 
-    # Versions that MUST be supported
+    # Versions that MUST be supported. A version listed here and not offered by
+    # the server is a violation, so this can fail a build.
     requiredVersions:
       - TLS 1.3
 
     # Versions that MUST NOT be supported
     bannedVersions:
-      - SSL 3.0
       - TLS 1.0
       - TLS 1.1
 
@@ -107,9 +107,15 @@ version used to leave the rule out of the verdict entirely, so a policy banning
 `SSL 2.0` and `SSL 3.0` may be named, because banning them is a reasonable thing
 to require, but this scanner cannot test them. Go's TLS stack will not offer
 either protocol, so the scanner never sees one and the absence of a result is not
-evidence the server has it disabled. Banning either raises a warning saying the
-rule was not tested, and points at `openssl s_client -ssl3` to check it another
-way. Warnings do not change the verdict or the exit code.
+evidence the server has it disabled. Banning either records the rule as not
+evaluated, which marks the whole verdict incomplete and exits 2, the same way
+`certificate.requireCt` does. Confirm it with a scanner built with legacy
+protocol support, such as nmap's `ssl-enum-ciphers` script; OpenSSL 3.x removed
+the `-ssl2` and `-ssl3` client options, so `s_client` cannot answer this either.
+
+No built-in policy bans them, for that reason. Until this release `modern`,
+`strict` and `cnsa-2.0-2030` all banned SSL 3.0, and that rule had passed on
+every host ever scanned without once being tested.
 
 ### Cipher Rules
 
@@ -148,18 +154,27 @@ rules:
       - SecP384r1MLKEM1024
 ```
 
-Algorithm, cipher suite and signature names are matched without regard to case,
-so `3des`, `3DES` and `3Des` all name the same thing. Unlike protocol versions
-these are not a closed set, so an unrecognised name cannot be refused when the
-policy loads: banning an algorithm no suite on the server uses is a legitimate
-rule that simply does not fire.
+Algorithm, cipher suite and signature names are matched on their letters and
+digits alone, so case and separators do not decide whether a rule applies:
+`SHA-256`, `SHA256`, `sha_256` and `Sha 256` all name the same thing. That
+matters because the spellings disagree between sources. NIST writes `SHA-256`,
+this tool's own remediation text writes `SHA-256`, and the certificate field
+reads `SHA256-RSA`; matching them literally meant banning `SHA-256` silently did
+nothing and reported compliant against a certificate signed with exactly that.
+
+Unlike protocol versions these are not a closed set, so an unrecognised name
+cannot be refused when the policy loads: banning an algorithm no suite on the
+server uses is a legitimate rule that simply does not fire.
 
 ### Certificate Rules
 
 ```yaml
 rules:
   certificate:
-    # Minimum days until expiry
+    # Minimum days until expiry. This one is a warning threshold: a certificate
+    # below it is reported as expiring soon but does NOT fail the policy, so do
+    # not use it as a CI gate on renewal. An already expired certificate is a
+    # violation.
     minValidityDays: 30
 
     # Maximum certificate lifetime in days
@@ -207,7 +222,10 @@ rules:
     # Minimum quantum readiness score (0-100)
     minQuantumScore: 50
 
-    # Target year for CNSA 2.0 compliance
+    # Which CNSA 2.0 deadline this policy is written against. This is a label,
+    # not a constraint: it is shown beside the policy in `tlsanalyzer policies`
+    # and enforces nothing on its own. The rules above it are what the target
+    # year means in practice.
     cnsa2TargetYear: 2027
 
     # Required key exchange algorithms
@@ -243,8 +261,6 @@ rules:
     requiredVersions:
       - TLS 1.3
     bannedVersions:
-      - SSL 2.0
-      - SSL 3.0
       - TLS 1.0
       - TLS 1.1
 
