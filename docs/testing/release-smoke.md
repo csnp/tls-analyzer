@@ -174,6 +174,37 @@ a local build cannot prove the release does.
 - [ ] `--policy` and `--policy-file` together is an error, not a silent win for
       one of them.
 
+### 8b. Rule VALUES, not just rule keys
+
+Refusing unknown keys says nothing about the values under them. Both gate runs
+that found a fail-open policy defect found it one level deeper than the last fix
+reached, so check the level below whatever was last tightened.
+
+- [ ] A misspelled protocol version is refused when the policy loads, not
+      silently dropped. Try `bannedVersions: ["TLSv1.2"]`, `["tls 1.2"]`,
+      `["TLS1.2"]`, a trailing space, and `minVersion: garbage`, against a host
+      that does enable TLS 1.2. Each must exit 1 naming the value and listing the
+      accepted spellings. Before this check existed every one of them reported
+      `COMPLIANT 100/100` and exit 0.
+- [ ] Acceptance control: `bannedVersions: ["TLS 1.2"]` against the same host is
+      a violation and exits 2, and `["SSL 2.0"]` still loads.
+- [ ] Banning `SSL 3.0`, which is what the built-in `modern` policy does, prints
+      a warning that the rule could not be tested and names another way to check
+      it. Go cannot offer SSL 2.0 or SSL 3.0, so silence there is not compliance.
+- [ ] Algorithm names match case-insensitively: `bannedAlgorithms: [sha1]` and
+      `[SHA1]` produce the same verdict on the same host.
+- [ ] **Every rule field in the schema changes a verdict in at least one
+      direction.** Read the field list from the struct tags in
+      `pkg/types/policy.go`, and for each one construct a policy that the target
+      does not satisfy. A field with no evaluator produces no violation, no
+      warning and no "not evaluated" entry, which reads as a pass: six of them
+      shipped that way, including two named by the built-in CNSA 2.0 policies
+      where `cipher.requiredKeyExchange` masked the gap by covering the same
+      ground. `grep -rn '\.FieldName' internal/ --include='*.go'` with no hit
+      outside the type definition is the cheap version of this check.
+- [ ] `certificate.requireCt` is reported as not evaluated, since the scanner
+      collects no SCTs, and the verdict is marked incomplete and exits 2.
+
 ### 8a. Exit codes
 
 - [ ] `tlsanalyzer example.com --policy strict; echo $?` prints 2. A compliance

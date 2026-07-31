@@ -223,6 +223,22 @@ func TestPreviouslyUnevaluatedRulesNowFire(t *testing.T) {
 			rules: types.PolicyRules{Certificate: types.CertificateRules{
 				MaxValidityDays: 400}},
 		},
+		// The fixture certificate is valid for exactly 90 days, so these two
+		// bracket the threshold. An extreme fixture on one side alone cannot tell
+		// a correct cutoff from one that is off by one: a mutation loosening
+		// "longer than the maximum" to "at least the maximum" survives 30 and 400
+		// and is caught only here.
+		{
+			name: "maxValidityDays equal to the lifetime is allowed",
+			rules: types.PolicyRules{Certificate: types.CertificateRules{
+				MaxValidityDays: 90}},
+		},
+		{
+			name: "maxValidityDays one day under the lifetime is a violation",
+			rules: types.PolicyRules{Certificate: types.CertificateRules{
+				MaxValidityDays: 89}},
+			wantViolation: "certificate.maxValidityDays",
+		},
 		{
 			name: "allowedCipherSuites excludes an offered suite",
 			rules: types.PolicyRules{Cipher: types.CipherRules{

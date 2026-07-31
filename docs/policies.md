@@ -97,6 +97,20 @@ rules:
     maxVersion: TLS 1.3
 ```
 
+Protocol versions are written exactly as `SSL 2.0`, `SSL 3.0`, `TLS 1.0`,
+`TLS 1.1`, `TLS 1.2` or `TLS 1.3`. Any other spelling is refused when the policy
+loads, naming the value and listing the accepted ones. `TLSv1.2`, `TLS1.2` and
+`tls 1.2` are all rejected rather than quietly matching nothing: an unrecognised
+version used to leave the rule out of the verdict entirely, so a policy banning
+`TLSv1.2` reported COMPLIANT against a server that does enable TLS 1.2.
+
+`SSL 2.0` and `SSL 3.0` may be named, because banning them is a reasonable thing
+to require, but this scanner cannot test them. Go's TLS stack will not offer
+either protocol, so the scanner never sees one and the absence of a result is not
+evidence the server has it disabled. Banning either raises a warning saying the
+rule was not tested, and points at `openssl s_client -ssl3` to check it another
+way. Warnings do not change the verdict or the exit code.
+
 ### Cipher Rules
 
 ```yaml
@@ -134,6 +148,12 @@ rules:
       - SecP384r1MLKEM1024
 ```
 
+Algorithm, cipher suite and signature names are matched without regard to case,
+so `3des`, `3DES` and `3Des` all name the same thing. Unlike protocol versions
+these are not a closed set, so an unrecognised name cannot be refused when the
+policy loads: banning an algorithm no suite on the server uses is a legitimate
+rule that simply does not fire.
+
 ### Certificate Rules
 
 ```yaml
@@ -164,7 +184,11 @@ rules:
     # Allow self-signed certificates
     allowSelfSigned: false
 
-    # Require certificate transparency
+    # Require certificate transparency. This scanner collects no signed
+    # certificate timestamps and queries no CT log, so it has no evidence either
+    # way: setting this records the rule as not evaluated and marks the whole
+    # verdict incomplete, which exits 2. Check the certificate at https://crt.sh
+    # to evaluate the requirement yourself.
     requireCt: true
 ```
 

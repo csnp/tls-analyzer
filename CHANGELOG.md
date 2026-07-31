@@ -23,6 +23,41 @@ itself, and those are what set the version.
 
 ### Fixed
 
+- **Policy rule VALUES were never validated, so a typo turned a rule off and the
+  report read compliant.** The strict validation added in this release covers
+  keys only. `bannedVersions: ["TLSv1.2"]` matched no scanned protocol, so the
+  rule left the verdict and the report read `COMPLIANT 100/100` with exit 0
+  against a server that does enable TLS 1.2; `tls 1.2`, `TLS1.2`, a trailing
+  space and `nonsense` behaved the same way. `minVersion` was worse than silent,
+  because an unrecognised key in a Go map reads back as 0, which is the rank of
+  SSL 3.0, so `minVersion: garbage` was satisfied by any protocol at all. An
+  unrecognised protocol version is now refused when the policy loads, naming the
+  value and listing the accepted spellings. Algorithm, cipher suite and signature
+  names are a free-form space rather than a closed set, so those are matched
+  without regard to case instead: `sha1` banned nothing while `SHA1` banned two
+  suites on the same host, with nothing in the output saying which had happened.
+- **Six rule fields were declared, documented, printed by `print-policy`, and
+  never read.** `protocol.maxVersion`, `certificate.maxValidityDays`,
+  `certificate.requiredSignatureAlgorithms`, `cipher.allowedCipherSuites` and
+  `quantum.requiredKeyExchangeAlgorithms` produced no violation, no warning and
+  no "not evaluated" entry, which reads as a pass. Requiring ML-DSA-65 of a
+  SHA256-RSA certificate, or ML-KEM-768 of a host with no post-quantum key
+  exchange at all, reported `COMPLIANT 100/100` and exit 0. The last two are
+  named by all three built-in CNSA 2.0 policies, where the gap was masked by
+  `cipher.requiredKeyExchange` covering the same ground, so a user who kept only
+  the quantum block of a printed policy got an unconditional pass on this tool's
+  flagship post-quantum use case. All five are evaluated now.
+  `certificate.requireCt` is the sixth: this scanner collects no signed
+  certificate timestamps and queries no Certificate Transparency log, so it is
+  recorded as not evaluated with a reason, which marks the verdict incomplete
+  rather than reporting a requirement met by a scanner that never looked.
+- **Banning SSL 2.0 or SSL 3.0 passed without being tested.** Go's TLS stack will
+  not offer either protocol, so the scanner never reports one and the ban could
+  not fire. The built-in `modern` policy bans SSL 3.0, so that rule had passed on
+  every host ever scanned without once being checked. Both are still accepted in
+  a policy file, because banning them is a reasonable requirement, and each now
+  raises a warning that names the limitation and points at `openssl s_client
+  -ssl3` to check it another way.
 - **The certificate name and chain were asserted, not verified.** The scanner
   handshakes with verification disabled on purpose, so it can connect to and
   describe a certificate a verifying client would refuse. Nothing replaced the
