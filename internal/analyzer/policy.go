@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"sort"
 	"strings"
 
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
@@ -118,6 +119,113 @@ var schemaPathsInErrors = strings.NewReplacer(
 	"type types.Policy", "the top level of a policy file",
 )
 
+// containsFold reports whether substr occurs in s, ignoring case. Algorithm
+// names reach this package from three sources that disagree on case (the
+// scanner's own tables, the x509 package's signature algorithm strings, and a
+// policy file a human typed), so an exact-case match silently dropped rules.
+func containsFold(s, substr string) bool {
+	return strings.Contains(strings.ToLower(s), strings.ToLower(substr))
+}
+
+// protocolVersionOrder ranks the protocol versions the scanner reports. It is
+// the single definition of that closed set: comparison, the "highest supported"
+// summary and policy value validation all read it, so a version added here
+// cannot be understood by one of them and not the others.
+var protocolVersionOrder = map[string]int{
+	"SSL 3.0": 0,
+	"TLS 1.0": 1,
+	"TLS 1.1": 2,
+	"TLS 1.2": 3,
+	"TLS 1.3": 4,
+}
+
+// unprobeableProtocolVersions are version names this tool understands but cannot
+// test for. Go's TLS stack will not offer SSL 2.0 or SSL 3.0 at all, so the
+// scanner never reports them, and a policy banning one cannot be evaluated: the
+// absence of a result is not evidence the server has it disabled. They are
+// accepted in a policy file, because banning them is a legitimate thing to
+// write, and each use raises a warning saying the rule was not tested.
+var unprobeableProtocolVersions = map[string]string{
+	"SSL 2.0": "Go's TLS stack cannot offer SSL 2.0, so this scanner cannot tell " +
+		"whether the server accepts it",
+	"SSL 3.0": "Go's TLS stack cannot offer SSL 3.0, so this scanner cannot tell " +
+		"whether the server accepts it",
+}
+
+// knownProtocolVersionNames is every version name a policy may use: the ones the
+// scanner probes, plus the ones it understands but cannot measure. Validation
+// reads this, so a legitimate "ban SSL 2.0" is accepted while "TLSv1.2" is not.
+func knownProtocolVersionNames() map[string]bool {
+	names := make(map[string]bool, len(protocolVersionOrder)+len(unprobeableProtocolVersions))
+	for name := range protocolVersionOrder {
+		names[name] = true
+	}
+	for name := range unprobeableProtocolVersions {
+		names[name] = true
+	}
+	return names
+}
+
+// knownProtocolVersions lists the accepted values in rank order, for error
+// messages. Built from the same sources so they cannot drift apart.
+func knownProtocolVersions() string {
+	ordered := make([]string, len(protocolVersionOrder))
+	for name, rank := range protocolVersionOrder {
+		ordered[rank] = name
+	}
+	extra := make([]string, 0, len(unprobeableProtocolVersions))
+	for name := range unprobeableProtocolVersions {
+		if _, ranked := protocolVersionOrder[name]; !ranked {
+			extra = append(extra, name)
+		}
+	}
+	sort.Strings(extra)
+	return strings.Join(append(extra, ordered...), ", ")
+}
+
+// validateProtocolVersionValues refuses a protocol version this tool does not
+// recognise.
+//
+// Unknown KEYS have been refused since 0.4.0, but unknown VALUES were dropped
+// in silence, which is the same fail-open one level down: `bannedVersions:
+// ["TLSv1.2"]` matched no scanned protocol, so the rule vanished and the report
+// read COMPLIANT 100/100 with exit 0 against a server that does enable TLS 1.2.
+// `minVersion` was worse than silent, because an unknown key in a Go map reads
+// back as 0, which is the rank of SSL 3.0, so `minVersion: garbage` was
+// satisfied by any protocol at all. A one-character difference the user cannot
+// see must not decide whether a compliance gate passes.
+func validateProtocolVersionValues(rules *types.ProtocolRules) error {
+	fields := []struct {
+		name   string
+		values []string
+	}{
+		{"minVersion", nil},
+		{"maxVersion", nil},
+		{"bannedVersions", rules.BannedVersions},
+		{"requiredVersions", rules.RequiredVersions},
+	}
+	if rules.MinVersion != "" {
+		fields[0].values = []string{rules.MinVersion}
+	}
+	if rules.MaxVersion != "" {
+		fields[1].values = []string{rules.MaxVersion}
+	}
+
+	known := knownProtocolVersionNames()
+	for _, field := range fields {
+		for _, value := range field.values {
+			if !known[value] {
+				return fmt.Errorf("rules.protocol.%s has the value %q, which is not a protocol "+
+					"version this tool recognises. Accepted values are: %s. Spelling and spacing "+
+					"both matter, so %q and \"TLSv1.2\" are not the same value, and an "+
+					"unrecognised one would silently match nothing and leave the rule out of "+
+					"the verdict", field.name, value, knownProtocolVersions(), value)
+			}
+		}
+	}
+	return nil
+}
+
 // validatePolicy refuses a policy that cannot produce a meaningful verdict.
 func validatePolicy(policy *types.Policy, path string) error {
 	if strings.TrimSpace(policy.Name) == "" {
@@ -130,6 +238,10 @@ func validatePolicy(policy *types.Policy, path string) error {
 		return fmt.Errorf("policy %q in %s defines no rules, so nothing can fail it and a "+
 			"compliant verdict from it would mean nothing. Add at least one rule, or use "+
 			"'extends' to inherit one of the built-in policies", policy.Name, path)
+	}
+
+	if err := validateProtocolVersionValues(&policy.Rules.Protocol); err != nil {
+		return fmt.Errorf("policy %q in %s: %w", policy.Name, path, err)
 	}
 
 	return nil
@@ -224,6 +336,23 @@ func (e *PolicyEvaluator) evaluateProtocol(result *types.ScanResult, rules *type
 
 	// Check banned versions
 	for _, banned := range rules.BannedVersions {
+		// A version the scanner cannot offer is a question it cannot answer. The
+		// built-in "modern" policy bans SSL 3.0, and that ban has never been
+		// tested against anything: the probe list is TLS 1.0 to TLS 1.3, so the
+		// version simply never appears in a result and the rule passed on every
+		// host. Say so rather than counting silence as compliance.
+		if reason, cannotProbe := unprobeableProtocolVersions[banned]; cannotProbe {
+			pr.Warnings = append(pr.Warnings, types.PolicyViolation{
+				Rule:        "protocol.bannedVersions",
+				Severity:    types.SeverityMedium,
+				Description: "Banned protocol version could not be tested",
+				Expected:    banned + " disabled",
+				Actual:      "not tested: " + reason,
+				Remediation: "Confirm " + banned + " is disabled using a tool that can " +
+					"offer it, for example: openssl s_client -ssl3 -connect " + result.Host + ":443",
+			})
+			continue
+		}
 		for _, p := range result.Protocols {
 			if p.Supported && p.Version == banned {
 				pr.Violations = append(pr.Violations, types.PolicyViolation{
@@ -233,6 +362,26 @@ func (e *PolicyEvaluator) evaluateProtocol(result *types.ScanResult, rules *type
 					Expected:    banned + " disabled",
 					Actual:      banned + " enabled",
 					Remediation: "Disable " + banned,
+				})
+			}
+		}
+	}
+
+	// Check maximum version.
+	//
+	// Declared and documented since the schema was written, and never read, so a
+	// policy capping the protocol version passed unconditionally.
+	if rules.MaxVersion != "" {
+		maxRank := protocolVersionOrder[rules.MaxVersion]
+		for _, p := range result.Protocols {
+			if rank, known := protocolVersionOrder[p.Version]; p.Supported && known && rank > maxRank {
+				pr.Violations = append(pr.Violations, types.PolicyViolation{
+					Rule:        "protocol.maxVersion",
+					Severity:    types.SeverityMedium,
+					Description: "Protocol version above the permitted maximum",
+					Expected:    rules.MaxVersion + " or lower",
+					Actual:      p.Version + " enabled",
+					Remediation: "Disable " + p.Version,
 				})
 			}
 		}
@@ -286,9 +435,15 @@ func (e *PolicyEvaluator) evaluateCipher(result *types.ScanResult, rules *types.
 			})
 		}
 
-		// Check banned algorithms
+		// Check banned algorithms.
+		//
+		// Matched case-insensitively: these are free-form algorithm names rather
+		// than a closed set, so they cannot be validated at load time the way
+		// protocol versions are, and an exact-case match meant "sha1" banned
+		// nothing while "SHA1" banned seven suites on the same host.
 		for _, banned := range rules.BannedAlgorithms {
-			if strings.Contains(cs.Name, banned) || cs.Encryption == banned || cs.MAC == banned {
+			if containsFold(cs.Name, banned) || strings.EqualFold(cs.Encryption, banned) ||
+				strings.EqualFold(cs.MAC, banned) {
 				pr.Violations = append(pr.Violations, types.PolicyViolation{
 					Rule:        "cipher.bannedAlgorithms",
 					Severity:    types.SeverityHigh,
@@ -302,7 +457,7 @@ func (e *PolicyEvaluator) evaluateCipher(result *types.ScanResult, rules *types.
 
 		// Check banned cipher suites
 		for _, banned := range rules.BannedCipherSuites {
-			if cs.Name == banned {
+			if strings.EqualFold(cs.Name, banned) {
 				pr.Violations = append(pr.Violations, types.PolicyViolation{
 					Rule:        "cipher.bannedCipherSuites",
 					Severity:    types.SeverityHigh,
@@ -315,12 +470,40 @@ func (e *PolicyEvaluator) evaluateCipher(result *types.ScanResult, rules *types.
 		}
 	}
 
+	// Check the allowed cipher suite whitelist.
+	//
+	// Declared, documented and printed by print-policy, and never read, so a
+	// policy that named an explicit allowlist accepted every suite the server
+	// offered. A whitelist that permits everything is the most misleading shape
+	// this rule could have, because the user wrote down exactly what they wanted.
+	if len(rules.AllowedCipherSuites) > 0 {
+		for _, cs := range result.CipherSuites {
+			allowed := false
+			for _, permitted := range rules.AllowedCipherSuites {
+				if strings.EqualFold(cs.Name, permitted) {
+					allowed = true
+					break
+				}
+			}
+			if !allowed {
+				pr.Violations = append(pr.Violations, types.PolicyViolation{
+					Rule:        "cipher.allowedCipherSuites",
+					Severity:    types.SeverityHigh,
+					Description: "Cipher suite is not on the allowed list",
+					Expected:    "one of: " + strings.Join(rules.AllowedCipherSuites, ", "),
+					Actual:      cs.Name + " offered",
+					Remediation: "Remove " + cs.Name + " from the cipher suite configuration",
+				})
+			}
+		}
+	}
+
 	// Check required key exchange (at least one must be present)
 	if len(rules.RequiredKeyExchange) > 0 {
 		found := false
 		for _, ke := range result.KeyExchanges {
 			for _, required := range rules.RequiredKeyExchange {
-				if ke.Name == required || ke.PQCAlgorithm == required {
+				if strings.EqualFold(ke.Name, required) || strings.EqualFold(ke.PQCAlgorithm, required) {
 					found = true
 					break
 				}
@@ -403,9 +586,71 @@ func (e *PolicyEvaluator) evaluateCertificate(result *types.ScanResult, rules *t
 		}
 	}
 
+	// Check the maximum certificate lifetime.
+	//
+	// Declared and documented, and never read, so a policy capping certificate
+	// lifetime accepted any lifetime at all.
+	if rules.MaxValidityDays > 0 && !cert.NotBefore.IsZero() && !cert.NotAfter.IsZero() {
+		lifetimeDays := int(cert.NotAfter.Sub(cert.NotBefore).Hours() / 24)
+		if lifetimeDays > rules.MaxValidityDays {
+			pr.Violations = append(pr.Violations, types.PolicyViolation{
+				Rule:        "certificate.maxValidityDays",
+				Severity:    types.SeverityMedium,
+				Description: "Certificate lifetime exceeds the permitted maximum",
+				Expected:    fmt.Sprintf("<= %d days total validity", rules.MaxValidityDays),
+				Actual:      fmt.Sprintf("%d days total validity", lifetimeDays),
+				Remediation: fmt.Sprintf("Reissue the certificate with a lifetime of %d days or less",
+					rules.MaxValidityDays),
+			})
+		}
+	}
+
+	// Check required signature algorithms.
+	//
+	// Declared, documented, printed by print-policy and named by the built-in
+	// cnsa-2.0-2035 policy, and never read. Requiring ML-DSA-65 of a SHA256-RSA
+	// certificate reported COMPLIANT 100/100 and exit 0, on this tool's flagship
+	// post-quantum use case.
+	if len(rules.RequiredSignatureAlgorithms) > 0 {
+		satisfied := false
+		for _, required := range rules.RequiredSignatureAlgorithms {
+			if containsFold(cert.SignatureAlgorithm, required) {
+				satisfied = true
+				break
+			}
+		}
+		if !satisfied {
+			pr.Violations = append(pr.Violations, types.PolicyViolation{
+				Rule:        "certificate.requiredSignatureAlgorithms",
+				Severity:    types.SeverityHigh,
+				Description: "Certificate signature algorithm is not one of those required",
+				Expected:    strings.Join(rules.RequiredSignatureAlgorithms, " or "),
+				Actual:      cert.SignatureAlgorithm,
+				Remediation: "Reissue the certificate with one of: " +
+					strings.Join(rules.RequiredSignatureAlgorithms, ", "),
+			})
+		}
+	}
+
+	// Certificate Transparency.
+	//
+	// The rule is part of the schema and is documented, but this scanner does not
+	// collect SCTs or query CT logs, so there is no input to evaluate it against.
+	// Reporting it as satisfied would be the same fail-open as reading an
+	// unmeasured quantum score as a zero, so it is recorded as not evaluated and
+	// the verdict is marked incomplete.
+	if rules.RequireCT {
+		pr.SkippedRules = append(pr.SkippedRules, types.SkippedPolicyRule{
+			Rule: "certificate.requireCt",
+			Reason: "this scanner does not collect signed certificate timestamps or query " +
+				"Certificate Transparency logs, so it has no evidence either way. Check the " +
+				"certificate at https://crt.sh to evaluate this requirement",
+		})
+	}
+
 	// Check banned signature algorithms
 	for _, banned := range rules.BannedSignatureAlgorithms {
-		if strings.Contains(cert.SignatureAlgorithm, banned) {
+		if containsFold(cert.SignatureAlgorithm, banned) {
 			pr.Violations = append(pr.Violations, types.PolicyViolation{
 				Rule:        "certificate.bannedSignatureAlgorithms",
 				Severity:    types.SeverityHigh,
@@ -481,6 +726,36 @@ func (e *PolicyEvaluator) evaluateQuantum(result *types.ScanResult, rules *types
 		}
 	}
 
+	// Check required key exchange algorithms.
+	//
+	// Declared, documented, printed by print-policy and named by all three
+	// built-in CNSA 2.0 policies, and never read. Requiring ML-KEM-768 of a host
+	// with no post-quantum key exchange at all reported COMPLIANT 100/100 and
+	// exit 0. In the built-ins the gap was masked by cipher.requiredKeyExchange,
+	// which covers the same ground and does work, so a user who kept only the
+	// quantum block of a printed policy got an unconditional pass.
+	if len(rules.RequiredKeyExchangeAlgorithms) > 0 {
+		found := false
+		for _, ke := range result.KeyExchanges {
+			for _, required := range rules.RequiredKeyExchangeAlgorithms {
+				if strings.EqualFold(ke.Name, required) || strings.EqualFold(ke.PQCAlgorithm, required) {
+					found = true
+					break
+				}
+			}
+		}
+		if !found {
+			pr.Violations = append(pr.Violations, types.PolicyViolation{
+				Rule:        "quantum.requiredKeyExchangeAlgorithms",
+				Severity:    types.SeverityCritical,
+				Description: "Required key exchange algorithm not found",
+				Expected:    strings.Join(rules.RequiredKeyExchangeAlgorithms, " or "),
+				Actual:      "None of the required algorithms detected",
+				Remediation: "Enable one of: " + strings.Join(rules.RequiredKeyExchangeAlgorithms, ", "),
+			})
+		}
+	}
+
 	// Check PQC certificate requirement
 	if rules.RequirePQCCertificates {
 		if result.Certificate == nil || !result.Certificate.QuantumSafe {
@@ -528,32 +803,16 @@ func (e *PolicyEvaluator) calculateScore(pr *types.PolicyResult, policy *types.P
 }
 
 func (e *PolicyEvaluator) versionAtLeast(version, minVersion string) bool {
-	versionOrder := map[string]int{
-		"SSL 3.0": 0,
-		"TLS 1.0": 1,
-		"TLS 1.1": 2,
-		"TLS 1.2": 3,
-		"TLS 1.3": 4,
-	}
-
-	return versionOrder[version] >= versionOrder[minVersion]
+	return protocolVersionOrder[version] >= protocolVersionOrder[minVersion]
 }
 
 func (e *PolicyEvaluator) getHighestProtocol(protocols []types.Protocol) string {
 	highest := "None"
 	highestOrder := -1
 
-	versionOrder := map[string]int{
-		"SSL 3.0": 0,
-		"TLS 1.0": 1,
-		"TLS 1.1": 2,
-		"TLS 1.2": 3,
-		"TLS 1.3": 4,
-	}
-
 	for _, p := range protocols {
 		if p.Supported {
-			if order, ok := versionOrder[p.Version]; ok && order > highestOrder {
+			if order, ok := protocolVersionOrder[p.Version]; ok && order > highestOrder {
 				highestOrder = order
 				highest = p.Version
 			}

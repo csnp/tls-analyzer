@@ -5,7 +5,7 @@ All notable changes to QRAMM TLS Analyzer are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [0.4.0] - 2026-07-30
+## [0.4.0] - 2026-07-31
 
 **A minor version rather than a patch, because three things a user can depend on
 change.** A policy that is not satisfied now exits 2 where it exited 0, so a CI
@@ -389,4 +389,5 @@ reproducing it. Reported in [#1](https://github.com/csnp/tls-analyzer/issues/1).
 - Go 1.25 or later is now required, for `tls.ConnectionState.CurveID`. CI and
   release builds moved from Go 1.21 to Go 1.25.
 
+[0.4.0]: https://github.com/csnp/tls-analyzer/releases/tag/v0.4.0
 [0.3.0]: https://github.com/csnp/tls-analyzer/releases/tag/v0.3.0
