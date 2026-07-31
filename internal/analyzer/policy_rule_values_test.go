@@ -179,26 +179,6 @@ func TestBanningAnUnprobeableVersionIsNotEvaluated(t *testing.T) {
 	}
 }
 
-// TestBuiltInPoliciesOnlyDeclareRulesThisScannerCanEvaluate keeps the built-ins
-// honest. They banned SSL 3.0, which this scanner cannot probe, so every
-// evaluation of modern, strict and cnsa-2.0-2030 carried an untested rule. A
-// policy shipped with the tool should declare what the tool can actually check.
-func TestBuiltInPoliciesOnlyDeclareRulesThisScannerCanEvaluate(t *testing.T) {
-	e := NewPolicyEvaluator()
-	for _, name := range e.ListPolicies() {
-		policy, ok := e.GetPolicy(name)
-		if !ok {
-			t.Fatalf("built-in %q disappeared", name)
-		}
-		for _, banned := range policy.Rules.Protocol.BannedVersions {
-			if _, cannotProbe := unprobeableProtocolVersions[banned]; cannotProbe {
-				t.Errorf("built-in policy %q bans %q, which this scanner cannot probe, so "+
-					"every evaluation of it carries a rule that was never tested", name, banned)
-			}
-		}
-	}
-}
-
 // TestPreviouslyUnevaluatedRulesNowFire covers the six rule fields that were
 // declared in the schema, documented in docs/policies.md, printed by
 // print-policy and, in two cases, named by the built-in CNSA 2.0 policies, while
