@@ -117,6 +117,10 @@ evaluated, which marks the whole verdict incomplete and exits 2, the same way
 protocol support, such as nmap's `ssl-enum-ciphers` script; OpenSSL 3.x removed
 the `-ssl2` and `-ssl3` client options, so `s_client` cannot answer this either.
 
+A `requiredVersions` entry naming one is recorded the same way. A `minVersion`
+is not: every policy sets one, so marking them all incomplete would make the
+signal meaningless, and the scan coverage notes disclose the probe range instead.
+
 No built-in policy bans them, for that reason. Until this release `modern`,
 `strict` and `cnsa-2.0-2030` all banned SSL 3.0, and that rule had passed on
 every host ever scanned without once being tested.

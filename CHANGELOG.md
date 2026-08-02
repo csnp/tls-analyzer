@@ -21,8 +21,28 @@ the CNSA 2.0 verdicts state their differing scope, and batch output is
 deterministic. Two gate runs then found six fail-open defects in the analysis
 itself, and those are what set the version.
 
+### Security
+
+- **A policy file could forge the report it appeared in.** A policy file is
+  untrusted input: it arrives from a vendor, a repository or a colleague, and its
+  name is rendered into a human-readable verdict. A name containing newlines
+  printed its own `Status: COMPLIANT / Score: 100/100` block and pushed the real
+  verdict off the screen, and an ANSI escape survived `--no-color`. The exit code
+  and the JSON stayed honest throughout, which is why the text report had to be
+  fixed rather than relied on. Control characters in the name and description are
+  collapsed and the fields are capped, so supplied text can still appear as a
+  name but can no longer displace the verdict.
+
 ### Fixed
 
+- **`requiredVersions` naming SSL 2.0 or SSL 3.0 reported it "not detected".**
+  That is as unfounded as reporting it absent, since this scanner cannot offer
+  either protocol. It is recorded as not evaluated now, matching
+  `bannedVersions`. This is deliberately NOT extended to `minVersion`: every
+  policy sets a minimum, so recording the unmeasurable region below TLS 1.0 as a
+  skipped rule would mark every evaluation incomplete forever and make that
+  signal meaningless. The protocol probe range is disclosed in the scan coverage
+  notes instead.
 - **Policy rule VALUES were never validated, so a typo turned a rule off and the
   report read compliant.** The strict validation added in this release covers
   keys only. `bannedVersions: ["TLSv1.2"]` matched no scanned protocol, so the
