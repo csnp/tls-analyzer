@@ -36,6 +36,25 @@ itself, and those are what set the version.
   names are a free-form space rather than a closed set, so those are matched
   without regard to case instead: `sha1` banned nothing while `SHA1` banned two
   suites on the same host, with nothing in the output saying which had happened.
+- **`minVersion` checked what the server could reach, not what it still
+  accepted.** `minVersion: TLS 1.3` reported `COMPLIANT 100/100` with exit 0
+  against a server that also accepted TLS 1.0, in the same report that listed
+  TLS 1.0 as supported and raised a HIGH finding for it. The rule's name, the
+  Scope paragraph printed beside the verdict, and every server configuration
+  directive of the same name all mean a floor on what is accepted, so that is
+  what it checks now; the capability half still fires separately when a server
+  cannot reach the minimum at all. `cnsa-2.0-2027` and `cnsa-2.0-2035` set a
+  minVersion and no `bannedVersions`, so both gave a clean protocol verdict to a
+  TLS 1.0 server: on example.com they now report 2 and 3 protocol violations
+  where they reported none.
+- **A certificate no client would accept could satisfy a certificate policy.**
+  A policy asking for key size, lifetime and a CA-issued certificate reported
+  `COMPLIANT 100/100` against `wrong.host.badssl.com` and
+  `untrusted-root.badssl.com`, in the same report that printed
+  `NOT VALID FOR THIS NAME` and scored the certificate dimension 0 of 25. Every
+  individual rule really was satisfied, so the name and chain results are now
+  read by the policy evaluator as well as by the grade. A check that did not run
+  is still not read as a failure.
 - **A protocol version the policy said MUST be supported produced only a
   warning.** `requiredVersions: ["TLS 1.3"]` against a server without TLS 1.3
   reported `COMPLIANT` and exit 0, while the same report printed

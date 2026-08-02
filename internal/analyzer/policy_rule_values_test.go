@@ -393,6 +393,123 @@ func TestAPolicyThatConstrainsNothingIsRefused(t *testing.T) {
 	}
 }
 
+// TestMinVersionIsAFloorNotACapability covers a rule that asked only whether the
+// server could REACH the minimum, never whether it still accepted anything
+// below it. `minVersion: TLS 1.3` reported COMPLIANT 100/100 with exit 0 against
+// a server that also accepted TLS 1.0, in the same report that listed TLS 1.0 as
+// supported and raised a HIGH finding for it.
+func TestMinVersionIsAFloorNotACapability(t *testing.T) {
+	e := NewPolicyEvaluator()
+
+	// The fixture offers TLS 1.0 through TLS 1.3.
+	pr := e.Evaluate(scanForRuleValues(), &types.Policy{
+		Name:  "t",
+		Rules: types.PolicyRules{Protocol: types.ProtocolRules{MinVersion: "TLS 1.3"}},
+	})
+	if findViolation(pr, "protocol.minVersion") == nil {
+		t.Fatal("a server that still accepts TLS 1.0 satisfied a TLS 1.3 minimum, so the " +
+			"rule reported compliance for exactly the configuration it exists to forbid")
+	}
+
+	// Acceptance control: a floor the server genuinely meets must still pass, or
+	// the rule has simply been inverted into always failing.
+	pr = e.Evaluate(scanForRuleValues(), &types.Policy{
+		Name:  "t",
+		Rules: types.PolicyRules{Protocol: types.ProtocolRules{MinVersion: "TLS 1.0"}},
+	})
+	if v := findViolation(pr, "protocol.minVersion"); v != nil {
+		t.Fatalf("a minimum the server meets, with nothing below it enabled, was reported "+
+			"as a violation: %+v", v)
+	}
+
+	// The capability half must still fire: a server that cannot reach the
+	// minimum at all is a violation for a different reason.
+	lowScan := scanForRuleValues()
+	for i := range lowScan.Protocols {
+		if lowScan.Protocols[i].Version == "TLS 1.3" {
+			lowScan.Protocols[i].Supported = false
+		}
+	}
+	pr = e.Evaluate(lowScan, &types.Policy{
+		Name:  "t",
+		Rules: types.PolicyRules{Protocol: types.ProtocolRules{MinVersion: "TLS 1.3"}},
+	})
+	if findViolation(pr, "protocol.minVersion") == nil {
+		t.Error("a server that cannot reach the minimum at all produced no violation")
+	}
+}
+
+// TestACertificateNoClientWouldAcceptFailsCertificatePolicy covers a policy
+// verdict that contradicted the report it was printed in. A policy asking for
+// key size, lifetime and a CA-issued certificate reported COMPLIANT 100/100
+// against a certificate served for the wrong name, and against one chaining to
+// an untrusted root, while the same report printed "NOT VALID FOR THIS NAME" and
+// scored the certificate dimension 0 of 25. Each individual rule was satisfied,
+// which is why this has to be its own check.
+func TestACertificateNoClientWouldAcceptFailsCertificatePolicy(t *testing.T) {
+	e := NewPolicyEvaluator()
+	policy := &types.Policy{
+		Name: "cert-hygiene",
+		Rules: types.PolicyRules{Certificate: types.CertificateRules{
+			MinValidityDays: 30,
+			MinECCKeySize:   256,
+			AllowSelfSigned: false,
+		}},
+	}
+
+	cases := []struct {
+		name    string
+		mutate  func(*types.Certificate)
+		wantsAt string
+	}{
+		{"served for the wrong name", func(c *types.Certificate) {
+			c.NameMatch = types.CheckFailed
+			c.NameMismatchReason = "x509: certificate is valid for other.example, not example.com"
+		}, "certificate.nameMatch"},
+		{"chain not trusted", func(c *types.Certificate) {
+			c.ChainTrust = types.CheckFailed
+		}, "certificate.chainTrust"},
+	}
+
+	for _, tc := range cases {
+		t.Run(tc.name, func(t *testing.T) {
+			scan := scanForRuleValues()
+			scan.Certificate.NameMatch = types.CheckPassed
+			scan.Certificate.ChainTrust = types.CheckPassed
+			tc.mutate(scan.Certificate)
+
+			pr := e.Evaluate(scan, policy)
+			if findViolation(pr, tc.wantsAt) == nil {
+				t.Fatalf("%s produced no %s violation, so the policy verdict said the "+
+					"certificate was acceptable while the rest of the report said no client "+
+					"would accept it", tc.name, tc.wantsAt)
+			}
+			if pr.Compliant {
+				t.Error("the verdict is compliant for a certificate no client would accept")
+			}
+		})
+	}
+
+	// Acceptance control: a certificate that passes both checks must not be
+	// failed by them.
+	scan := scanForRuleValues()
+	scan.Certificate.NameMatch = types.CheckPassed
+	scan.Certificate.ChainTrust = types.CheckPassed
+	pr := e.Evaluate(scan, policy)
+	for _, rule := range []string{"certificate.nameMatch", "certificate.chainTrust"} {
+		if v := findViolation(pr, rule); v != nil {
+			t.Errorf("a certificate that passed both checks was failed by %s: %+v", rule, v)
+		}
+	}
+
+	// A check that did not run must not be read as a failure either.
+	scan.Certificate.ChainTrust = types.CheckNotPerformed
+	pr = e.Evaluate(scan, policy)
+	if v := findViolation(pr, "certificate.chainTrust"); v != nil {
+		t.Errorf("a chain check that did not run was reported as a failed one: %+v", v)
+	}
+}
+
 // TestRequireCTIsRecordedAsNotEvaluated covers the one rule in the schema with
 // no scanned input behind it. This scanner collects no SCTs and queries no CT
 // log, so reporting the rule as satisfied would be the same fail-open as reading

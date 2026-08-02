@@ -415,8 +415,25 @@ func (e *PolicyEvaluator) Evaluate(result *types.ScanResult, policy *types.Polic
 }
 
 func (e *PolicyEvaluator) evaluateProtocol(result *types.ScanResult, rules *types.ProtocolRules, pr *types.PolicyResult) {
-	// Check minimum version
+	// Check minimum version.
+	//
+	// This asks two questions, and used to ask only the first: can the server
+	// reach the minimum, and does it still accept anything below it. Asking only
+	// the first made minVersion a capability check, so `minVersion: TLS 1.3`
+	// reported COMPLIANT 100/100 with exit 0 against a server that also accepted
+	// TLS 1.0, in the same report that listed TLS 1.0 as supported and raised a
+	// HIGH finding for it. Two built-in CNSA 2.0 policies set a minVersion and no
+	// bannedVersions, so both gave a clean protocol verdict to a TLS 1.0 server.
+	//
+	// The floor reading is what the rule's name says, what the Scope paragraph
+	// printed beside the verdict promises, and what every server configuration
+	// directive of the same name means. It is also the fail-closed direction: a
+	// user who meant "the server must be capable of TLS 1.3" gets a violation
+	// they can see and remove, while a user who meant "nothing below TLS 1.3"
+	// previously got silence.
 	if rules.MinVersion != "" {
+		minRank, minKnown := protocolVersionOrder[rules.MinVersion]
+
 		meetsMin := false
 		for _, p := range result.Protocols {
 			if p.Supported && e.versionAtLeast(p.Version, rules.MinVersion) {
@@ -433,6 +450,20 @@ func (e *PolicyEvaluator) evaluateProtocol(result *types.ScanResult, rules *type
 				Actual:      e.getHighestProtocol(result.Protocols),
 				Remediation: "Enable " + rules.MinVersion,
 			})
+		}
+
+		for _, p := range result.Protocols {
+			rank, known := protocolVersionOrder[p.Version]
+			if p.Supported && known && minKnown && rank < minRank {
+				pr.Violations = append(pr.Violations, types.PolicyViolation{
+					Rule:        "protocol.minVersion",
+					Severity:    types.SeverityHigh,
+					Description: "Protocol version below the minimum is still accepted",
+					Expected:    "nothing below " + rules.MinVersion + " accepted",
+					Actual:      p.Version + " still enabled",
+					Remediation: "Disable " + p.Version,
+				})
+			}
 		}
 	}
 
@@ -643,6 +674,42 @@ func (e *PolicyEvaluator) evaluateCertificate(result *types.ScanResult, rules *t
 	}
 
 	cert := result.Certificate
+
+	// A certificate no client would accept cannot satisfy a certificate policy.
+	//
+	// The name and chain checks are reported and score the certificate dimension
+	// zero, but the policy evaluator did not read either, so a policy asking for
+	// key size, lifetime and a trusted CA reported COMPLIANT 100/100 against
+	// wrong.host.badssl.com and untrusted-root.badssl.com, in the same report
+	// that printed "NOT VALID FOR THIS NAME" and scored Certificate 0/25. The
+	// individual rules were each satisfied, which is exactly why this has to be
+	// its own check rather than an adjustment to them.
+	if cert.NameMatch == types.CheckFailed {
+		reason := cert.NameMismatchReason
+		if reason == "" {
+			reason = "the certificate is not valid for the name it was requested under"
+		}
+		pr.Violations = append(pr.Violations, types.PolicyViolation{
+			Rule:        "certificate.nameMatch",
+			Severity:    types.SeverityCritical,
+			Description: "Certificate is not valid for the requested name",
+			Expected:    "a certificate valid for " + cert.RequestedName,
+			Actual:      reason,
+			Remediation: "Serve a certificate whose subject alternative names cover " +
+				cert.RequestedName,
+		})
+	}
+	if cert.ChainTrust == types.CheckFailed {
+		pr.Violations = append(pr.Violations, types.PolicyViolation{
+			Rule:        "certificate.chainTrust",
+			Severity:    types.SeverityCritical,
+			Description: "Certificate chain does not build to a trusted root",
+			Expected:    "a chain to a root in the trust store of the host running the scan",
+			Actual:      "chain verification failed",
+			Remediation: "Serve the full chain, including any intermediate certificates, " +
+				"from a publicly trusted CA",
+		})
+	}
 
 	// Check validity
 	if cert.Expired {

@@ -80,7 +80,11 @@ rules:
 ```yaml
 rules:
   protocol:
-    # Minimum acceptable TLS version
+    # Minimum acceptable TLS version. This is a floor on what the server
+    # ACCEPTS, not just on what it can reach: a server that negotiates TLS 1.3
+    # but still accepts TLS 1.0 violates a minVersion of TLS 1.2. Both halves are
+    # checked, so a server that cannot reach the minimum at all is also a
+    # violation.
     minVersion: TLS 1.2
 
     # Versions that MUST be supported. A version listed here and not offered by
