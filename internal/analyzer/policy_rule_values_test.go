@@ -369,6 +369,25 @@ func TestAPolicyThatConstrainsNothingIsRefused(t *testing.T) {
 		"only a target year label": "name: t\nrules:\n  quantum:\n    cnsa2TargetYear: 2035\n",
 		"an empty list":            "name: t\nrules:\n  protocol:\n    bannedVersions: []\n",
 		"a list of one blank item": "name: t\nrules:\n  protocol:\n    bannedVersions:\n      -\n",
+		// Every rule but allowSelfSigned is gated on a positive number or a true
+		// boolean, so a zero or a false is a no-op by construction. An earlier
+		// version of this test asserted the opposite, on the reasoning that a
+		// value the user wrote is a rule they meant; that enshrined a policy which
+		// can report nothing but compliance, which is what this guard exists to
+		// prevent.
+		"a zero minimum":       "name: t\nrules:\n  quantum:\n    minQuantumScore: 0\n",
+		"a false requirement":  "name: t\nrules:\n  cipher:\n    requireForwardSecrecy: false\n",
+		"a negative minimum":   "name: t\nrules:\n  certificate:\n    minRsaKeySize: -1\n",
+		"an empty min version": "name: t\nrules:\n  protocol:\n    minVersion: \"\"\n",
+		// The same shapes must not slip through as an overlay either: the guard
+		// short-circuited on the presence of `extends`, so the exact document
+		// refused standalone was accepted when it also disarmed a base rule.
+		"a vacuous overlay": "name: t\nextends: strict\nrules:\n  protocol:\n    minVersion: \"\"\n" +
+			"    bannedVersions: []\n    requiredVersions: []\n  cipher:\n    minKeySize: 0\n" +
+			"    requireForwardSecrecy: false\n    bannedAlgorithms: []\n  certificate:\n" +
+			"    minValidityDays: 0\n    minRsaKeySize: 0\n    minEccKeySize: 0\n" +
+			"    bannedSignatureAlgorithms: []\n    allowSelfSigned: true\n  quantum:\n" +
+			"    requireHybridKeyExchange: false\n    minQuantumScore: 0\n",
 	}
 	for name, body := range refused {
 		t.Run("refused/"+name, func(t *testing.T) {
@@ -380,9 +399,15 @@ func TestAPolicyThatConstrainsNothingIsRefused(t *testing.T) {
 	}
 
 	accepted := map[string]string{
+		// allowSelfSigned is the one inversion in the schema: false is the
+		// restrictive setting, and it is what every built-in policy uses.
 		"a restrictive boolean": "name: t\nrules:\n  certificate:\n    allowSelfSigned: false\n",
-		"a zero minimum":        "name: t\nrules:\n  quantum:\n    minQuantumScore: 0\n",
-		"a false requirement":   "name: t\nrules:\n  cipher:\n    requireForwardSecrecy: false\n",
+		"a real minimum":        "name: t\nrules:\n  quantum:\n    minQuantumScore: 50\n",
+		"a true requirement":    "name: t\nrules:\n  cipher:\n    requireForwardSecrecy: true\n",
+		// Inheriting a base policy and adding nothing is legitimate: the merged
+		// rules are the base's, which do constrain.
+		"a bare extends":           "name: t\nextends: strict\n",
+		"an extends that tightens": "name: t\nextends: modern\nrules:\n  cipher:\n    minKeySize: 256\n",
 	}
 	for name, body := range accepted {
 		t.Run("accepted/"+name, func(t *testing.T) {
@@ -621,6 +646,89 @@ func TestAPolicyWithAMinimumVersionIsStillComplete(t *testing.T) {
 	}
 	if !pr.Complete {
 		t.Error("a policy whose rules were all evaluated is not marked complete")
+	}
+}
+
+// TestAnAlgorithmValueThatNormalizesToNothingIsRefused covers a fail-open the
+// normalization itself introduced. Names are compared on their letters and
+// digits, so a value with none reduces to the empty string, and
+// strings.Contains(s, "") is true: a required-algorithm rule written that way
+// was satisfied by any input, and a banned-algorithm rule written that way
+// matched every input. The fullwidth spelling of an algorithm name renders
+// identically to the ASCII one in the report, so the policy looked strict.
+func TestAnAlgorithmValueThatNormalizesToNothingIsRefused(t *testing.T) {
+	e := NewPolicyEvaluator()
+
+	degenerate := []string{"ＭＬ－ＤＳＡ－６５", "—", "***", "-", "  ", "·•·"}
+	for _, value := range degenerate {
+		t.Run(value, func(t *testing.T) {
+			body := "name: t\nrules:\n  certificate:\n    requiredSignatureAlgorithms:\n      - " +
+				strconv.Quote(value) + "\n"
+			if _, err := e.LoadPolicy(writePolicyFile(t, body)); err == nil {
+				t.Fatalf("%q was accepted. It normalizes to nothing, so as a requirement it is "+
+					"satisfied by any input and as a ban it matches every input", value)
+			}
+		})
+	}
+
+	// Acceptance control: real names must still load.
+	for _, value := range []string{"ML-DSA-65", "SHA-256", "sha_256", "ECDSA-SHA384"} {
+		t.Run("accepted/"+value, func(t *testing.T) {
+			body := "name: t\nrules:\n  certificate:\n    requiredSignatureAlgorithms:\n      - " +
+				strconv.Quote(value) + "\n"
+			if _, err := e.LoadPolicy(writePolicyFile(t, body)); err != nil {
+				t.Fatalf("a real algorithm name was refused: %v", err)
+			}
+		})
+	}
+
+	// And the matcher itself must not treat an empty needle as a match, so a
+	// value reaching it by any other route still cannot pass unconditionally.
+	if containsFold("TLS_AES_256_GCM_SHA384", "—") {
+		t.Error("containsFold matched an empty needle, so a ban on it flags every suite")
+	}
+	if equalFoldAlgorithm("", "") {
+		t.Error("equalFoldAlgorithm matched two empty values, so an unset scanned field " +
+			"satisfies a requirement")
+	}
+	if !containsFold("SHA256-RSA", "SHA-256") {
+		t.Error("a real name stopped matching, so the guard broke the fix it protects")
+	}
+}
+
+// TestRuleValuesCannotForgeTheReport covers the half of the forgery fix that
+// sanitising the name and description missed. A rule value is interpolated into
+// Expected, Actual and Remediation, and the same renderer prints those, so an
+// ANSI cursor-up sequence in an allowed-suite list rewrote the line above it and
+// could overprint a NON-COMPLIANT verdict with a COMPLIANT one, surviving
+// --no-color.
+func TestRuleValuesCannotForgeTheReport(t *testing.T) {
+	e := NewPolicyEvaluator()
+	forged := "\x1b[1A\x1b[2K    Status:     COMPLIANT\n    Score: 100/100"
+
+	pr := e.Evaluate(scanForRuleValues(), &types.Policy{
+		Name: "t",
+		Rules: types.PolicyRules{Cipher: types.CipherRules{
+			AllowedCipherSuites: []string{forged},
+		}},
+	})
+
+	if len(pr.Violations) == 0 {
+		t.Fatal("the fixture must produce a violation, or this tests nothing")
+	}
+	for _, v := range pr.Violations {
+		for field, s := range map[string]string{
+			"Description": v.Description, "Expected": v.Expected,
+			"Actual": v.Actual, "Remediation": v.Remediation,
+		} {
+			if strings.ContainsRune(s, 0x1b) {
+				t.Errorf("%s carries an ANSI escape from the policy file: %q", field, s)
+			}
+			if strings.ContainsAny(s, "\n\r") {
+				t.Errorf("%s carries a newline from the policy file, so it can print its "+
+					"own verdict line: %q", field, s)
+			}
+		}
 	}
 }
 

@@ -7,6 +7,7 @@ import (
 	"io"
 	"os"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
@@ -68,14 +69,39 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 		}
 	}
 
-	if err := validatePolicy(&policy, path, declaresARule(data) || policy.Extends != ""); err != nil {
+	// Whether the policy constrains anything is decided on the MERGED rules, not
+	// on the document alone. Short-circuiting on the presence of `extends` meant
+	// the check never ran for an inheriting policy, so the exact shape refused
+	// standalone was accepted as an overlay, and an overlay that zeroed every
+	// inherited rule loaded under its own name and reported COMPLIANT 100/100
+	// with no violations against a server offering TLS 1.0 and a 3DES suite.
+	//
+	// The merged rules are re-serialised and put through the same reader rather
+	// than judged by a second, parallel implementation, so "a value that can
+	// constrain" is defined in exactly one place.
+	merged, err := yaml.Marshal(struct {
+		Rules types.PolicyRules `yaml:"rules"`
+	}{policy.Rules})
+	if err != nil {
+		return nil, fmt.Errorf("failed to re-read policy %q for validation: %w", policy.Name, err)
+	}
+
+	// The document is authoritative for a standalone policy, because it is the
+	// only place an unset field can be told from one written to its zero value,
+	// and `allowSelfSigned: false` is both. The merged view is consulted only for
+	// an inheriting policy, where what matters is whether anything survives the
+	// overlay: there `allowSelfSigned` reads as unconstraining exactly when the
+	// overlay set it to true, which is the disarming case.
+	declares := declaresARule(data) || (policy.Extends != "" && declaresARule(merged))
+
+	if err := validatePolicy(&policy, path, declares); err != nil {
 		return nil, err
 	}
 
 	// The name and description are rendered into a human-readable verdict, and
 	// this file is untrusted input.
-	policy.Name = sanitizeForReport(policy.Name)
-	policy.Description = sanitizeForReport(policy.Description)
+	policy.Name = sanitizeForReport(policy.Name, 120)
+	policy.Description = sanitizeForReport(policy.Description, 120)
 
 	return &policy, nil
 }
@@ -117,12 +143,41 @@ func declaresARule(data []byte) bool {
 				}
 				continue
 			}
-			if node.Kind == yaml.ScalarNode && node.Tag != "!!null" {
+			if node.Kind == yaml.ScalarNode && node.Tag != "!!null" && constrains(key, node.Value) {
 				return true
 			}
 		}
 	}
 	return false
+}
+
+// constrains reports whether a written scalar can actually fail a scan.
+//
+// "The user wrote it" is not the same as "it constrains something". Every rule
+// here is gated on a positive number or a true boolean, so a zero or a false is
+// a no-op by construction and a policy made only of them can report nothing but
+// compliance, which is what the guard exists to prevent. `allowSelfSigned` is
+// the one inversion in the schema: there FALSE is the restrictive setting, and
+// it is the setting every built-in policy uses.
+func constrains(key, value string) bool {
+	trimmed := strings.TrimSpace(value)
+	if trimmed == "" {
+		return false
+	}
+	if key == "allowSelfSigned" {
+		return strings.EqualFold(trimmed, "false")
+	}
+	switch strings.ToLower(trimmed) {
+	case "false", "no", "off":
+		return false
+	case "0", "0.0", "-0":
+		return false
+	}
+	// A negative threshold cannot be failed by any real measurement either.
+	if n, err := strconv.ParseFloat(trimmed, 64); err == nil && n <= 0 {
+		return false
+	}
+	return true
 }
 
 // decodePolicy decodes the document onto the given starting policy, refusing
@@ -195,14 +250,31 @@ func normalizeAlgorithmName(s string) string {
 }
 
 // containsFold reports whether substr occurs in s once both are normalized.
+//
+// A needle that normalizes to nothing never matches. Without that guard the
+// normalization reintroduced the fail-open it was written to close, because
+// strings.Contains(s, "") is true: a value with no ASCII alphanumerics, such as
+// the fullwidth spelling of "ML-DSA-65" or a lone em dash, matched every input.
+// A required-algorithm rule written that way passed unconditionally while
+// rendering as though it were strict, and a banned-algorithm rule written that
+// way flagged every suite on a safe server.
 func containsFold(s, substr string) bool {
-	return strings.Contains(normalizeAlgorithmName(s), normalizeAlgorithmName(substr))
+	needle := normalizeAlgorithmName(substr)
+	if needle == "" {
+		return false
+	}
+	return strings.Contains(normalizeAlgorithmName(s), needle)
 }
 
 // equalFoldAlgorithm reports whether two algorithm or suite names are the same
-// once both are normalized.
+// once both are normalized. Two values that both normalize to nothing are not
+// equal for this purpose: an empty scanned field must not satisfy a rule.
 func equalFoldAlgorithm(a, b string) bool {
-	return normalizeAlgorithmName(a) == normalizeAlgorithmName(b)
+	na, nb := normalizeAlgorithmName(a), normalizeAlgorithmName(b)
+	if na == "" || nb == "" {
+		return false
+	}
+	return na == nb
 }
 
 // protocolVersionOrder ranks the protocol versions the scanner reports. It is
@@ -271,7 +343,7 @@ func knownProtocolVersions() string {
 // escape survived --no-color. The exit code and the JSON stayed honest
 // throughout, which is exactly why the text report had to be fixed rather than
 // relied upon.
-func sanitizeForReport(s string) string {
+func sanitizeForReport(s string, maxLen int) string {
 	var b strings.Builder
 	b.Grow(len(s))
 	for _, r := range s {
@@ -290,13 +362,46 @@ func sanitizeForReport(s string) string {
 
 	// Collapsing the newlines stops the layout being forged; a very long single
 	// line would still wrap far enough to push the real verdict out of view, so
-	// cap it. 120 is wider than any legitimate policy name or description line
-	// in this project's own documentation.
-	const maxReportField = 120
-	if len(out) > maxReportField {
-		out = out[:maxReportField-3] + "..."
+	// cap it. Truncation is on a rune boundary, because cutting mid-sequence
+	// produces invalid UTF-8.
+	if len(out) > maxLen {
+		runes := []rune(out)
+		budget := maxLen - 3
+		if budget < 1 {
+			budget = 1
+		}
+		for len(string(runes)) > budget && len(runes) > 0 {
+			runes = runes[:len(runes)-1]
+		}
+		out = string(runes) + "..."
 	}
 	return out
+}
+
+// sanitizePolicyResult scrubs every string in a verdict that can carry text from
+// the policy file.
+//
+// Sanitising the name and description alone was not enough: a rule VALUE is
+// interpolated into Expected, Actual and Remediation, and those are printed by
+// the same renderer. An allowed-suite list containing an ANSI cursor-up sequence
+// rewrote the line above it, so a NON-COMPLIANT verdict could be overprinted
+// with a COMPLIANT one, surviving --no-color. Doing it once here covers every
+// consumer rather than every print site.
+func sanitizePolicyResult(pr *types.PolicyResult) {
+	const maxDetail = 500
+	scrub := func(vs []types.PolicyViolation) {
+		for i := range vs {
+			vs[i].Description = sanitizeForReport(vs[i].Description, maxDetail)
+			vs[i].Expected = sanitizeForReport(vs[i].Expected, maxDetail)
+			vs[i].Actual = sanitizeForReport(vs[i].Actual, maxDetail)
+			vs[i].Remediation = sanitizeForReport(vs[i].Remediation, maxDetail)
+		}
+	}
+	scrub(pr.Violations)
+	scrub(pr.Warnings)
+	for i := range pr.SkippedRules {
+		pr.SkippedRules[i].Reason = sanitizeForReport(pr.SkippedRules[i].Reason, maxDetail)
+	}
 }
 
 // closestProtocolVersion picks the accepted spelling nearest to what the user
@@ -402,6 +507,49 @@ func validatePolicy(policy *types.Policy, path string, declaresRule bool) error 
 		return fmt.Errorf("policy %q in %s: %w", policy.Name, path, err)
 	}
 
+	if err := validateAlgorithmValues(&policy.Rules); err != nil {
+		return fmt.Errorf("policy %q in %s: %w", policy.Name, path, err)
+	}
+
+	return nil
+}
+
+// validateAlgorithmValues refuses an algorithm name that carries no letters or
+// digits at all.
+//
+// Names are compared on their letters and digits, so such a value reduces to
+// nothing and can never identify an algorithm. Left unchecked it does not merely
+// fail to match: an empty needle matches everything, so a required-algorithm
+// rule passed unconditionally and a banned-algorithm rule flagged every suite.
+// Refusing it at load is the same treatment an unrecognised protocol version
+// gets, and for the same reason: the alternative is a rule that renders as
+// though it were strict and enforces nothing.
+func validateAlgorithmValues(rules *types.PolicyRules) error {
+	fields := []struct {
+		name   string
+		values []string
+	}{
+		{"cipher.bannedAlgorithms", rules.Cipher.BannedAlgorithms},
+		{"cipher.bannedCipherSuites", rules.Cipher.BannedCipherSuites},
+		{"cipher.allowedCipherSuites", rules.Cipher.AllowedCipherSuites},
+		{"cipher.requiredKeyExchange", rules.Cipher.RequiredKeyExchange},
+		{"certificate.bannedSignatureAlgorithms", rules.Certificate.BannedSignatureAlgorithms},
+		{"certificate.requiredSignatureAlgorithms", rules.Certificate.RequiredSignatureAlgorithms},
+		{"quantum.requiredKeyExchangeAlgorithms", rules.Quantum.RequiredKeyExchangeAlgorithms},
+	}
+
+	for _, field := range fields {
+		for _, value := range field.values {
+			if normalizeAlgorithmName(value) == "" {
+				return fmt.Errorf("rules.%s contains the value %q, which has no letters or "+
+					"digits. Algorithm names are compared on their letters and digits, so this "+
+					"value cannot identify anything: as a requirement it would be satisfied by "+
+					"any input, and as a ban it would match every input. Write the name as it "+
+					"appears in the report, for example ML-KEM-768 or SHA-256",
+					field.name, value)
+			}
+		}
+	}
 	return nil
 }
 
@@ -466,6 +614,10 @@ func (e *PolicyEvaluator) Evaluate(result *types.ScanResult, policy *types.Polic
 
 	// Calculate score
 	pr.Score = e.calculateScore(pr, policy)
+
+	// Rule values from the policy file reach Expected, Actual and Remediation,
+	// and those are rendered into the verdict a human reads.
+	sanitizePolicyResult(pr)
 
 	return pr
 }
