@@ -3,6 +3,7 @@ package analyzer
 import (
 	"os"
 	"path/filepath"
+	"strconv"
 	"strings"
 	"testing"
 	"time"
@@ -507,6 +508,119 @@ func TestACertificateNoClientWouldAcceptFailsCertificatePolicy(t *testing.T) {
 	pr = e.Evaluate(scan, policy)
 	if v := findViolation(pr, "certificate.chainTrust"); v != nil {
 		t.Errorf("a chain check that did not run was reported as a failed one: %+v", v)
+	}
+}
+
+// TestAPolicyFileCannotForgeTheReportItAppearsIn covers untrusted input reaching
+// the rendered verdict. A policy file arrives from a vendor, a repository or a
+// colleague, and its name is printed into a human-readable report. A name
+// containing newlines printed its own "Status: COMPLIANT / Score: 100/100" block
+// and pushed the real verdict off the screen; an ANSI escape survived
+// --no-color. The exit code and the JSON stayed honest throughout, which is
+// exactly why the text report had to be fixed rather than relied upon.
+func TestAPolicyFileCannotForgeTheReportItAppearsIn(t *testing.T) {
+	e := NewPolicyEvaluator()
+
+	forged := "acme\nStatus: COMPLIANT\nScore: 100/100\n\n\n#"
+	body := "name: " + strconv.Quote(forged) + "\nrules:\n  protocol:\n    minVersion: TLS 1.2\n"
+	policy, err := e.LoadPolicy(writePolicyFile(t, body))
+	if err != nil {
+		t.Fatalf("the fixture must load, or this tests nothing: %v", err)
+	}
+	if strings.ContainsAny(policy.Name, "\n\r") {
+		t.Errorf("the policy name still carries newlines, so it can print its own "+
+			"verdict block into the report: %q", policy.Name)
+	}
+
+	escaped := "red\x1b[31mALERT\x1b[0m"
+	body = "name: " + strconv.Quote(escaped) + "\nrules:\n  protocol:\n    minVersion: TLS 1.2\n"
+	policy, err = e.LoadPolicy(writePolicyFile(t, body))
+	if err != nil {
+		t.Fatalf("the fixture must load: %v", err)
+	}
+	if strings.ContainsRune(policy.Name, 0x1b) {
+		t.Errorf("an ANSI escape survived into the policy name, so a policy file can "+
+			"colour the report and --no-color cannot stop it: %q", policy.Name)
+	}
+
+	long := strings.Repeat("A", 4000)
+	body = "name: " + strconv.Quote(long) + "\nrules:\n  protocol:\n    minVersion: TLS 1.2\n"
+	policy, err = e.LoadPolicy(writePolicyFile(t, body))
+	if err != nil {
+		t.Fatalf("the fixture must load: %v", err)
+	}
+	if len(policy.Name) > 120 {
+		t.Errorf("a policy name of %d characters is rendered in full, so it can still "+
+			"push the verdict out of view", len(policy.Name))
+	}
+
+	// Acceptance control: an ordinary name must survive untouched.
+	body = "name: acme-baseline\ndescription: Our TLS floor\nrules:\n  protocol:\n    minVersion: TLS 1.2\n"
+	policy, err = e.LoadPolicy(writePolicyFile(t, body))
+	if err != nil {
+		t.Fatalf("an ordinary policy must still load: %v", err)
+	}
+	if policy.Name != "acme-baseline" || policy.Description != "Our TLS floor" {
+		t.Errorf("sanitising damaged an ordinary name or description: %q / %q",
+			policy.Name, policy.Description)
+	}
+}
+
+// TestAnUnprobeableRequiredVersionIsNotEvaluated is the mirror of the banned
+// case. Reporting that SSL 3.0 is "not detected" is as unfounded as reporting it
+// absent, when the scanner cannot offer it in the first place.
+func TestAnUnprobeableRequiredVersionIsNotEvaluated(t *testing.T) {
+	e := NewPolicyEvaluator()
+	pr := e.Evaluate(scanForRuleValues(), &types.Policy{
+		Name:  "t",
+		Rules: types.PolicyRules{Protocol: types.ProtocolRules{RequiredVersions: []string{"SSL 3.0"}}},
+	})
+
+	if v := findViolation(pr, "protocol.requiredVersions"); v != nil {
+		t.Fatalf("a version the scanner cannot offer was reported as missing: %+v", v)
+	}
+	var skipped bool
+	for _, s := range pr.SkippedRules {
+		if s.Rule == "protocol.requiredVersions" {
+			skipped = true
+		}
+	}
+	if !skipped {
+		t.Error("no skipped-rule entry, so the requirement was silently treated as met")
+	}
+
+	// Acceptance control: a version the scanner CAN probe still reports normally.
+	pr = e.Evaluate(scanForRuleValues(), &types.Policy{
+		Name:  "t",
+		Rules: types.PolicyRules{Protocol: types.ProtocolRules{RequiredVersions: []string{"TLS 1.3"}}},
+	})
+	for _, s := range pr.SkippedRules {
+		if s.Rule == "protocol.requiredVersions" {
+			t.Errorf("a probeable version was recorded as not evaluated: %+v", s)
+		}
+	}
+}
+
+// TestAPolicyWithAMinimumVersionIsStillComplete pins the decision NOT to record
+// the unmeasurable sub-TLS-1.0 region as a skipped rule for minVersion. Every
+// policy sets a minimum, so doing so would mark every evaluation incomplete
+// forever and make "complete" mean nothing. The probe range is disclosed in the
+// scan coverage notes instead, and a policy that NAMES SSL 2.0 or SSL 3.0 still
+// gets a skipped rule.
+func TestAPolicyWithAMinimumVersionIsStillComplete(t *testing.T) {
+	e := NewPolicyEvaluator()
+	pr := e.Evaluate(scanForRuleValues(), &types.Policy{
+		Name:  "t",
+		Rules: types.PolicyRules{Protocol: types.ProtocolRules{MinVersion: "TLS 1.2"}},
+	})
+	for _, s := range pr.SkippedRules {
+		if s.Rule == "protocol.minVersion" {
+			t.Fatalf("a plain minimum-version rule was recorded as not evaluated, which "+
+				"marks every policy incomplete and makes the flag meaningless: %+v", s)
+		}
+	}
+	if !pr.Complete {
+		t.Error("a policy whose rules were all evaluated is not marked complete")
 	}
 }
 

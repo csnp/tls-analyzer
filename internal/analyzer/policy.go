@@ -72,6 +72,11 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 		return nil, err
 	}
 
+	// The name and description are rendered into a human-readable verdict, and
+	// this file is untrusted input.
+	policy.Name = sanitizeForReport(policy.Name)
+	policy.Description = sanitizeForReport(policy.Description)
+
 	return &policy, nil
 }
 
@@ -225,6 +230,17 @@ var unprobeableProtocolVersions = map[string]string{
 		"whether the server accepts it",
 }
 
+// sortedUnprobeableVersions lists the unprobeable version names in a stable
+// order, so a report does not vary between runs on Go's map iteration.
+func sortedUnprobeableVersions() []string {
+	names := make([]string, 0, len(unprobeableProtocolVersions))
+	for name := range unprobeableProtocolVersions {
+		names = append(names, name)
+	}
+	sort.Strings(names)
+	return names
+}
+
 // knownProtocolVersionNames is every version name a policy may use: the ones the
 // scanner probes, plus the ones it understands but cannot measure. Validation
 // reads this, so a legitimate "ban SSL 2.0" is accepted while "TLSv1.2" is not.
@@ -256,27 +272,78 @@ func knownProtocolVersions() string {
 	return strings.Join(append(extra, ordered...), ", ")
 }
 
+// sanitizeForReport strips the control characters that let a policy file forge
+// the report it appears in.
+//
+// The name and description are attacker-supplied: a policy file arrives from a
+// vendor, a repository or a colleague, and it is rendered into a human-readable
+// verdict. A name containing newlines printed its own "Status: COMPLIANT /
+// Score: 100/100" block and pushed the real verdict off the screen, and an ANSI
+// escape survived --no-color. The exit code and the JSON stayed honest
+// throughout, which is exactly why the text report had to be fixed rather than
+// relied upon.
+func sanitizeForReport(s string) string {
+	var b strings.Builder
+	b.Grow(len(s))
+	for _, r := range s {
+		switch {
+		case r == '\t':
+			b.WriteRune(' ')
+		case r < 0x20 || r == 0x7f: // C0 controls, including newline and ESC
+			b.WriteRune(' ')
+		case r >= 0x80 && r <= 0x9f: // C1 controls, a second escape route
+			b.WriteRune(' ')
+		default:
+			b.WriteRune(r)
+		}
+	}
+	out := strings.TrimSpace(b.String())
+
+	// Collapsing the newlines stops the layout being forged; a very long single
+	// line would still wrap far enough to push the real verdict out of view, so
+	// cap it. 120 is wider than any legitimate policy name or description line
+	// in this project's own documentation.
+	const maxReportField = 120
+	if len(out) > maxReportField {
+		out = out[:maxReportField-3] + "..."
+	}
+	return out
+}
+
 // closestProtocolVersion picks the accepted spelling nearest to what the user
 // wrote, so the error can contrast the two. Comparing the rejected value against
 // a hardcoded example produced `"TLSv1.2" and "TLSv1.2" are not the same value`
 // for the exact typo this check exists to catch.
+//
+// The family letters are weighed before the digits, because a suffix-only
+// comparison scored every candidate zero for "TLS 1.4" and fell back to
+// whichever name sorted first, suggesting "SSL 2.0" for a TLS typo.
 func closestProtocolVersion(value string) string {
 	normalized := normalizeAlgorithmName(value)
-	best, bestScore := "TLS 1.2", -1
 	names := make([]string, 0, len(protocolVersionOrder)+len(unprobeableProtocolVersions))
 	for name := range knownProtocolVersionNames() {
 		names = append(names, name)
 	}
 	sort.Strings(names)
+
+	best, bestScore := "TLS 1.2", -1
 	for _, name := range names {
 		candidate := normalizeAlgorithmName(name)
 		score := 0
+		// Shared leading letters: "tls" against "tls", which is what separates a
+		// mistyped TLS version from an SSL one.
 		for i := 0; i < len(candidate) && i < len(normalized); i++ {
-			if candidate[len(candidate)-1-i] == normalized[len(normalized)-1-i] {
-				score++
-				continue
+			if candidate[i] != normalized[i] {
+				break
 			}
-			break
+			score += 2
+		}
+		// Shared trailing characters, which separates 1.2 from 1.3.
+		for i := 0; i < len(candidate) && i < len(normalized); i++ {
+			if candidate[len(candidate)-1-i] != normalized[len(normalized)-1-i] {
+				break
+			}
+			score++
 		}
 		if score > bestScore {
 			best, bestScore = name, score
@@ -434,6 +501,15 @@ func (e *PolicyEvaluator) evaluateProtocol(result *types.ScanResult, rules *type
 	if rules.MinVersion != "" {
 		minRank, minKnown := protocolVersionOrder[rules.MinVersion]
 
+		// A strict reading of the floor also asserts that SSL 2.0 and SSL 3.0 are
+		// not accepted, and this scanner cannot see either. It is NOT recorded as
+		// a skipped rule, deliberately: every policy sets a minVersion, so doing
+		// so would mark every evaluation incomplete forever and make "complete"
+		// mean nothing, which costs more honesty than it buys. The difference
+		// from bannedVersions is intent. There the user names SSL 3.0 and is
+		// specifically asking about it, so being unable to answer is the whole
+		// point; here they are describing a TLS floor. The probe range is
+		// disclosed in the scan coverage notes instead.
 		meetsMin := false
 		for _, p := range result.Protocols {
 			if p.Supported && e.versionAtLeast(p.Version, rules.MinVersion) {
@@ -522,6 +598,17 @@ func (e *PolicyEvaluator) evaluateProtocol(result *types.ScanResult, rules *type
 
 	// Check required versions
 	for _, required := range rules.RequiredVersions {
+		// The mirror of the banned case: claiming a version is missing is as
+		// unfounded as claiming it is absent when the scanner cannot offer it.
+		if reason, cannotProbe := unprobeableProtocolVersions[required]; cannotProbe {
+			pr.SkippedRules = append(pr.SkippedRules, types.SkippedPolicyRule{
+				Rule: "protocol.requiredVersions",
+				Reason: fmt.Sprintf(
+					"%s is required by this policy, but %s. The rule is not evaluated rather "+
+						"than reported as unmet", required, reason),
+			})
+			continue
+		}
 		found := false
 		for _, p := range result.Protocols {
 			if p.Supported && p.Version == required {

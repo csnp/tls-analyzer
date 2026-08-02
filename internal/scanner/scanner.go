@@ -176,6 +176,19 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 			strings.Join(skipped, ", ")))
 	}
 
+	// The protocol probe range, for the same reason: a version this scanner
+	// cannot offer is absent from the results, and absence must not be read as
+	// the server having it disabled. A policy that names SSL 2.0 or SSL 3.0
+	// explicitly records the rule as not evaluated; a policy that only implies
+	// them through a minimum version cannot, because every policy sets one and
+	// marking them all incomplete would make that signal meaningless.
+	result.ScanWarnings = append(result.ScanWarnings,
+		"protocol support is probed for TLS 1.0 through TLS 1.3 only. Go's TLS stack "+
+			"cannot offer SSL 2.0 or SSL 3.0, so this scan says nothing either way "+
+			"about them, and a minimum-version rule is evaluated against the TLS "+
+			"versions above. Confirm SSL 2.0 and SSL 3.0 are disabled with a scanner "+
+			"built with legacy protocol support, such as nmap's ssl-enum-ciphers script")
+
 	// Be explicit about the one enumeration this scanner cannot perform, so a
 	// suite that is simply unobservable is never read as unsupported.
 	result.ScanWarnings = append(result.ScanWarnings,
