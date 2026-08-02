@@ -13,6 +13,25 @@
 *.so
 *.dylib
 
+# Credentials.
+#
+# Unlike the binary patterns above these are deliberately NOT anchored: they are
+# filenames rather than build outputs, and a stray copy anywhere in the tree must
+# be ignored. Template files are excluded from the exclusion, because they hold
+# placeholders and are meant to be committed.
+.env
+.env.*
+!.env.example
+!.env.sample
+!.env.template
+*.pem
+*.p12
+*.pfx
+*.key
+!testdata/**/*.key
+secrets.json
+credentials.json
+
 # Test outputs
 *.out
 coverage.html

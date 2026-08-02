@@ -230,17 +230,6 @@ var unprobeableProtocolVersions = map[string]string{
 		"whether the server accepts it",
 }
 
-// sortedUnprobeableVersions lists the unprobeable version names in a stable
-// order, so a report does not vary between runs on Go's map iteration.
-func sortedUnprobeableVersions() []string {
-	names := make([]string, 0, len(unprobeableProtocolVersions))
-	for name := range unprobeableProtocolVersions {
-		names = append(names, name)
-	}
-	sort.Strings(names)
-	return names
-}
-
 // knownProtocolVersionNames is every version name a policy may use: the ones the
 // scanner probes, plus the ones it understands but cannot measure. Validation
 // reads this, so a legitimate "ban SSL 2.0" is accepted while "TLSv1.2" is not.
