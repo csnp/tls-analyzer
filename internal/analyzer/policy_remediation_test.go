@@ -56,6 +56,13 @@ func TestBannedSignatureRemediationNeverRecommendsABannedAlgorithm(t *testing.T)
 		{"policy banning every digest below SHA-384", []string{"SHA1", "SHA224", "SHA256"}},
 		// The narrow case: only the algorithm actually in use is banned.
 		{"policy banning only the observed algorithm", []string{"SHA256"}},
+		// The first candidates are banned, so the suggestion loop has to skip
+		// past them. Without a case like this the not-banned guard is never
+		// exercised and a mutation deleting it survives.
+		// SHA256 is what makes the violation fire against this certificate; the
+		// rest push the suggestion past the first two candidates.
+		{"policy banning the strongest candidates too", []string{"SHA256", "ML-DSA", "SHA512"}},
+		{"policy banning all but the weakest candidate", []string{"ML-DSA", "SHA512", "SHA384", "ECDSA"}},
 	}
 
 	e := NewPolicyEvaluator()
@@ -116,6 +123,34 @@ func TestBannedSignatureRemediationNamesTheRequirementWhenThePolicyStatesOne(t *
 	if !containsFold(violations[0].Remediation, "ECDSA-SHA384") {
 		t.Errorf("the policy states what it requires, so the remediation should name it.\n"+
 			"  required:    ECDSA-SHA384\n  remediation: %q", violations[0].Remediation)
+	}
+}
+
+// TestRemediationFallsBackWhenEveryCandidateIsBanned covers the end of the
+// suggestion list. A policy that bans every algorithm the tool could suggest
+// must still get a next step, and that step must not name any of them.
+func TestRemediationFallsBackWhenEveryCandidateIsBanned(t *testing.T) {
+	banned := append([]string{}, signatureUpgradePreference...)
+
+	pr := NewPolicyEvaluator().Evaluate(certScanForRemediation(), &types.Policy{
+		Name: "t",
+		Rules: types.PolicyRules{
+			Certificate: types.CertificateRules{BannedSignatureAlgorithms: banned},
+		},
+	})
+
+	violations := bannedSignatureViolations(pr)
+	if len(violations) == 0 {
+		t.Fatal("banning every candidate raised no violation, so the fallback cannot be observed")
+	}
+	rem := violations[0].Remediation
+	if rem == "" {
+		t.Fatal("no remediation was given when every candidate is banned")
+	}
+	for _, b := range banned {
+		if containsFold(rem, b) {
+			t.Errorf("the fallback remediation names a banned algorithm %q: %q", b, rem)
+		}
 	}
 }
 
