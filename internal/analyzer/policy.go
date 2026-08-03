@@ -169,8 +169,13 @@ func declaresARule(data []byte) bool {
 func constrains(key string, node yaml.Node) bool {
 	var decoded any
 	if err := node.Decode(&decoded); err != nil {
-		// A scalar that does not decode is refused by the loader with a better
-		// message; do not let this check turn that into "defines no rules".
+		// Defensive, and unreachable as the caller is ordered today: LoadPolicy
+		// decodes against the schema first, so a scalar with a bad tag is already
+		// refused with a message naming the type problem. Kept so that a
+		// reordering cannot silently turn "this value is unreadable" into "this
+		// policy defines no rules", which would send the author looking for a
+		// missing rule instead of a bad value.
+		// TestAMalformedScalarIsRefusedAsAParseErrorNotAsARulelessPolicy pins it.
 		return true
 	}
 

@@ -120,6 +120,42 @@ rules:
 	}
 }
 
+// TestAMalformedScalarIsRefusedAsAParseErrorNotAsARulelessPolicy pins the
+// ordering that keeps the decode-error branch in constrains unreachable.
+//
+// LoadPolicy decodes against the schema before it asks whether the document
+// declares a rule, so a scalar with a bad tag is refused by the parser with a
+// message naming the type problem. A mutation flipping that branch's return
+// value survives today precisely because nothing reaches it. This test does not
+// kill that mutation and is not meant to: it fails if the two steps are ever
+// reordered, which is what would make the branch reachable and its answer
+// matter. Recorded as a deliberate survivor rather than left implicit.
+func TestAMalformedScalarIsRefusedAsAParseErrorNotAsARulelessPolicy(t *testing.T) {
+	cases := []string{
+		"!!int abc",
+		"!!float xyz",
+		"!!timestamp nope",
+	}
+
+	e := NewPolicyEvaluator()
+	for _, form := range cases {
+		t.Run(form, func(t *testing.T) {
+			path := writePolicyFile(t,
+				"name: t\nversion: \"1.0\"\nrules:\n  cipher:\n    minKeySize: "+form+"\n")
+			_, err := e.LoadPolicy(path)
+			if err == nil {
+				t.Fatalf("minKeySize: %s loaded", form)
+			}
+			if strings.Contains(err.Error(), "defines no rules") {
+				t.Errorf("minKeySize: %s was reported as a policy that defines no rules. "+
+					"It defines one the parser could not read, and saying otherwise sends "+
+					"the author looking for a missing rule instead of a bad value: %v",
+					form, err)
+			}
+		})
+	}
+}
+
 // TestAllowSelfSignedKeepsItsInversionAcrossSpellings pins the one field where
 // false is the restrictive setting. Judging the decoded value must not lose it.
 func TestAllowSelfSignedKeepsItsInversionAcrossSpellings(t *testing.T) {
