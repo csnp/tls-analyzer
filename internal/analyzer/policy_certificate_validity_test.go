@@ -1,6 +1,7 @@
 package analyzer
 
 import (
+	"strings"
 	"testing"
 	"time"
 
@@ -75,6 +76,22 @@ func TestPolicyRaisesAViolationForANotYetValidCertificate(t *testing.T) {
 	}
 	if v.Remediation == "" {
 		t.Error("the violation carries no remediation, so the finding is a dead end")
+	}
+
+	// The two ends of the window need different actions. "Renew the certificate"
+	// is the wrong instruction for one whose validity has not started: the
+	// operator has to look at notBefore and at the clock, and renewing would
+	// hand them a certificate with the same problem.
+	if strings.Contains(strings.ToLower(v.Description), "expired") {
+		t.Errorf("the violation describes a not-yet-valid certificate as expired (%q), which "+
+			"sends the operator to renew it; renewing produces the same problem", v.Description)
+	}
+	if !strings.Contains(strings.ToLower(v.Description), "not yet valid") {
+		t.Errorf("the violation does not say the certificate is not yet valid: %q", v.Description)
+	}
+	if strings.Contains(strings.ToLower(v.Remediation), "renew") {
+		t.Errorf("the remediation tells the operator to renew a certificate whose validity "+
+			"has not started: %q", v.Remediation)
 	}
 	if pr.Compliant {
 		t.Error("the verdict is COMPLIANT for a certificate every client refuses")
