@@ -266,6 +266,52 @@ func containsFold(s, substr string) bool {
 	return strings.Contains(normalizeAlgorithmName(s), needle)
 }
 
+// signatureUpgradePreference is the order in which a replacement certificate
+// signature algorithm is suggested, strongest first.
+var signatureUpgradePreference = []string{
+	"ML-DSA-65",
+	"ECDSA-SHA512",
+	"ECDSA-SHA384",
+	"SHA384-RSA",
+	"ECDSA-SHA256",
+	"SHA256-RSA",
+}
+
+// bannedSignatureRemediation names a next step the SAME policy will accept.
+//
+// This carried a hardcoded "Reissue certificate with SHA-256 or stronger
+// signature" whatever the policy banned. The shipped `strict` policy bans SHA1,
+// MD5 and SHA256, because it is aiming at SHA-384 or better, so scanning any
+// ECDSA-SHA256 certificate under `strict` printed a fix that reproduces the
+// violation it claims to resolve. The remediation is derived from the policy
+// now, and only ever names an algorithm that policy does not ban.
+func bannedSignatureRemediation(rules *types.CertificateRules) string {
+	if rules == nil {
+		return "Reissue the certificate with a signature algorithm this policy does not ban"
+	}
+	if len(rules.RequiredSignatureAlgorithms) > 0 {
+		return "Reissue the certificate with a signature algorithm this policy requires: " +
+			strings.Join(rules.RequiredSignatureAlgorithms, ", ")
+	}
+
+	for _, candidate := range signatureUpgradePreference {
+		bannedHere := false
+		for _, banned := range rules.BannedSignatureAlgorithms {
+			if containsFold(candidate, banned) {
+				bannedHere = true
+				break
+			}
+		}
+		if !bannedHere {
+			return "Reissue the certificate with a signature algorithm this policy allows, " +
+				"for example " + candidate
+		}
+	}
+
+	// Every candidate is banned, so naming one would contradict the violation.
+	return "Reissue the certificate with a signature algorithm this policy does not ban"
+}
+
 // equalFoldAlgorithm reports whether two algorithm or suite names are the same
 // once both are normalized. Two values that both normalize to nothing are not
 // equal for this purpose: an empty scanned field must not satisfy a rule.
@@ -1059,7 +1105,7 @@ func (e *PolicyEvaluator) evaluateCertificate(result *types.ScanResult, rules *t
 				Description: "Banned signature algorithm in certificate",
 				Expected:    banned + " not used",
 				Actual:      cert.SignatureAlgorithm,
-				Remediation: "Reissue certificate with SHA-256 or stronger signature",
+				Remediation: bannedSignatureRemediation(rules),
 			})
 		}
 	}

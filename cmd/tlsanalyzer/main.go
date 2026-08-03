@@ -656,9 +656,31 @@ func createReporter() reporter.Reporter {
 	case reporter.FormatHTML:
 		return &reporter.HTMLReporter{IncludeCSS: true}
 	default:
-		return &reporter.TextReporter{NoColor: noColor || !isTTY()}
+		return &reporter.TextReporter{NoColor: !useColorForTextReport(noColor, outputFile, stdoutIsTTY())}
 	}
 }
+
+// useColorForTextReport decides whether the text report may carry ANSI escapes.
+//
+// Colour is decided by the DESTINATION, not by stdout. Before 0.4.0 this read
+// only stdout's TTY-ness, so `tlsanalyzer host -o report.txt` run from a
+// terminal wrote 363 escape bytes into the saved file: the report went to the
+// file while the colour decision still consulted the terminal. A saved report is
+// read later by a pager, an editor, a diff or an auditor, so it has to be plain.
+func useColorForTextReport(noColorFlag bool, outputPath string, stdoutIsTerminal bool) bool {
+	if noColorFlag {
+		return false
+	}
+	if outputPath != "" {
+		return false
+	}
+	return stdoutIsTerminal
+}
+
+// stdoutIsTTY is a variable so tests can drive the decision in both directions.
+// Under `go test` stdout is never a terminal, so a test that read the real one
+// would pass before the fix and prove nothing.
+var stdoutIsTTY = isTTY
 
 // isTTY checks if stdout is a terminal
 func isTTY() bool {
