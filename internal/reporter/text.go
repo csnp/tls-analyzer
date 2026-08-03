@@ -432,6 +432,8 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 	switch {
 	case cert.Expired:
 		status = r.color(colorRed, "✗ EXPIRED")
+	case cert.NotYetValid:
+		status = r.color(colorRed, "✗ NOT YET VALID")
 	case cert.NameMatch == types.CheckFailed:
 		status = r.color(colorRed, "✗ NOT VALID FOR THIS NAME")
 	case cert.ChainTrust == types.CheckFailed:

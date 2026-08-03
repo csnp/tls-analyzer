@@ -2,6 +2,7 @@ package scanner
 
 import (
 	"net"
+	"strings"
 	"testing"
 	"time"
 
@@ -71,6 +72,26 @@ func TestANotYetValidCertificateIsNotScoredAsHealthy(t *testing.T) {
 	if result.Grade.Letter == "A+" {
 		t.Errorf("grade = %s (%d/100) for a certificate that is not yet valid",
 			result.Grade.Letter, result.Grade.Score)
+	}
+
+	// The recommendations are a separate reader of the same predicate. Fixing
+	// the score and the finding while leaving this one behind is how the first
+	// version of this fix missed three surfaces.
+	found := false
+	for _, rec := range result.Recommendations {
+		if strings.Contains(strings.ToLower(rec.Title+" "+rec.Description), "not yet valid") ||
+			strings.Contains(strings.ToLower(rec.Title), "valid now") {
+			found = true
+			break
+		}
+	}
+	if !found {
+		titles := make([]string, 0, len(result.Recommendations))
+		for _, rec := range result.Recommendations {
+			titles = append(titles, rec.Title)
+		}
+		t.Errorf("no recommendation tells the operator the certificate is not yet valid; "+
+			"recommendations were %q", titles)
 	}
 }
 

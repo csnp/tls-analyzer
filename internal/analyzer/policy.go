@@ -1025,15 +1025,28 @@ func (e *PolicyEvaluator) evaluateCertificate(result *types.ScanResult, rules *t
 		})
 	}
 
-	// Check validity
-	if cert.Expired {
+	// Check validity. Both ends of the window are a violation: a certificate
+	// whose validity has not started is refused by every client exactly as an
+	// expired one is. Checking only Expired left the other end silent here, and
+	// silent in the worst way, because a not-yet-valid certificate then fell
+	// through to the minValidityDays branch where its DaysUntilExpiry is large
+	// enough to clear any threshold.
+	if cert.Expired || cert.NotYetValid {
+		description, actual := "Certificate has expired", "Certificate expired"
+		remediation := "Renew the certificate immediately"
+		if cert.NotYetValid {
+			description = "Certificate is not yet valid"
+			actual = "Validity period starts " + cert.NotBefore.Format("2006-01-02")
+			remediation = "Check the certificate's notBefore date and the clock on the " +
+				"scanning host, then deploy a certificate that is valid now"
+		}
 		pr.Violations = append(pr.Violations, types.PolicyViolation{
 			Rule:        "certificate.validity",
 			Severity:    types.SeverityCritical,
-			Description: "Certificate has expired",
+			Description: description,
 			Expected:    "Valid certificate",
-			Actual:      "Certificate expired",
-			Remediation: "Renew the certificate immediately",
+			Actual:      actual,
+			Remediation: remediation,
 		})
 	} else if rules.MinValidityDays > 0 && cert.DaysUntilExpiry < rules.MinValidityDays {
 		pr.Warnings = append(pr.Warnings, types.PolicyViolation{

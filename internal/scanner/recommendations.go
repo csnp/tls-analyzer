@@ -126,6 +126,15 @@ func (s *Scanner) generateRecommendations(result *types.ScanResult) []types.Reco
 				Impact:      "Critical - service may be inaccessible",
 				Effort:      "low",
 			})
+		} else if cert.NotYetValid {
+			recs = append(recs, types.Recommendation{
+				Priority:    1,
+				Category:    "certificate",
+				Title:       "Deploy a Certificate That Is Valid Now",
+				Description: "The server certificate's validity period has not started, so clients refuse it exactly as they refuse an expired one. Check the certificate's notBefore date and the clock on this host.",
+				Impact:      "Critical - service may be inaccessible",
+				Effort:      "low",
+			})
 		} else if cert.DaysUntilExpiry < 30 {
 			recs = append(recs, types.Recommendation{
 				Priority:    priority,
