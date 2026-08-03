@@ -187,6 +187,6 @@ jobs:
 
 - [NSA CNSA 2.0 Guidance](https://media.defense.gov/2022/Sep/07/2003071834/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF)
 - [NIST Post-Quantum Cryptography](https://csrc.nist.gov/projects/post-quantum-cryptography)
-- [FIPS 203: ML-KEM](https://csrc.nist.gov/publications/detail/fips/203/final)
-- [FIPS 204: ML-DSA](https://csrc.nist.gov/publications/detail/fips/204/final)
-- [FIPS 205: SLH-DSA](https://csrc.nist.gov/publications/detail/fips/205/final)
+- [FIPS 203: ML-KEM](https://csrc.nist.gov/pubs/fips/203/final)
+- [FIPS 204: ML-DSA](https://csrc.nist.gov/pubs/fips/204/final)
+- [FIPS 205: SLH-DSA](https://csrc.nist.gov/pubs/fips/205/final)

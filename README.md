@@ -14,7 +14,6 @@
 <p align="center">
   <a href="#quick-start">Quick Start</a> &bull;
   <a href="#features">Features</a> &bull;
-  <a href="#installation">Installation</a> &bull;
   <a href="#usage">Usage</a> &bull;
   <a href="#output-formats">Output Formats</a> &bull;
   <a href="#policies">Policies</a> &bull;
@@ -29,7 +28,7 @@
 
 Part of the [QRAMM (Quantum Readiness Assurance Maturity Model)](https://qramm.org) toolkit, developed by the [Cyber Security Non-Profit (CSNP)](https://csnp.org).
 
-> **⚠️ Responsible Use Warning**
+> **Responsible use warning**
 >
 > This tool performs active network connections to analyze TLS configurations. **Only scan systems and domains you own or have explicit written authorization to test.** Unauthorized scanning may violate laws and regulations in your jurisdiction. The authors assume no liability for misuse of this tool.
 
@@ -463,9 +462,9 @@ See [CONTRIBUTING.md](CONTRIBUTING.md) for development setup and guidelines.
 
 - [NSA CNSA 2.0 Guidance](https://media.defense.gov/2022/Sep/07/2003071834/-1/-1/0/CSA_CNSA_2.0_ALGORITHMS_.PDF) - Commercial National Security Algorithm Suite 2.0
 - [NIST Post-Quantum Cryptography](https://csrc.nist.gov/projects/post-quantum-cryptography) - PQC Standardization
-- [FIPS 203: ML-KEM](https://csrc.nist.gov/publications/detail/fips/203/final) - Module-Lattice Key Encapsulation
-- [FIPS 204: ML-DSA](https://csrc.nist.gov/publications/detail/fips/204/final) - Module-Lattice Digital Signatures
-- [FIPS 205: SLH-DSA](https://csrc.nist.gov/publications/detail/fips/205/final) - Stateless Hash-Based Digital Signatures
+- [FIPS 203: ML-KEM](https://csrc.nist.gov/pubs/fips/203/final) - Module-Lattice Key Encapsulation
+- [FIPS 204: ML-DSA](https://csrc.nist.gov/pubs/fips/204/final) - Module-Lattice Digital Signatures
+- [FIPS 205: SLH-DSA](https://csrc.nist.gov/pubs/fips/205/final) - Stateless Hash-Based Digital Signatures
 - [RFC 8446: TLS 1.3](https://datatracker.ietf.org/doc/rfc8446/) - Transport Layer Security 1.3
 - [RFC 8996: Deprecating TLS 1.0 and 1.1](https://datatracker.ietf.org/doc/rfc8996/)
 - [CycloneDX CBOM](https://cyclonedx.org/capabilities/cbom/) - Cryptographic Bill of Materials
