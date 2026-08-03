@@ -1,0 +1,131 @@
+package scanner
+
+import (
+	"net"
+	"testing"
+	"time"
+
+	"github.com/csnp/qramm-tls-analyzer/pkg/types"
+)
+
+// The pre-push adversarial review found that a certificate whose validity period
+// has NOT STARTED scored the certificate dimension 25 of 25 and graded A+
+// 100/100, indistinguishable from a healthy certificate.
+//
+// The cause is that Go's x509 verifier returns the same reason for both ends of
+// the validity window (crypto/x509/verify.go: `now.Before(NotBefore)` and
+// `now.After(NotAfter)` both give CertificateInvalidError{Reason: Expired}, and
+// its own message reads "certificate has expired or is not yet valid"). The
+// chain check steps aside for that reason on the grounds that the window is
+// "reported on its own", but the scanner derived Expired from NotAfter only, so
+// nothing reported this end of it: no finding, no failed check, no lost points.
+//
+// Clock skew and pre-staged certificates make this reachable without an
+// adversary, and every client refuses such a certificate exactly as it refuses
+// an expired one.
+//
+// This file names nothing new, so it compiles against the pre-fix sources and
+// fails there on behaviour rather than on a build error.
+
+// notYetValidWindow is a validity period that starts a year from now.
+func notYetValidWindow() (time.Time, time.Time) {
+	start := time.Now().Add(365 * 24 * time.Hour)
+	return start, start.Add(90 * 24 * time.Hour)
+}
+
+func TestANotYetValidCertificateIsNotScoredAsHealthy(t *testing.T) {
+	notBefore, notAfter := notYetValidWindow()
+	iss := issueLeaf(t, nil, []net.IP{net.ParseIP("127.0.0.1")}, notBefore, notAfter)
+
+	host, port := startLocalTLSServer(t, iss.serving)
+
+	// Trust the one-off CA, so the chain verifies and the validity window is the
+	// only thing wrong. Without this the dimension scores zero because the chain
+	// is untrusted, and the test would pass without exercising the defect at all.
+	cfg := localScanConfig()
+	cfg.TrustRoots = iss.roots
+	result := scanLocal(t, cfg, host, port)
+
+	factor := certificateFactor(t, result)
+	if factor.Score != 0 {
+		t.Errorf("Certificate factor = %d/%d (%q), want 0. The certificate's validity "+
+			"period has not started, so every client refuses it exactly as it refuses "+
+			"an expired one, and the dimension that describes it must not award points.",
+			factor.Score, factor.MaxScore, factor.Details)
+	}
+
+	if v := findVulnerability(result, "CERT_NOT_YET_VALID"); v == nil {
+		t.Error("no CERT_NOT_YET_VALID finding. The chain check declines to run for a " +
+			"certificate outside its validity window because the window is 'reported on " +
+			"its own', so if nothing reports it the scan says nothing is wrong.")
+	} else {
+		if v.Severity != types.SeverityCritical {
+			t.Errorf("CERT_NOT_YET_VALID severity = %q, want %q (an expired certificate is CRITICAL "+
+				"and this is refused by clients for the same reason)", v.Severity, types.SeverityCritical)
+		}
+		if v.Remediation == "" {
+			t.Error("CERT_NOT_YET_VALID carries no remediation, so the finding is a dead end")
+		}
+	}
+
+	if result.Grade.Letter == "A+" {
+		t.Errorf("grade = %s (%d/100) for a certificate that is not yet valid",
+			result.Grade.Letter, result.Grade.Score)
+	}
+}
+
+// TestAValidCertificateOnTheSameChainIsUnaffected is the acceptance control. The
+// two cases differ only in the validity window, so if this one moves the fix has
+// reached past the case it was written for.
+func TestAValidCertificateOnTheSameChainIsUnaffected(t *testing.T) {
+	notBefore, notAfter := validFrom()
+	iss := issueLeaf(t, nil, []net.IP{net.ParseIP("127.0.0.1")}, notBefore, notAfter)
+
+	host, port := startLocalTLSServer(t, iss.serving)
+
+	// Trust the one-off CA, so the chain verifies and the validity window is the
+	// only thing wrong. Without this the dimension scores zero because the chain
+	// is untrusted, and the test would pass without exercising the defect at all.
+	cfg := localScanConfig()
+	cfg.TrustRoots = iss.roots
+	result := scanLocal(t, cfg, host, port)
+
+	if v := findVulnerability(result, "CERT_NOT_YET_VALID"); v != nil {
+		t.Error("a currently-valid certificate was reported as not yet valid")
+	}
+
+	factor := certificateFactor(t, result)
+	if factor.Score == 0 {
+		t.Errorf("Certificate factor = 0/%d (%q) for a currently-valid certificate on a "+
+			"chain the scan trusts; the fix has over-reached", factor.MaxScore, factor.Details)
+	}
+}
+
+// TestAnExpiredCertificateStillReportsExpiry guards the other end of the same
+// window, so a change that fixes one end cannot silently drop the other.
+func TestAnExpiredCertificateStillReportsExpiry(t *testing.T) {
+	notBefore := time.Now().Add(-365 * 24 * time.Hour)
+	notAfter := time.Now().Add(-24 * time.Hour)
+	iss := issueLeaf(t, nil, []net.IP{net.ParseIP("127.0.0.1")}, notBefore, notAfter)
+
+	host, port := startLocalTLSServer(t, iss.serving)
+
+	// Trust the one-off CA, so the chain verifies and the validity window is the
+	// only thing wrong. Without this the dimension scores zero because the chain
+	// is untrusted, and the test would pass without exercising the defect at all.
+	cfg := localScanConfig()
+	cfg.TrustRoots = iss.roots
+	result := scanLocal(t, cfg, host, port)
+
+	if v := findVulnerability(result, "CERT_EXPIRED"); v == nil {
+		t.Error("no CERT_EXPIRED finding for a certificate that expired yesterday")
+	}
+	if v := findVulnerability(result, "CERT_NOT_YET_VALID"); v != nil {
+		t.Error("an expired certificate was also reported as not yet valid; the two ends " +
+			"of the window must not be confused for one another")
+	}
+	if factor := certificateFactor(t, result); factor.Score != 0 {
+		t.Errorf("Certificate factor = %d/%d for an expired certificate, want 0",
+			factor.Score, factor.MaxScore)
+	}
+}

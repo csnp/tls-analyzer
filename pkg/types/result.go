@@ -149,23 +149,34 @@ type KeyExchange struct {
 
 // Certificate represents an X.509 certificate.
 type Certificate struct {
-	Subject            string       `json:"subject"`
-	Issuer             string       `json:"issuer"`
-	SerialNumber       string       `json:"serialNumber"`
-	NotBefore          time.Time    `json:"notBefore"`
-	NotAfter           time.Time    `json:"notAfter"`
-	SignatureAlgorithm string       `json:"signatureAlgorithm"`
-	PublicKeyAlgorithm string       `json:"publicKeyAlgorithm"`
-	PublicKeyBits      int          `json:"publicKeyBits"`
-	KeyUsage           []string     `json:"keyUsage,omitempty"`
-	ExtKeyUsage        []string     `json:"extKeyUsage,omitempty"`
-	SANs               []string     `json:"subjectAltNames,omitempty"`
-	IsCA               bool         `json:"isCA"`
-	IsSelfSigned       bool         `json:"isSelfSigned"`
-	QuantumSafe        bool         `json:"quantumSafe"`
-	DaysUntilExpiry    int          `json:"daysUntilExpiry"`
-	Expired            bool         `json:"expired"`
-	Fingerprints       Fingerprints `json:"fingerprints"`
+	Subject            string    `json:"subject"`
+	Issuer             string    `json:"issuer"`
+	SerialNumber       string    `json:"serialNumber"`
+	NotBefore          time.Time `json:"notBefore"`
+	NotAfter           time.Time `json:"notAfter"`
+	SignatureAlgorithm string    `json:"signatureAlgorithm"`
+	PublicKeyAlgorithm string    `json:"publicKeyAlgorithm"`
+	PublicKeyBits      int       `json:"publicKeyBits"`
+	KeyUsage           []string  `json:"keyUsage,omitempty"`
+	ExtKeyUsage        []string  `json:"extKeyUsage,omitempty"`
+	SANs               []string  `json:"subjectAltNames,omitempty"`
+	IsCA               bool      `json:"isCA"`
+	IsSelfSigned       bool      `json:"isSelfSigned"`
+	QuantumSafe        bool      `json:"quantumSafe"`
+	DaysUntilExpiry    int       `json:"daysUntilExpiry"`
+	Expired            bool      `json:"expired"`
+
+	// NotYetValid reports that the certificate's validity period has not started.
+	//
+	// It is tracked separately from Expired because Go's x509 verifier returns
+	// the same Expired reason for both ends of the window, and the chain check
+	// steps aside for that reason on the grounds that "expiry is reported on its
+	// own". Nothing reported this end of it, so a certificate dated to start next
+	// year scored the certificate dimension 25 of 25 and graded A+ 100/100, while
+	// every client would refuse it exactly as it refuses an expired one.
+	NotYetValid bool `json:"notYetValid,omitempty"`
+
+	Fingerprints Fingerprints `json:"fingerprints"`
 
 	// RequestedName is the name that was asked of the server, which is the
 	// --sni value when one was given and the target host otherwise. It is the

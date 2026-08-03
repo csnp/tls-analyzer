@@ -311,9 +311,12 @@ func scoreCertificate(cert *types.Certificate) (int, int) {
 
 	score := 15 // Base score for having a valid cert
 
-	// Validity
-	if cert.Expired {
-		return 0, maxScore // Expired = 0
+	// Validity. Both ends of the window score zero: a certificate whose validity
+	// has not started is refused by every client exactly as an expired one is,
+	// and it previously scored 25 of 25 because the chain check steps aside for
+	// it and nothing else looked at notBefore.
+	if cert.Expired || cert.NotYetValid {
+		return 0, maxScore
 	}
 
 	// A certificate that is not valid for the name it was asked for, or that
@@ -458,6 +461,9 @@ func describeCertScore(cert *types.Certificate) string {
 	}
 	if cert.Expired {
 		return "Critical: Certificate has expired"
+	}
+	if cert.NotYetValid {
+		return "Critical: Certificate is not yet valid"
 	}
 	if cert.NameMatch == types.CheckFailed {
 		return "Critical: Certificate is not valid for " + cert.RequestedName

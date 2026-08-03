@@ -804,6 +804,7 @@ func parseCertificate(cert *x509.Certificate) *types.Certificate {
 		QuantumSafe:        quantumSafe,
 		DaysUntilExpiry:    daysUntilExpiry,
 		Expired:            now.After(cert.NotAfter),
+		NotYetValid:        now.Before(cert.NotBefore),
 		Fingerprints: types.Fingerprints{
 			SHA256: sha256sum,
 			SHA1:   sha1sum,

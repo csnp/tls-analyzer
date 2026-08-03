@@ -116,6 +116,22 @@ func (s *Scanner) checkVulnerabilities(result *types.ScanResult) []types.Vulnera
 			})
 		}
 
+		// Not yet valid. The chain check declines to run for a certificate
+		// outside its validity window on the grounds that the window is reported
+		// on its own, so this end of the window has to be reported here or the
+		// certificate is scored as though nothing were wrong with it.
+		if cert.NotYetValid {
+			vulns = append(vulns, types.Vulnerability{
+				ID:       "CERT_NOT_YET_VALID",
+				Name:     "Certificate Not Yet Valid",
+				Severity: types.SeverityCritical,
+				Description: "The server certificate's validity period has not started, so " +
+					"clients will refuse it exactly as they refuse an expired one.",
+				Remediation: "Check the certificate's notBefore date and the clock on this " +
+					"machine, then deploy a certificate that is valid now.",
+			})
+		}
+
 		// Expiring soon
 		if cert.DaysUntilExpiry > 0 && cert.DaysUntilExpiry < 30 {
 			vulns = append(vulns, types.Vulnerability{

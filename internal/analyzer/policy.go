@@ -7,8 +7,8 @@ import (
 	"io"
 	"os"
 	"sort"
-	"strconv"
 	"strings"
+	"unicode/utf8"
 
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 	"gopkg.in/yaml.v3"
@@ -143,7 +143,7 @@ func declaresARule(data []byte) bool {
 				}
 				continue
 			}
-			if node.Kind == yaml.ScalarNode && node.Tag != "!!null" && constrains(key, node.Value) {
+			if node.Kind == yaml.ScalarNode && node.Tag != "!!null" && constrains(key, node) {
 				return true
 			}
 		}
@@ -159,25 +159,44 @@ func declaresARule(data []byte) bool {
 // compliance, which is what the guard exists to prevent. `allowSelfSigned` is
 // the one inversion in the schema: there FALSE is the restrictive setting, and
 // it is the setting every built-in policy uses.
-func constrains(key, value string) bool {
-	trimmed := strings.TrimSpace(value)
-	if trimmed == "" {
-		return false
+// It judges the DECODED value, not the written text. Re-implementing YAML's
+// scalar rules here with strconv meant `0x0`, `0o0` and `0b0` were read as "not
+// a number, therefore a constraint" while yaml.v3 decodes every one of them to
+// 0, so a policy whose only rule was `minKeySize: 0x0` loaded and reported
+// COMPLIANT 100/100 with exit 0 while the identical `minKeySize: 0` was
+// correctly refused. One character reopened the whole class through `extends`.
+// There is exactly one definition of what a value means now, and it is yaml's.
+func constrains(key string, node yaml.Node) bool {
+	var decoded any
+	if err := node.Decode(&decoded); err != nil {
+		// A scalar that does not decode is refused by the loader with a better
+		// message; do not let this check turn that into "defines no rules".
+		return true
 	}
+
 	if key == "allowSelfSigned" {
-		return strings.EqualFold(trimmed, "false")
+		b, ok := decoded.(bool)
+		return ok && !b
 	}
-	switch strings.ToLower(trimmed) {
-	case "false", "no", "off":
+
+	switch v := decoded.(type) {
+	case nil:
 		return false
-	case "0", "0.0", "-0":
-		return false
+	case bool:
+		return v
+	case int:
+		return v > 0
+	case int64:
+		return v > 0
+	case uint64:
+		return v > 0
+	case float64:
+		return v > 0
+	case string:
+		return strings.TrimSpace(v) != ""
+	default:
+		return true
 	}
-	// A negative threshold cannot be failed by any real measurement either.
-	if n, err := strconv.ParseFloat(trimmed, 64); err == nil && n <= 0 {
-		return false
-	}
-	return true
 }
 
 // decodePolicy decodes the document onto the given starting policy, refusing
@@ -416,15 +435,26 @@ func sanitizeForReport(s string, maxLen int) string {
 	// cap it. Truncation is on a rune boundary, because cutting mid-sequence
 	// produces invalid UTF-8.
 	if len(out) > maxLen {
-		runes := []rune(out)
 		budget := maxLen - 3
 		if budget < 1 {
 			budget = 1
 		}
-		for len(string(runes)) > budget && len(runes) > 0 {
-			runes = runes[:len(runes)-1]
+		// Walk the runes once, accumulating the encoded length, rather than
+		// rebuilding the whole string to measure it after dropping each rune.
+		// That loop was O(n^2) in the length of untrusted policy text: a 300 KB
+		// policy name cost 100 seconds of CPU before any socket was opened, and
+		// every violation's Expected/Actual/Remediation goes through here too.
+		var cut strings.Builder
+		total := 0
+		for _, r := range out {
+			n := utf8.RuneLen(r)
+			if total+n > budget {
+				break
+			}
+			cut.WriteRune(r)
+			total += n
 		}
-		out = string(runes) + "..."
+		out = cut.String() + "..."
 	}
 	return out
 }
