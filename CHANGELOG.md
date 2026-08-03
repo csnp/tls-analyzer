@@ -40,13 +40,17 @@ itself, and those are what set the version.
   for that reason because the window is "reported on its own"; the scanner
   derived expiry from `notAfter` alone, so nothing reported the other end. Both
   ends now score zero and raise a CRITICAL finding, and the policy verdict, the
-  report status line and the recommendations all say so. Clock skew and
-  pre-staged certificates reach this without an adversary.
+  report status line, the recommendations and the CBOM all say so. A certificate
+  with a short future window is no longer also reported as expiring soon, which
+  was two findings and two penalties for one condition with the remediation
+  pointing the wrong way. Clock skew and pre-staged certificates reach this
+  without an adversary.
 
 - **A policy that could not fail was accepted whenever the guard and the
   evaluator read a value differently.** The guard that refuses such a policy
-  judged the written text with its own number parser, while the evaluator used
-  the value YAML decodes into the schema, and the two disagreed in three ways:
+  read the written scalar for itself, first with a hand-rolled number parser and
+  then by decoding it into an untyped value, while the evaluator used what YAML
+  decodes into the schema field. The readings disagreed in three ways:
   `minKeySize: 0x0` (and octal and binary) was accepted where `minKeySize: 0` was
   refused; `minKeySize: 0.4` was accepted and truncated to 0; and
   `requireForwardSecrecy: no` or `off` was accepted while setting the field to

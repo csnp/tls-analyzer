@@ -337,13 +337,22 @@ func (r *CBOMReporter) keyExchangeDescription(ke types.KeyExchange) string {
 // string in the component described it by a date it never reaches in a usable
 // state. The structured notValidBefore is present either way, but the prose has
 // to agree with it.
+//
+// A certificate can set both flags if its notAfter precedes its notBefore, and
+// that window is never open at all, so it is named rather than described by
+// whichever branch happens to be tested first. Expiry is tested before the start
+// of the window, matching the text report and the grade, so one scan cannot
+// describe one certificate two ways.
 func certificateValidityContext(cert *types.Certificate) string {
 	switch {
+	case cert.Expired && cert.NotYetValid:
+		return fmt.Sprintf("Never valid; the validity period ends %s, before it starts %s",
+			cert.NotAfter.Format("2006-01-02"), cert.NotBefore.Format("2006-01-02"))
+	case cert.Expired:
+		return fmt.Sprintf("Expired on %s", cert.NotAfter.Format("2006-01-02"))
 	case cert.NotYetValid:
 		return fmt.Sprintf("Not yet valid; validity period starts %s",
 			cert.NotBefore.Format("2006-01-02"))
-	case cert.Expired:
-		return fmt.Sprintf("Expired on %s", cert.NotAfter.Format("2006-01-02"))
 	default:
 		return fmt.Sprintf("Expires in %d days", cert.DaysUntilExpiry)
 	}

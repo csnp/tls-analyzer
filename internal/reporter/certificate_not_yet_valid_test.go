@@ -118,6 +118,20 @@ func TestCBOMDescribesTheValidityWindowHonestly(t *testing.T) {
 			wantAbsent:  "Expires in",
 		},
 		{
+			name: "never valid, inverted window",
+			mutate: func(c *types.Certificate) {
+				// notAfter before notBefore: both flags set. Whichever branch is
+				// tested first would otherwise describe it, and the text report
+				// and the grade test Expired first, so the CBOM must not
+				// disagree with them about the same certificate.
+				c.Expired = true
+				c.NotBefore = time.Now().Add(365 * 24 * time.Hour)
+				c.NotAfter = time.Now().Add(-24 * time.Hour)
+			},
+			wantContain: "Never valid",
+			wantAbsent:  "Expires in",
+		},
+		{
 			name: "healthy",
 			mutate: func(c *types.Certificate) {
 				c.NotYetValid = false

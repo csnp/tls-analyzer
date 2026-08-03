@@ -1,8 +1,11 @@
 package analyzer
 
 import (
+	"reflect"
 	"strings"
 	"testing"
+
+	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
 // The pre-push adversarial review found that the guard which refuses a policy
@@ -96,6 +99,8 @@ func TestAValueThatDecodesToANoOpIsRefusedHoweverItIsWritten(t *testing.T) {
 		{"quantum:\n    requireHybridKeyExchange", "no"},
 		{"quantum:\n    requirePqcCertificates", "off"},
 		{"certificate:\n    requireCt", "no"},
+		{"cipher:\n    requireForwardSecrecy", "n"},
+		{"cipher:\n    requireForwardSecrecy", "N"},
 		// Numbers that decode to zero in an integer field.
 		{"cipher:\n    minKeySize", "0"},
 		{"cipher:\n    minKeySize", "0x0"},
@@ -131,6 +136,8 @@ func TestAValueThatDecodesToARealConstraintIsAccepted(t *testing.T) {
 		{"cipher:\n    requireForwardSecrecy", "true"},
 		{"cipher:\n    requireForwardSecrecy", "yes"},
 		{"cipher:\n    requireForwardSecrecy", "on"},
+		{"cipher:\n    requireForwardSecrecy", "y"},
+		{"cipher:\n    requireForwardSecrecy", "Y"},
 		{"quantum:\n    requireHybridKeyExchange", "true"},
 		{"cipher:\n    minKeySize", "128"},
 		{"cipher:\n    minKeySize", "0x80"},
@@ -188,16 +195,93 @@ rules:
 			"rule that can fail a scan and must load: %v", err)
 	}
 
-	// The same overlay, with the inherited floor relaxed to the bottom of the
-	// probe range as well. Recorded separately: an inert floor is a known no-op
-	// that still satisfies the guard, so this loads today. The assertion is that
-	// the two spellings of "off" agree, which is the property the regression broke.
-	for _, off := range []string{"false", "no", "off"} {
-		body := strings.ReplaceAll(survives, "requireForwardSecrecy: no",
-			"requireForwardSecrecy: "+off)
-		if _, err := e.LoadPolicy(writePolicyFile(t, body)); err != nil {
-			t.Errorf("writing the disabling boolean as %q changed the outcome: %v", off, err)
+	// An overlay that disarms EVERY inherited rule, written entirely in the
+	// YAML 1.1 boolean spellings, must be refused.
+	//
+	// This case is the whole point of the test and an earlier version did not
+	// have it: the fixture left `modern`'s minVersion floor inherited, which
+	// satisfies the merged view on its own, so the boolean was never consulted
+	// and reintroducing the regression left the test green. Emptying minVersion
+	// as well is what makes the boolean decide the outcome.
+	for _, off := range []string{"false", "no", "off", "n", "N", "Off"} {
+		disarmed := `name: Vendor Baseline
+version: "1.0"
+extends: strict
+rules:
+  protocol:
+    minVersion: ""
+    bannedVersions: []
+    requiredVersions: []
+  cipher:
+    minKeySize: 0
+    requireForwardSecrecy: ` + off + `
+    bannedAlgorithms: []
+    bannedCipherSuites: []
+  certificate:
+    minValidityDays: 0
+    minRsaKeySize: 0
+    minEccKeySize: 0
+    bannedSignatureAlgorithms: []
+    allowSelfSigned: yes
+  quantum:
+    requireHybridKeyExchange: ` + off + `
+    requirePqcCertificates: ` + off + `
+    minQuantumScore: 0
+`
+		if _, err := e.LoadPolicy(writePolicyFile(t, disarmed)); err == nil {
+			t.Errorf("an overlay that neutralises every inherited rule, with the disabling "+
+				"booleans written as %q, loaded as \"Vendor Baseline\". It can only ever "+
+				"report compliance, and writing the same booleans as `false` is refused.", off)
 		}
+	}
+}
+
+// TestEveryRuleFieldResolvesThroughTheReflectionMapping guards the one direction
+// the reflection lookup can fail open.
+//
+// declaresARule maps a written key to its decoded field by yaml struct tag, and
+// treats an unmapped key as a rule so that a schema error is not reported as
+// "defines no rules". yaml.v3 does not use tags exclusively: a field with no
+// yaml tag is keyed on strings.ToLower(field.Name), so it would be accepted by
+// the decoder and missed by the mapping, and a policy whose only rule was that
+// field would load while constraining nothing.
+//
+// No rule field is written that way today. This fails the moment one is.
+func TestEveryRuleFieldResolvesThroughTheReflectionMapping(t *testing.T) {
+	rules := reflect.ValueOf(types.PolicyRules{})
+	rulesType := rules.Type()
+
+	checked := 0
+	for i := 0; i < rulesType.NumField(); i++ {
+		sectionTag, _, _ := strings.Cut(rulesType.Field(i).Tag.Get("yaml"), ",")
+		if sectionTag == "" {
+			t.Errorf("rule section %q has no yaml tag, so declaresARule cannot map keys "+
+				"written under it and every such key counts as a rule",
+				rulesType.Field(i).Name)
+			continue
+		}
+
+		section := rules.Field(i)
+		sectionType := section.Type()
+		for j := 0; j < sectionType.NumField(); j++ {
+			field := sectionType.Field(j)
+			fieldTag, _, _ := strings.Cut(field.Tag.Get("yaml"), ",")
+			if fieldTag == "" {
+				t.Errorf("%s.%s has no yaml tag. yaml.v3 would still accept it, keyed on the "+
+					"lowercased field name, while declaresARule would not find it, so a "+
+					"policy whose only rule is that field would load and constrain nothing.",
+					sectionTag, field.Name)
+				continue
+			}
+			if _, ok := ruleField(rules, sectionTag, fieldTag); !ok {
+				t.Errorf("rules.%s.%s does not resolve through ruleField", sectionTag, fieldTag)
+			}
+			checked++
+		}
+	}
+
+	if checked < 20 {
+		t.Fatalf("only %d rule fields were checked; the walk is not reaching the schema", checked)
 	}
 }
 

@@ -47,8 +47,14 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 		return nil, err
 	}
 	// The rules as this document alone decodes them, kept before `extends` merges
-	// a base in. declaresARule judges values from the DECODED rules, so it needs
-	// the standalone view for the standalone question.
+	// a base in, so the standalone question is answered from the standalone view.
+	//
+	// The two views cannot actually disagree today: declaresARule only reads keys
+	// the document writes, and the overlay decodes the same document over the
+	// base, so the document always wins for exactly those keys. Passing the merged
+	// rules here is byte-for-byte equivalent. It is kept separate because the
+	// distinction is the one the surrounding code reasons about, not because a
+	// test can currently tell them apart.
 	standaloneRules := policy.Rules
 
 	// extends overlays this file onto a built-in policy. The overlay is applied
@@ -237,6 +243,12 @@ func fieldConstrains(key string, v reflect.Value) bool {
 		}
 		return false
 	default:
+		// Unreachable: every rule field is a string, int, bool or []string, and
+		// TestEveryRuleFieldResolvesThroughTheReflectionMapping walks the schema
+		// so a field of any other kind is caught when it is added rather than
+		// silently landing here. Counting an unknown kind as a constraint is the
+		// safe direction for the guard, since the cost is refusing to call a
+		// policy ruleless rather than accepting one that cannot fail.
 		return true
 	}
 }
