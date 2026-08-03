@@ -33,7 +33,45 @@ itself, and those are what set the version.
   collapsed and the fields are capped, so supplied text can still appear as a
   name but can no longer displace the verdict.
 
+- **A certificate whose validity period had not started was scored as healthy.**
+  It took the certificate dimension's full 25 of 25 and graded `A+ 100/100`,
+  indistinguishable from a good certificate. Go's verifier reports the same
+  reason for both ends of the validity window, and the chain check steps aside
+  for that reason because the window is "reported on its own"; the scanner
+  derived expiry from `notAfter` alone, so nothing reported the other end. Both
+  ends now score zero and raise a CRITICAL finding, and the policy verdict, the
+  report status line and the recommendations all say so. Clock skew and
+  pre-staged certificates reach this without an adversary.
+
+- **A policy that could not fail was accepted if a number was written in hex,
+  octal or binary.** The guard that refuses such a policy judged the written text
+  rather than the value YAML decodes, and the two disagreed: `minKeySize: 0` was
+  refused while `minKeySize: 0x0` loaded and reported `COMPLIANT 100/100` with
+  exit 0. Through `extends` that reopened the disarmed-overlay case this release
+  closes elsewhere, on a one-character change. The decoded value decides now.
+
+- **A policy file could burn CPU proportional to the square of its own length.**
+  Truncating a long name or rule value rebuilt the whole string after dropping
+  each character, so a 300 KB policy name cost about 100 seconds before any
+  connection was opened, against 0.03 seconds for a short one. A policy file is
+  untrusted input and this tool runs in CI.
+
 ### Fixed
+
+- **A text report written with `-o <file>` carried ANSI escape codes.** Colour
+  was decided from whether stdout was a terminal, even though the report was
+  going to a file, so running the scan from a terminal put 363 escape bytes into
+  every saved report. The destination decides now. `--no-color -o <file>` was the
+  workaround and is no longer needed.
+
+- **The fix offered for a banned certificate signature could contradict the
+  policy that raised it.** The remediation was fixed text reading "reissue with
+  SHA-256 or stronger" whatever the policy banned, and the built-in `strict`
+  policy bans SHA-256 because it targets SHA-384 or better, so following the
+  advice reproduced the violation. The remediation is derived from the policy
+  now: it names what the policy requires when it says so, and otherwise names the
+  strongest algorithm the policy does not ban. Post-quantum signatures are never
+  suggested, because no publicly trusted CA issues one.
 
 - **`requiredVersions` naming SSL 2.0 or SSL 3.0 reported it "not detected".**
   That is as unfounded as reporting it absent, since this scanner cannot offer
