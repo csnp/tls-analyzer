@@ -268,8 +268,13 @@ func containsFold(s, substr string) bool {
 
 // signatureUpgradePreference is the order in which a replacement certificate
 // signature algorithm is suggested, strongest first.
+//
+// Every entry is obtainable from a publicly trusted CA today. ML-DSA and SLH-DSA
+// are deliberately absent: no public CA issues a post-quantum certificate yet, so
+// naming one here would be advice the operator cannot act on, which this tool
+// treats as a defect in its own right. A policy that genuinely wants one says so
+// in requiredSignatureAlgorithms, and that branch is preferred over this list.
 var signatureUpgradePreference = []string{
-	"ML-DSA-65",
 	"ECDSA-SHA512",
 	"ECDSA-SHA384",
 	"SHA384-RSA",

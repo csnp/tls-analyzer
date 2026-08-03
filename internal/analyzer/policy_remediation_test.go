@@ -126,6 +126,45 @@ func TestBannedSignatureRemediationNamesTheRequirementWhenThePolicyStatesOne(t *
 	}
 }
 
+// TestSuggestedSignatureIsObtainableToday guards the tool's own rule that advice
+// must never name work the operator cannot perform. No publicly trusted CA
+// issues a post-quantum certificate, so the suggestion list must not offer one:
+// the first version of this fix replaced a self-contradictory remediation with an
+// unobtainable one, which is the same defect wearing a different hat.
+//
+// A policy that explicitly requires a PQC signature is a different case and is
+// covered by TestBannedSignatureRemediationNamesTheRequirementWhenThePolicyStatesOne.
+func TestSuggestedSignatureIsObtainableToday(t *testing.T) {
+	for _, candidate := range signatureUpgradePreference {
+		for _, pqc := range []string{"ML-DSA", "SLH-DSA", "Falcon", "Dilithium"} {
+			if containsFold(candidate, pqc) {
+				t.Errorf("the suggestion list offers %q, which names the post-quantum "+
+					"algorithm %q that no publicly trusted CA issues; an operator "+
+					"cannot act on this advice", candidate, pqc)
+			}
+		}
+	}
+
+	// And observe it end to end on the shipped `strict` policy, which is how a
+	// user reaches this remediation.
+	pr := NewPolicyEvaluator().Evaluate(certScanForRemediation(), &types.Policy{
+		Name: "t",
+		Rules: types.PolicyRules{
+			Certificate: types.CertificateRules{
+				BannedSignatureAlgorithms: []string{"SHA1", "MD5", "SHA256"},
+			},
+		},
+	})
+	violations := bannedSignatureViolations(pr)
+	if len(violations) == 0 {
+		t.Fatal("no banned-signature violation was raised under a strict-shaped policy")
+	}
+	if containsFold(violations[0].Remediation, "ML-DSA") {
+		t.Errorf("the remediation tells the operator to deploy a certificate no CA "+
+			"issues: %q", violations[0].Remediation)
+	}
+}
+
 // TestRemediationFallsBackWhenEveryCandidateIsBanned covers the end of the
 // suggestion list. A policy that bans every algorithm the tool could suggest
 // must still get a next step, and that step must not name any of them.
