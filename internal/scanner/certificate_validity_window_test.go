@@ -150,3 +150,50 @@ func TestAnExpiredCertificateStillReportsExpiry(t *testing.T) {
 			factor.Score, factor.MaxScore)
 	}
 }
+
+// TestAShortNotYetValidWindowRaisesOneFindingNotTwo covers the sibling predicate
+// the first sweep missed. The `DaysUntilExpiry > 0` guard on "expiring soon"
+// exists so an EXPIRED certificate is not also reported as expiring; a
+// not-yet-valid certificate has a positive count and walked straight through it,
+// producing two findings for one condition, a double penalty, and a "plan
+// renewal" instruction that points the wrong way.
+func TestAShortNotYetValidWindowRaisesOneFindingNotTwo(t *testing.T) {
+	notBefore := time.Now().Add(24 * time.Hour)
+	notAfter := notBefore.Add(19 * 24 * time.Hour) // inside the 30-day window
+	iss := issueLeaf(t, nil, []net.IP{net.ParseIP("127.0.0.1")}, notBefore, notAfter)
+
+	host, port := startLocalTLSServer(t, iss.serving)
+	cfg := localScanConfig()
+	cfg.TrustRoots = iss.roots
+	result := scanLocal(t, cfg, host, port)
+
+	if findVulnerability(result, "CERT_NOT_YET_VALID") == nil {
+		t.Fatal("no CERT_NOT_YET_VALID finding for a certificate that starts tomorrow")
+	}
+	if v := findVulnerability(result, "CERT_EXPIRING"); v != nil {
+		t.Errorf("the same certificate is also reported as expiring soon (%q, fix %q). "+
+			"One condition, two findings, two penalties, and the remediation tells the "+
+			"operator to renew a certificate that has not started yet.",
+			v.Description, v.Remediation)
+	}
+}
+
+// TestAnExpiringCertificateIsStillReported is the acceptance control for that
+// guard: suppressing the pair must not suppress the ordinary case.
+func TestAnExpiringCertificateIsStillReported(t *testing.T) {
+	notBefore := time.Now().Add(-24 * time.Hour)
+	notAfter := time.Now().Add(10 * 24 * time.Hour)
+	iss := issueLeaf(t, nil, []net.IP{net.ParseIP("127.0.0.1")}, notBefore, notAfter)
+
+	host, port := startLocalTLSServer(t, iss.serving)
+	cfg := localScanConfig()
+	cfg.TrustRoots = iss.roots
+	result := scanLocal(t, cfg, host, port)
+
+	if findVulnerability(result, "CERT_EXPIRING") == nil {
+		t.Error("a certificate with 10 days left is no longer reported as expiring soon")
+	}
+	if findVulnerability(result, "CERT_NOT_YET_VALID") != nil {
+		t.Error("a currently-valid certificate was reported as not yet valid")
+	}
+}

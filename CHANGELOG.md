@@ -43,12 +43,19 @@ itself, and those are what set the version.
   report status line and the recommendations all say so. Clock skew and
   pre-staged certificates reach this without an adversary.
 
-- **A policy that could not fail was accepted if a number was written in hex,
-  octal or binary.** The guard that refuses such a policy judged the written text
-  rather than the value YAML decodes, and the two disagreed: `minKeySize: 0` was
-  refused while `minKeySize: 0x0` loaded and reported `COMPLIANT 100/100` with
-  exit 0. Through `extends` that reopened the disarmed-overlay case this release
-  closes elsewhere, on a one-character change. The decoded value decides now.
+- **A policy that could not fail was accepted whenever the guard and the
+  evaluator read a value differently.** The guard that refuses such a policy
+  judged the written text with its own number parser, while the evaluator used
+  the value YAML decodes into the schema, and the two disagreed in three ways:
+  `minKeySize: 0x0` (and octal and binary) was accepted where `minKeySize: 0` was
+  refused; `minKeySize: 0.4` was accepted and truncated to 0; and
+  `requireForwardSecrecy: no` or `off` was accepted while setting the field to
+  false. Each produced `COMPLIANT 100/100` with exit 0 from a policy that
+  enforces nothing, and through `extends` that reopened the disarmed-overlay case
+  this release closes elsewhere. The guard now reads presence from the document
+  and the value from the decoded schema, so one decoder decides what a value
+  means. `allowSelfSigned: no` and `off`, which are restrictive, are accepted for
+  the same reason.
 
 - **A policy file could burn CPU proportional to the square of its own length.**
   Truncating a long name or rule value rebuilt the whole string after dropping

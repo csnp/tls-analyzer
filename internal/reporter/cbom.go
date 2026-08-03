@@ -258,7 +258,7 @@ func (r *CBOMReporter) certificateComponent(cert *types.Certificate, target stri
 			Occurrences: []types.CryptoOccurrence{
 				{
 					Location:          "TLS certificate",
-					AdditionalContext: fmt.Sprintf("Expires in %d days", cert.DaysUntilExpiry),
+					AdditionalContext: certificateValidityContext(cert),
 				},
 			},
 		},
@@ -326,5 +326,25 @@ func (r *CBOMReporter) keyExchangeDescription(ke types.KeyExchange) string {
 		return fmt.Sprintf("Post-quantum key encapsulation: %s", ke.PQCAlgorithm)
 	default:
 		return fmt.Sprintf("Classical key exchange: %s", ke.Name)
+	}
+}
+
+// certificateValidityContext describes the certificate's validity window for a
+// CBOM consumer.
+//
+// It said "Expires in N days" whatever the window was, so a certificate dated to
+// start next year read as a healthy long-lived one: the only human-readable
+// string in the component described it by a date it never reaches in a usable
+// state. The structured notValidBefore is present either way, but the prose has
+// to agree with it.
+func certificateValidityContext(cert *types.Certificate) string {
+	switch {
+	case cert.NotYetValid:
+		return fmt.Sprintf("Not yet valid; validity period starts %s",
+			cert.NotBefore.Format("2006-01-02"))
+	case cert.Expired:
+		return fmt.Sprintf("Expired on %s", cert.NotAfter.Format("2006-01-02"))
+	default:
+		return fmt.Sprintf("Expires in %d days", cert.DaysUntilExpiry)
 	}
 }

@@ -6,6 +6,7 @@ import (
 	"fmt"
 	"io"
 	"os"
+	"reflect"
 	"sort"
 	"strings"
 	"unicode/utf8"
@@ -45,6 +46,10 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 	if err != nil {
 		return nil, err
 	}
+	// The rules as this document alone decodes them, kept before `extends` merges
+	// a base in. declaresARule judges values from the DECODED rules, so it needs
+	// the standalone view for the standalone question.
+	standaloneRules := policy.Rules
 
 	// extends overlays this file onto a built-in policy. The overlay is applied
 	// by decoding the same document a second time on top of a copy of the base,
@@ -92,7 +97,8 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 	// an inheriting policy, where what matters is whether anything survives the
 	// overlay: there `allowSelfSigned` reads as unconstraining exactly when the
 	// overlay set it to true, which is the disarming case.
-	declares := declaresARule(data) || (policy.Extends != "" && declaresARule(merged))
+	declares := declaresARule(data, standaloneRules) ||
+		(policy.Extends != "" && declaresARule(merged, policy.Rules))
 
 	if err := validatePolicy(&policy, path, declares); err != nil {
 		return nil, err
@@ -117,7 +123,22 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 // `cnsa2TargetYear`, which is a label rather than a constraint; an empty list;
 // and a list whose only item is blank. Each loaded and reported COMPLIANT
 // 100/100 against a host that satisfied nothing.
-func declaresARule(data []byte) bool {
+// The document supplies PRESENCE (which keys were written) and the decoded rules
+// supply the VALUE. Judging the value from anywhere else means two decoders
+// deciding what one scalar means, and they do not agree:
+//
+//   - `requireForwardSecrecy: no` resolves to a !!str when decoded into `any`,
+//     but yaml.v3's struct decoder has a YAML 1.1 compatibility path that sets
+//     the bool field to false. Read as a string it looks like a constraint; the
+//     evaluator sees false and enforces nothing.
+//   - `minKeySize: 0.4` is a positive float to `any` and truncates to 0 in the
+//     int field. Read as a float it looks like a constraint; the evaluator sees
+//     0 and enforces nothing.
+//
+// Both shapes produced COMPLIANT 100/100 with exit 0 from a policy that
+// constrains nothing. Reading the value the evaluator will actually use removes
+// the disagreement rather than trying to keep two readers in step.
+func declaresARule(data []byte, rules types.PolicyRules) bool {
 	var doc struct {
 		Rules map[string]map[string]yaml.Node `yaml:"rules"`
 	}
@@ -127,23 +148,26 @@ func declaresARule(data []byte) bool {
 		return true
 	}
 
-	for _, section := range doc.Rules {
+	decoded := reflect.ValueOf(rules)
+
+	for sectionKey, section := range doc.Rules {
 		for key, node := range section {
 			// A label enforces nothing on its own, so a policy consisting only of
 			// one is as empty as a policy with no rules at all.
 			if key == "cnsa2TargetYear" {
 				continue
 			}
-			if node.Kind == yaml.SequenceNode {
-				for _, item := range node.Content {
-					if item.Kind == yaml.ScalarNode && strings.TrimSpace(item.Value) != "" &&
-						item.Tag != "!!null" {
-						return true
-					}
-				}
+			if node.Tag == "!!null" {
 				continue
 			}
-			if node.Kind == yaml.ScalarNode && node.Tag != "!!null" && constrains(key, node) {
+
+			field, ok := ruleField(decoded, sectionKey, key)
+			if !ok {
+				// An unmapped key is refused by the schema decoder with a better
+				// message; do not turn that into "defines no rules".
+				return true
+			}
+			if fieldConstrains(key, field) {
 				return true
 			}
 		}
@@ -151,54 +175,67 @@ func declaresARule(data []byte) bool {
 	return false
 }
 
-// constrains reports whether a written scalar can actually fail a scan.
+// ruleField finds the decoded value behind a written `rules.<section>.<key>`,
+// matched on the yaml struct tags so it cannot drift as fields are added.
+func ruleField(rules reflect.Value, section, key string) (reflect.Value, bool) {
+	sectionValue, ok := fieldByYAMLTag(rules, section)
+	if !ok {
+		return reflect.Value{}, false
+	}
+	return fieldByYAMLTag(sectionValue, key)
+}
+
+func fieldByYAMLTag(v reflect.Value, name string) (reflect.Value, bool) {
+	if v.Kind() != reflect.Struct {
+		return reflect.Value{}, false
+	}
+	t := v.Type()
+	for i := 0; i < t.NumField(); i++ {
+		tag := t.Field(i).Tag.Get("yaml")
+		if tag == "" {
+			continue
+		}
+		if before, _, _ := strings.Cut(tag, ","); before == name {
+			return v.Field(i), true
+		}
+	}
+	return reflect.Value{}, false
+}
+
+// fieldConstrains reports whether a decoded rule value can actually fail a scan.
 //
-// "The user wrote it" is not the same as "it constrains something". Every rule
-// here is gated on a positive number or a true boolean, so a zero or a false is
-// a no-op by construction and a policy made only of them can report nothing but
-// compliance, which is what the guard exists to prevent. `allowSelfSigned` is
-// the one inversion in the schema: there FALSE is the restrictive setting, and
-// it is the setting every built-in policy uses.
-// It judges the DECODED value, not the written text. Re-implementing YAML's
-// scalar rules here with strconv meant `0x0`, `0o0` and `0b0` were read as "not
-// a number, therefore a constraint" while yaml.v3 decodes every one of them to
-// 0, so a policy whose only rule was `minKeySize: 0x0` loaded and reported
-// COMPLIANT 100/100 with exit 0 while the identical `minKeySize: 0` was
-// correctly refused. One character reopened the whole class through `extends`.
-// There is exactly one definition of what a value means now, and it is yaml's.
-func constrains(key string, node yaml.Node) bool {
-	var decoded any
-	if err := node.Decode(&decoded); err != nil {
-		// Defensive, and unreachable as the caller is ordered today: LoadPolicy
-		// decodes against the schema first, so a scalar with a bad tag is already
-		// refused with a message naming the type problem. Kept so that a
-		// reordering cannot silently turn "this value is unreadable" into "this
-		// policy defines no rules", which would send the author looking for a
-		// missing rule instead of a bad value.
-		// TestAMalformedScalarIsRefusedAsAParseErrorNotAsARulelessPolicy pins it.
-		return true
-	}
-
+// Every rule is gated on a positive number, a true boolean or a non-empty list,
+// so a zero, a false or an empty list is a no-op by construction.
+// `allowSelfSigned` is the one inversion in the schema: there FALSE is the
+// restrictive setting, and it is the setting every built-in policy uses.
+func fieldConstrains(key string, v reflect.Value) bool {
 	if key == "allowSelfSigned" {
-		b, ok := decoded.(bool)
-		return ok && !b
+		return v.Kind() == reflect.Bool && !v.Bool()
 	}
 
-	switch v := decoded.(type) {
-	case nil:
+	switch v.Kind() {
+	case reflect.Bool:
+		return v.Bool()
+	case reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64:
+		return v.Int() > 0
+	case reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64:
+		return v.Uint() > 0
+	case reflect.Float32, reflect.Float64:
+		return v.Float() > 0
+	case reflect.String:
+		return strings.TrimSpace(v.String()) != ""
+	case reflect.Slice, reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			item := v.Index(i)
+			if item.Kind() == reflect.String {
+				if strings.TrimSpace(item.String()) != "" {
+					return true
+				}
+				continue
+			}
+			return true
+		}
 		return false
-	case bool:
-		return v
-	case int:
-		return v > 0
-	case int64:
-		return v > 0
-	case uint64:
-		return v > 0
-	case float64:
-		return v > 0
-	case string:
-		return strings.TrimSpace(v) != ""
 	default:
 		return true
 	}

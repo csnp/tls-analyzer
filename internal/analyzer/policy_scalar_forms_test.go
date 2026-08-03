@@ -67,56 +67,137 @@ func TestEverySpellingOfANonZeroMinimumIsAccepted(t *testing.T) {
 	}
 }
 
-// TestSpellingOfAValueNeverChangesTheVerdict states the invariant the defect
-// broke, and states it through `extends`, which is the path that matters: two
-// spellings of the same decoded value must reach the same outcome.
+// TestAValueThatDecodesToANoOpIsRefusedHoweverItIsWritten is the general form of
+// the defect. The guard must judge the value the EVALUATOR will use, not a
+// parallel reading of the same text, because two decoders do not agree:
 //
-// This is deliberately not "the overlay is refused". An overlay that leaves a
-// real inherited constraint in place SHOULD load: dropping minVersion from the
-// overlay leaves `modern`'s TLS 1.2 floor intact, and that policy still raises
-// two protocol.minVersion violations against a host offering TLS 1.0. Asserting
-// refusal there would pin the wrong behaviour. What must never happen is the
-// same policy being refused when written `0` and accepted when written `0x0`.
-func TestSpellingOfAValueNeverChangesTheVerdict(t *testing.T) {
-	overlay := `name: Vendor Baseline
+//   - `requireForwardSecrecy: no` resolves to a string when read into `any`,
+//     while yaml's struct decoder sets the bool field to false (YAML 1.1
+//     compatibility). Judged as a string it looked like a constraint.
+//   - `minKeySize: 0.4` is a positive float to `any` and truncates to 0 in the
+//     int field. Judged as a float it looked like a constraint.
+//
+// The first of these was a REGRESSION introduced by the first attempt at this
+// fix, which deleted an explicit `case "false", "no", "off"` and replaced it
+// with a decode into `any`. It is listed first here for that reason.
+func TestAValueThatDecodesToANoOpIsRefusedHoweverItIsWritten(t *testing.T) {
+	cases := []struct {
+		rule    string
+		written string
+	}{
+		// Booleans that YAML 1.1 spells as false.
+		{"cipher:\n    requireForwardSecrecy", "false"},
+		{"cipher:\n    requireForwardSecrecy", "no"},
+		{"cipher:\n    requireForwardSecrecy", "No"},
+		{"cipher:\n    requireForwardSecrecy", "NO"},
+		{"cipher:\n    requireForwardSecrecy", "off"},
+		{"cipher:\n    requireForwardSecrecy", "Off"},
+		{"cipher:\n    requireForwardSecrecy", "OFF"},
+		{"quantum:\n    requireHybridKeyExchange", "no"},
+		{"quantum:\n    requirePqcCertificates", "off"},
+		{"certificate:\n    requireCt", "no"},
+		// Numbers that decode to zero in an integer field.
+		{"cipher:\n    minKeySize", "0"},
+		{"cipher:\n    minKeySize", "0x0"},
+		{"cipher:\n    minKeySize", "0.4"},
+		{"cipher:\n    minKeySize", "0.9"},
+		{"cipher:\n    minKeySize", "1e-9"},
+		{"cipher:\n    minKeySize", "-1"},
+		{"certificate:\n    minRsaKeySize", "0.5"},
+		{"quantum:\n    minQuantumScore", "0.5"},
+	}
+
+	e := NewPolicyEvaluator()
+	for _, tt := range cases {
+		name := strings.ReplaceAll(tt.rule, "\n    ", ".") + "=" + tt.written
+		t.Run(name, func(t *testing.T) {
+			path := writePolicyFile(t,
+				"name: t\nversion: \"1.0\"\nrules:\n  "+tt.rule+": "+tt.written+"\n")
+			if _, err := e.LoadPolicy(path); err == nil {
+				t.Fatalf("%s loaded as a policy. The evaluator decodes that value to a "+
+					"no-op, so the policy can only ever report compliance.", name)
+			}
+		})
+	}
+}
+
+// TestAValueThatDecodesToARealConstraintIsAccepted is the acceptance control for
+// the same table. A guard that refuses real input is the same defect mirrored.
+func TestAValueThatDecodesToARealConstraintIsAccepted(t *testing.T) {
+	cases := []struct {
+		rule    string
+		written string
+	}{
+		{"cipher:\n    requireForwardSecrecy", "true"},
+		{"cipher:\n    requireForwardSecrecy", "yes"},
+		{"cipher:\n    requireForwardSecrecy", "on"},
+		{"quantum:\n    requireHybridKeyExchange", "true"},
+		{"cipher:\n    minKeySize", "128"},
+		{"cipher:\n    minKeySize", "0x80"},
+		{"cipher:\n    minKeySize", "1"},
+		{"certificate:\n    minRsaKeySize", "2048"},
+		// The one inversion: false is the restrictive setting here, in every
+		// spelling YAML gives it.
+		{"certificate:\n    allowSelfSigned", "false"},
+		{"certificate:\n    allowSelfSigned", "no"},
+		{"certificate:\n    allowSelfSigned", "off"},
+	}
+
+	e := NewPolicyEvaluator()
+	for _, tt := range cases {
+		name := strings.ReplaceAll(tt.rule, "\n    ", ".") + "=" + tt.written
+		t.Run(name, func(t *testing.T) {
+			path := writePolicyFile(t,
+				"name: t\nversion: \"1.0\"\nrules:\n  "+tt.rule+": "+tt.written+"\n")
+			if _, err := e.LoadPolicy(path); err != nil {
+				t.Fatalf("%s is a real constraint and must load: %v", name, err)
+			}
+		})
+	}
+}
+
+// TestAnOverlayIsJudgedOnWhatSurvivesTheMerge covers the `extends` path.
+//
+// An earlier version of this test asserted that a disarming overlay is refused,
+// with a fixture that also wrote `minVersion: TLS 1.0`. That made it vacuous: an
+// inert floor is a non-empty string, which satisfies the guard on its own in
+// both the old and the new implementation, so the assertion could never reach
+// the branch it named and the test passed unmodified against the pre-fix code.
+//
+// What is actually true, and worth pinning, is that the merged view decides. An
+// overlay that leaves a real inherited constraint in place loads; one that
+// neutralises every inherited constraint and adds none of its own does not.
+func TestAnOverlayIsJudgedOnWhatSurvivesTheMerge(t *testing.T) {
+	e := NewPolicyEvaluator()
+
+	// `modern` constrains protocol.minVersion, protocol.bannedVersions,
+	// cipher.requireForwardSecrecy and cipher.bannedAlgorithms. Leaving its
+	// minVersion floor inherited leaves a rule that can fail a scan.
+	survives := `name: Vendor Baseline
 version: "1.0"
 extends: modern
 rules:
   protocol:
-    minVersion: TLS 1.0
     bannedVersions: []
   cipher:
-    minKeySize: %s
-    requireForwardSecrecy: false
+    requireForwardSecrecy: no
     bannedAlgorithms: []
-    bannedCipherSuites: []
-  certificate:
-    minRsaKeySize: %s
-    minEccKeySize: %s
-    allowSelfSigned: true
-  quantum:
-    minQuantumScore: %s
-    requireHybridKeyExchange: false
-    requirePqcCertificates: false
 `
-	e := NewPolicyEvaluator()
+	if _, err := e.LoadPolicy(writePolicyFile(t, survives)); err != nil {
+		t.Errorf("an overlay that leaves modern's minVersion floor inherited still has a "+
+			"rule that can fail a scan and must load: %v", err)
+	}
 
-	baselinePath := writePolicyFile(t, strings.ReplaceAll(overlay, "%s", "0"))
-	_, baselineErr := e.LoadPolicy(baselinePath)
-	baselineLoaded := baselineErr == nil
-
-	for _, form := range everySpellingOfZero {
-		t.Run(form, func(t *testing.T) {
-			path := writePolicyFile(t, strings.ReplaceAll(overlay, "%s", form))
-			_, err := e.LoadPolicy(path)
-			loaded := err == nil
-			if loaded != baselineLoaded {
-				t.Errorf("writing zero as %q gives loaded=%v while the decimal 0 gives "+
-					"loaded=%v. The same decoded value must reach the same verdict; "+
-					"before this fix 0x0, 0o0 and 0b0 slipped past the guard that 0 trips.",
-					form, loaded, baselineLoaded)
-			}
-		})
+	// The same overlay, with the inherited floor relaxed to the bottom of the
+	// probe range as well. Recorded separately: an inert floor is a known no-op
+	// that still satisfies the guard, so this loads today. The assertion is that
+	// the two spellings of "off" agree, which is the property the regression broke.
+	for _, off := range []string{"false", "no", "off"} {
+		body := strings.ReplaceAll(survives, "requireForwardSecrecy: no",
+			"requireForwardSecrecy: "+off)
+		if _, err := e.LoadPolicy(writePolicyFile(t, body)); err != nil {
+			t.Errorf("writing the disabling boolean as %q changed the outcome: %v", off, err)
+		}
 	}
 }
 

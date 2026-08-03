@@ -64,15 +64,27 @@ func TestSanitizeForReportTruncatesCorrectly(t *testing.T) {
 		{"multi-byte runes over the cap", strings.Repeat("é", 5000), 120},
 		{"four-byte runes over the cap", strings.Repeat("𝄞", 5000), 120},
 		{"mixed widths over the cap", strings.Repeat("aé𝄞", 2000), 120},
-		{"tiny budget", strings.Repeat("𝄞", 100), 4},
+		{"tiny budget, four-byte runes", strings.Repeat("𝄞", 100), 4},
+		{"tiny budget, ascii", strings.Repeat("a", 100), 3},
+		{"zero budget", strings.Repeat("a", 100), 0},
 	}
 
 	for _, tt := range cases {
 		t.Run(tt.name, func(t *testing.T) {
 			out := sanitizeForReport(tt.input, tt.maxLen)
 
-			if len(out) > tt.maxLen {
-				t.Errorf("output is %d bytes, want at most %d: %q", len(out), tt.maxLen, out)
+			// The ellipsis is appended after the budget, and the budget has a
+			// floor of one byte, so for a maxLen below 4 the function returns up
+			// to 4 bytes. That is pre-existing behaviour, unchanged by making the
+			// truncation linear, and no caller passes a maxLen under 120. The
+			// bound is stated as the function actually behaves rather than as an
+			// invariant it does not hold.
+			limit := tt.maxLen
+			if limit < 4 {
+				limit = 4
+			}
+			if len(out) > limit {
+				t.Errorf("output is %d bytes, want at most %d: %q", len(out), limit, out)
 			}
 			if !utf8.ValidString(out) {
 				t.Errorf("output is not valid UTF-8, so truncation cut mid-sequence: %q", out)

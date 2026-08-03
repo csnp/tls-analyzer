@@ -132,8 +132,12 @@ func (s *Scanner) checkVulnerabilities(result *types.ScanResult) []types.Vulnera
 			})
 		}
 
-		// Expiring soon
-		if cert.DaysUntilExpiry > 0 && cert.DaysUntilExpiry < 30 {
+		// Expiring soon. The DaysUntilExpiry > 0 guard exists so an EXPIRED
+		// certificate is not also reported as expiring soon; a not-yet-valid one
+		// has a positive count and walked straight through it, so a short future
+		// window produced two findings for one condition, a double penalty, and a
+		// "plan renewal" instruction pointing the wrong way.
+		if !cert.NotYetValid && cert.DaysUntilExpiry > 0 && cert.DaysUntilExpiry < 30 {
 			vulns = append(vulns, types.Vulnerability{
 				ID:          "CERT_EXPIRING",
 				Name:        "Certificate Expiring Soon",
