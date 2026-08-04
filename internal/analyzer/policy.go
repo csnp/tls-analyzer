@@ -298,6 +298,55 @@ func fieldConstrains(key string, v reflect.Value) bool {
 // snake_case) each produced a compliant verdict with no rule having been
 // applied, and the real schema was only discoverable by forcing type errors
 // that leak Go type names.
+// scrubPath makes a policy file's PATH safe to print.
+//
+// The refusals this release added interpolate the path with %s, and a path is
+// untrusted for the same reason the file's contents are: this package's own
+// threat model says a policy file "arrives from a vendor, a repository or a
+// colleague", and a repository supplies the file's name exactly as much as its
+// contents. Git preserves control bytes in filenames, and iterating a directory
+// of policies is an ordinary CI shape.
+//
+// The sibling sites that interpolate a NAME use %q, which escapes control
+// characters and needs no help. These use %s, because a quoted path is harder to
+// copy back into a shell.
+func scrubPath(path string) string {
+	return sanitize.ForReport(path, sanitize.MaxReportDetail)
+}
+
+// scrubDecoderMessage neutralises the untrusted text in a YAML decoder error
+// while keeping the decoder's own structure.
+//
+// The distinction the whole fix rests on: untrusted text loses its newlines,
+// tool-authored text keeps them. yaml.v3 reports a document's problems as a
+// TypeError holding one entry per problem, joined with newlines. Those newlines
+// are the DECODER'S, and an author fixing a misspelled key needs them one per
+// line with its line number. Scrubbing the joined string collapses them along
+// with the attacker's, so a file with eleven misspellings rendered as a single
+// wrapped blob with five of the eleven dropped behind the length cap: the fix
+// for a forgery would have cost the diagnostic that makes refusing unknown keys
+// worth doing.
+//
+// Scrubbing each entry instead applies the budget per diagnostic, so the list
+// survives at full length and every entry is still individually bounded and
+// stripped.
+func scrubDecoderMessage(err error) string {
+	var typeErr *yaml.TypeError
+	if errors.As(err, &typeErr) {
+		scrubbed := make([]string, 0, len(typeErr.Errors))
+		for _, entry := range typeErr.Errors {
+			scrubbed = append(scrubbed,
+				sanitize.ForReport(schemaPathsInErrors.Replace(entry), sanitize.MaxReportDetail))
+		}
+		// Rebuilt in the shape yaml.v3's own TypeError.Error() uses, so the
+		// message an author reads is unchanged apart from the scrubbing.
+		return fmt.Sprintf("yaml: unmarshal errors:\n  %s", strings.Join(scrubbed, "\n  "))
+	}
+	// A syntax error rather than a type error carries no entry list, so there is
+	// no structure to preserve and the whole message is untrusted.
+	return sanitize.ForReport(schemaPathsInErrors.Replace(err.Error()), sanitize.MaxReportDetail)
+}
+
 func (e *PolicyEvaluator) decodePolicy(data []byte, onto types.Policy) (types.Policy, error) {
 	dec := yaml.NewDecoder(bytes.NewReader(data))
 	dec.KnownFields(true)
@@ -310,19 +359,13 @@ func (e *PolicyEvaluator) decodePolicy(data []byte, onto types.Policy) (types.Po
 		}
 		// KnownFields(true) makes the decoder echo an unrecognised key's NAME
 		// back verbatim and untruncated, and a policy file is untrusted text by
-		// this package's own rule, so this message is the third forgery surface:
-		// a key name carrying a cursor-up sequence and newlines printed a
-		// fabricated COMPLIANT verdict on the stderr that shares the terminal
-		// with the report.
-		//
-		// Scrub the DECODER'S text, not the composed error. The newline before
-		// the guidance line below is this loader's own, and collapsing the whole
-		// message would cost the author the separate line that tells them what to
-		// do next. Untrusted text loses its newlines; tool-authored text keeps
-		// them.
+		// this package's own rule, so this message is a forgery surface: a key
+		// name carrying a cursor-up sequence and newlines printed a fabricated
+		// COMPLIANT verdict on the stderr that shares the terminal with the
+		// report.
 		return onto, fmt.Errorf("failed to parse policy YAML: %s\n"+
 			"Run 'tlsanalyzer print-policy modern' to see a valid policy to start from",
-			sanitize.ForReport(schemaPathsInErrors.Replace(err.Error()), sanitize.MaxReportDetail))
+			scrubDecoderMessage(err))
 	}
 
 	// Everything after the first `---` was read by nobody.
@@ -767,7 +810,7 @@ func validatePolicy(policy *types.Policy, path string, declaresRule bool, data [
 	if strings.TrimSpace(policy.Name) == "" {
 		return fmt.Errorf("policy file %s sets no 'name'. A report has to be able to say which "+
 			"policy it applied, and an unnamed policy was reported as an empty policy name "+
-			"beside a compliant verdict", path)
+			"beside a compliant verdict", scrubPath(path))
 	}
 
 	if !declaresRule {
@@ -789,19 +832,19 @@ func validatePolicy(policy *types.Policy, path string, declaresRule bool, data [
 				"that %s will stay advisory even then, reporting a warning and never "+
 				"changing the verdict or the exit code; see the 'Rules that only warn' "+
 				"section of docs/policies.md for why",
-				policy.Name, path, strings.Join(written, ", "), strings.Join(written, " and "))
+				policy.Name, scrubPath(path), strings.Join(written, ", "), strings.Join(written, " and "))
 		}
 		return fmt.Errorf("policy %q in %s defines no rules, so nothing can fail it and a "+
 			"compliant verdict from it would mean nothing. Add at least one rule, or use "+
-			"'extends' to inherit one of the built-in policies", policy.Name, path)
+			"'extends' to inherit one of the built-in policies", policy.Name, scrubPath(path))
 	}
 
 	if err := validateProtocolVersionValues(&policy.Rules.Protocol); err != nil {
-		return fmt.Errorf("policy %q in %s: %w", policy.Name, path, err)
+		return fmt.Errorf("policy %q in %s: %w", policy.Name, scrubPath(path), err)
 	}
 
 	if err := validateAlgorithmValues(&policy.Rules); err != nil {
-		return fmt.Errorf("policy %q in %s: %w", policy.Name, path, err)
+		return fmt.Errorf("policy %q in %s: %w", policy.Name, scrubPath(path), err)
 	}
 
 	return nil

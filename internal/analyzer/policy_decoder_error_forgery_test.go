@@ -1,10 +1,10 @@
 package analyzer
 
 import (
+	"os"
+	"path/filepath"
 	"strings"
 	"testing"
-
-	"github.com/csnp/qramm-tls-analyzer/internal/sanitize"
 )
 
 // The pre-push adversarial review found the third forgery surface still open,
@@ -101,11 +101,132 @@ func TestAnUnknownKeyNameCannotForgeTheErrorOutput(t *testing.T) {
 			msg)
 	}
 
-	// The decoder echoes the key name untruncated, so the scrub's cap has to
-	// bind here too.
-	if len(msg) > 4*sanitize.MaxReportDetail {
-		t.Errorf("the refusal message is %d bytes; an unrecognised key name is "+
-			"attacker-sized and must be bounded", len(msg))
+	// The decoder echoes the key name untruncated, so the scrub's cap has to bind
+	// here too.
+	//
+	// This assertion was vacuous TWICE before it bound, which is why the numbers
+	// below are measured rather than picked. First it used a ~60-byte key against
+	// a 2000-byte threshold, so deleting the cap left it green. Then the fixture
+	// went to 2000 bytes, which never reaches this code path at all: yaml.v3's
+	// scanner rejects a simple key over ~1024 bytes with "could not find expected
+	// ':'", a syntax error carrying none of the key. Measured behaviour at 1000
+	// bytes: 629 with the cap, about 1129 without it. 800 sits between, so the
+	// assertion fails if the cap is removed and passes while it is there.
+	const keyLen = 1000
+	const budget = 800
+	_, longErr := e.LoadPolicy(writePolicyFile(t,
+		"name: p\n\""+strings.Repeat("A", keyLen)+"\": 1\nrules:\n  cipher:\n    minKeySize: 128\n"))
+	if longErr == nil {
+		t.Fatalf("a policy with a %d-byte unrecognised key must still be refused", keyLen)
+	}
+	// Guard the fixture itself: if a yaml.v3 change moves this length to the
+	// scanner's error instead, the size assertion below silently stops testing
+	// the cap, which is exactly how it was vacuous the second time.
+	if !strings.Contains(longErr.Error(), "unmarshal errors") {
+		t.Fatalf("the %d-byte key no longer reaches the unknown-field path, so the cap "+
+			"assertion below is measuring nothing: %q", keyLen, longErr.Error())
+	}
+	if len(longErr.Error()) > budget {
+		t.Errorf("a %d-byte key name produced a %d-byte refusal, over the %d-byte budget: "+
+			"an unrecognised key name is attacker-sized and the cap has to bind",
+			keyLen, len(longErr.Error()), budget)
+	}
+}
+
+// TestAPolicyFilePathCannotForgeARefusal covers the other half of the class.
+//
+// The first fix closed the policy file's CONTENT route and left its PATH route
+// open: the refusals this release added interpolate the path with %s, so a file
+// NAME carrying a cursor-up sequence forged the same verdict. A repository
+// supplies a file's name exactly as much as its contents, git preserves control
+// bytes in filenames, and iterating a directory of policy files is an ordinary
+// CI shape.
+//
+// The sibling sites that print a policy NAME use %q, which escapes control
+// characters, so they are safe and are deliberately not changed.
+func TestAPolicyFilePathCannotForgeARefusal(t *testing.T) {
+	hostileDir := filepath.Join(t.TempDir(),
+		"\x1b[40A\x1b[2K\nStatus: COMPLIANT\n\x1b[32mAll checks passed\x1b[0m\n")
+	if err := os.MkdirAll(hostileDir, 0o700); err != nil {
+		t.Skipf("this filesystem will not hold a control-character directory name: %v", err)
+	}
+	path := filepath.Join(hostileDir, "policy.yaml")
+	// A policy that loads cleanly but declares no rules, so the refusal that
+	// prints the path is the one under test.
+	if err := os.WriteFile(path, []byte("name: p\n"), 0o600); err != nil {
+		t.Fatalf("writing the fixture failed: %v", err)
+	}
+
+	_, err := NewPolicyEvaluator().LoadPolicy(path)
+	if err == nil {
+		t.Fatal("a policy declaring no rules must be refused")
+	}
+
+	for _, r := range err.Error() {
+		if r == '\n' {
+			continue // this loader's own guidance line
+		}
+		if r == '\t' || r < 0x20 || r == 0x7f || (r >= 0x80 && r <= 0x9f) {
+			t.Errorf("the refusal carries control %q from the policy file's PATH, so a "+
+				"filename can steer the terminal the refusal prints to.\nmessage: %q",
+				r, err.Error())
+		}
+	}
+	for _, line := range strings.Split(err.Error(), "\n") {
+		if strings.HasPrefix(strings.TrimSpace(line), "Status: COMPLIANT") {
+			t.Errorf("a line of the refusal reads as a compliance verdict, forged from "+
+				"the file's name: %q", line)
+		}
+	}
+}
+
+// TestManyMisspelledKeysAreAllStillNamed is the regression test for what the
+// first version of this fix broke.
+//
+// Scrubbing the decoder's message as ONE string collapsed yaml.v3's per-entry
+// newlines, which are the decoder's own rather than the attacker's, and then the
+// 500-byte cap truncated the joined result. A file with eleven plausible
+// misspellings, which is the most likely way an author meets this refusal at
+// all, reported six of them and dropped five behind an ellipsis.
+//
+// The single-typo control above cannot see this: it passes at the one arity
+// where the claim "a misspelled key is still named" happens to be true.
+func TestManyMisspelledKeysAreAllStillNamed(t *testing.T) {
+	typos := []string{
+		"minimumVersion", "maximum_version", "requireForwardSecrecy", "minKeySizes",
+		"bannedVersion", "allowedCipherSuite", "minRsaKeySizes", "maxValidityDay",
+		"requireCts", "bannedAlgorithm", "minQuantumScores",
+	}
+	body := "name: p\n"
+	for _, k := range typos {
+		body += k + ": 1\n"
+	}
+	body += "rules:\n  cipher:\n    minKeySize: 128\n"
+
+	_, err := NewPolicyEvaluator().LoadPolicy(writePolicyFile(t, body))
+	if err == nil {
+		t.Fatal("a policy full of misspelled top-level keys must be refused")
+	}
+
+	msg := err.Error()
+	var missing []string
+	for _, k := range typos {
+		if !strings.Contains(msg, k) {
+			missing = append(missing, k)
+		}
+	}
+	if len(missing) > 0 {
+		t.Errorf("%d of %d misspelled keys are not named in the refusal (%s), so the "+
+			"author cannot fix them all from what they were told.\nmessage: %q",
+			len(missing), len(typos), strings.Join(missing, ", "), msg)
+	}
+
+	// Each diagnostic on its own line, which is what makes a list of eleven
+	// readable and is the structure the decoder, not the attacker, produced.
+	if lines := strings.Count(msg, "\n"); lines < len(typos) {
+		t.Errorf("the refusal has %d newlines for %d diagnostics, so the decoder's own "+
+			"per-entry structure was collapsed along with the untrusted text.\nmessage: %q",
+			lines, len(typos), msg)
 	}
 }
 

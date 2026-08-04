@@ -71,20 +71,30 @@ again after its first repair proved inert on macOS and Windows.
   not identify which certificate it rejected. `U+2028` and `U+2029` are collapsed
   along with the other line terminators.
 
-- **A policy file could forge the tool's own error output.** Refusing a policy
-  with an unrecognised key is new in this release, and the YAML decoder echoes
-  the offending key's NAME back verbatim and untruncated. A key name carrying a
-  cursor-up sequence and newlines therefore printed a fabricated
-  `Status: COMPLIANT  Score: 100/100` on stderr, which shares the terminal with
-  the report and is printed after every report a sweep produces. This was the
-  third source of untrusted text reaching a surface the release had already
-  fixed elsewhere, found by the pre-push adversarial review on the one path the
-  release itself introduced. The decoder's message is now scrubbed where it is
-  interpolated, rather than the composed error being scrubbed as a whole: the
-  guidance line naming a valid starting point is this loader's own and stays on
-  its own line, while the untrusted text loses the newlines that let it
-  impersonate the tool. A misspelled key is still named, which is the entire
-  point of refusing unknown keys.
+- **A policy file could forge the tool's own refusal messages, by its contents
+  and by its name.** Refusing a policy with an unrecognised key is new in this
+  release, and the YAML decoder echoes the offending key's NAME back verbatim
+  and untruncated, so a key name carrying a cursor-up sequence and newlines
+  printed a fabricated `Status: COMPLIANT  Score: 100/100` on stderr, which
+  shares a terminal with the report. The refusals this release added also
+  interpolate the policy file's PATH, so a filename could forge the same
+  verdict: a repository supplies a file's name as much as its contents, and git
+  preserves control bytes in filenames.
+
+  This is the same untrusted source the release already handles elsewhere, the
+  policy file, arriving at print sites the release itself introduced. Both are
+  closed now, and the sibling sites that print a policy's NAME were left alone
+  deliberately, because they use `%q`, which escapes control characters.
+
+  The decoder's message is scrubbed per diagnostic rather than as one string.
+  That distinction is the fix's whole point and the first attempt got it wrong:
+  yaml reports one entry per problem joined with newlines, those newlines are
+  the decoder's rather than the attacker's, and scrubbing the joined text
+  collapsed a file with eleven misspelled keys into a single wrapped line with
+  five of the eleven dropped behind the length cap. Every misspelled key is
+  named, on its own line, with its line number, which is the entire point of
+  refusing unknown keys. Untrusted text loses its newlines; tool-authored text
+  keeps them.
 
 - **An expired intermediate certificate was reported as a healthy chain.** A
   chain built from a valid trusted root, an expired intermediate and a perfectly

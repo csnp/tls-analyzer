@@ -671,9 +671,15 @@ func validateFlags(cmd *cobra.Command) error {
 	// one the command line most visibly asked for, with nothing in the output
 	// saying which had been used.
 	if policyName != "" && policyFile != "" {
+		// Both values come from the invocation, which this tool treats as
+		// untrusted text, and policyName is already scrubbed where it is printed
+		// as an unknown policy. Printing the same variable raw here was the split
+		// that makes "fixing one print site is not fixing the class" concrete.
 		return fmt.Errorf(
 			"--policy %s and --policy-file %s both name a policy, and only one can be applied. "+
-				"Pass one of them", policyName, policyFile)
+				"Pass one of them",
+			sanitize.ForReport(policyName, sanitize.MaxReportDetail),
+			sanitize.ForReport(policyFile, sanitize.MaxReportDetail))
 	}
 
 	return nil
