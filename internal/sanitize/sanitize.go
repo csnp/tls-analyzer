@@ -1,13 +1,26 @@
 // Package sanitize strips the control characters that let untrusted text forge
 // the report it appears in.
 //
-// Two independent sources of untrusted text reach the human-readable report: a
-// policy file, which arrives from a vendor, a repository or a colleague; and the
-// certificate a scanned server chooses to present, whose subject, issuer and
-// verifier error text the report prints. Both were able to overprint the verdict
-// with an ANSI sequence, and both survived --no-color, while the exit code and
-// the JSON stayed honest. That is why the text renderer has to be fixed rather
-// than relied upon.
+// THREE independent sources of untrusted text reach the human-readable report:
+//
+//  1. A policy file, which arrives from a vendor, a repository or a colleague.
+//  2. The certificate a scanned server chooses to present, whose subject, issuer
+//     and verifier error text the report prints.
+//  3. The invocation itself: the target, which may come from a --targets file
+//     written by someone else, and the --sni value.
+//
+// Each was able to overprint the verdict with an ANSI sequence, and each
+// survived --no-color, while the exit code and the JSON stayed honest. That is
+// why the text renderer has to be fixed rather than relied upon.
+//
+// This comment previously named only the first two, and that is exactly how the
+// third shipped unsanitised. Every call site faithfully implemented a
+// two-source model: ten of them covered the policy and certificate paths and
+// none covered the invocation, so a --sni value carrying a cursor-up sequence
+// rewrote the grade line of a finished report, and a --targets file rewrote the
+// grade of the target scanned before it. The list is load-bearing, not
+// commentary. A new source of report text belongs on it before it belongs in a
+// print statement.
 //
 // This lives in its own package so the analyzer and the reporter share one
 // implementation. They previously could not: the policy path was sanitised and
@@ -39,6 +52,14 @@ func ForReport(s string, maxLen int) string {
 		case r < 0x20 || r == 0x7f: // C0 controls, including newline and ESC
 			b.WriteRune(' ')
 		case r >= 0x80 && r <= 0x9f: // C1 controls, a second escape route
+			b.WriteRune(' ')
+		case r == 0x2028 || r == 0x2029: // LINE SEPARATOR, PARAGRAPH SEPARATOR
+			// The same class as the newline collapsed above, not the bidi and
+			// zero-width characters deferred to 0.4.1: these terminate a line for
+			// any consumer that splits on Unicode line boundaries rather than on
+			// \n, which is what a JavaScript log viewer does. A terminal ignores
+			// them, so this is the quieter half of the newline defence rather
+			// than a new one.
 			b.WriteRune(' ')
 		default:
 			b.WriteRune(r)
