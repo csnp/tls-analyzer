@@ -136,11 +136,13 @@ Quantum Ready grades, from the quantum readiness score:
 
   The score weights the key exchange at 80 and the certificate at 20, so a
   server offering hybrid key exchange with a classical certificate scores 64
-  and grades Q, not Q+. Reaching Q+ takes either a full post-quantum key
-  exchange, or hybrid key exchange plus a post-quantum certificate, and no
-  publicly trusted CA issues one of those yet. Hybrid key exchange is the best
-  posture most operators can reach today, and the report says so beside the
-  grade rather than asking for work that cannot be done.
+  and grades Q, not Q+. Q+ needs either a full post-quantum key exchange, which
+  is yours to deploy, or hybrid key exchange plus a post-quantum certificate,
+  which is not: no publicly trusted CA issues one yet. So a host running hybrid
+  key exchange is at the best posture most operators can reach today. The
+  QUANTUM RISK ASSESSMENT section of the report says that in full, and the
+  recommendations say to track CA readiness rather than asking for work that
+  cannot be done.
 
 TLS Security grades:
   A+ 95-100   A 85-94   B 75-84   C 60-74   D 40-59   F below 40
@@ -228,10 +230,24 @@ var printPolicyCmd = &cobra.Command{
 		}
 
 		fmt.Printf("# Built-in policy %q, in the shape --policy-file accepts.\n", policy.Name)
-		fmt.Print("# Every key below is part of the schema. Any other key is refused.\n")
+		fmt.Print(printPolicyHeader())
 		fmt.Print(string(out))
 		return nil
 	},
+}
+
+// printPolicyHeader describes the schema shown by print-policy.
+//
+// It is a function so a test can hold it to what the loader actually accepts.
+// It read "Every key below is part of the schema. Any other key is refused.",
+// which was false: `extends` is accepted and is not printed here, because a
+// built-in policy inherits from nothing. This is the only surface that shows a
+// user the schema, so the header left `extends` undiscoverable while the
+// policy-refusal messages tell the reader to reach for it.
+func printPolicyHeader() string {
+	return "# Every key below is part of the schema. The one key not shown here is\n" +
+		"# 'extends: <built-in policy name>', which inherits that policy's rules and\n" +
+		"# lets this file override individual ones. Any other key is refused.\n"
 }
 
 func init() {

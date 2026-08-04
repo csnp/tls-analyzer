@@ -746,11 +746,20 @@ func validatePolicy(policy *types.Policy, path string, declaresRule bool) error 
 		// that describes the wrong problem sends the author looking in the wrong
 		// place.
 		if written := writtenWarningOnlyRules(policy); len(written) > 0 {
+			// Say that the named rules stay advisory whatever else is added.
+			// Without that, the remedy this message offers looks like it makes the
+			// whole file enforceable: add one real rule and the file loads, but the
+			// rule the author actually cared about still cannot fail, and the
+			// verdict is a green exit 0 that means nothing about it. Moving the
+			// false assurance is not removing it.
 			return fmt.Errorf("policy %q in %s defines only rules that report a warning and "+
 				"can never fail a policy (%s), so nothing can fail it and a compliant verdict "+
 				"from it would mean nothing. Add at least one rule that can produce a "+
-				"violation, or use 'extends' to inherit one of the built-in policies",
-				policy.Name, path, strings.Join(written, ", "))
+				"violation, or use 'extends' to inherit one of the built-in policies. Note "+
+				"that %s will stay advisory even then, reporting a warning and never "+
+				"changing the verdict or the exit code; see the 'Rules that only warn' "+
+				"section of docs/policies.md for why",
+				policy.Name, path, strings.Join(written, ", "), strings.Join(written, " and "))
 		}
 		return fmt.Errorf("policy %q in %s defines no rules, so nothing can fail it and a "+
 			"compliant verdict from it would mean nothing. Add at least one rule, or use "+
