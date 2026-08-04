@@ -236,6 +236,55 @@ rules:
 	}
 }
 
+// constrainableKind names the kinds fieldConstrains actually decides on. It is
+// deliberately a second list rather than a call into fieldConstrains: a test
+// that asked fieldConstrains which kinds it handles would agree with itself
+// whatever it did.
+func constrainableKind(k reflect.Kind) bool {
+	switch k {
+	case reflect.Bool,
+		reflect.Int, reflect.Int8, reflect.Int16, reflect.Int32, reflect.Int64,
+		reflect.Uint, reflect.Uint8, reflect.Uint16, reflect.Uint32, reflect.Uint64,
+		reflect.Float32, reflect.Float64,
+		reflect.String,
+		reflect.Slice, reflect.Array:
+		return true
+	default:
+		return false
+	}
+}
+
+// TestAnUnhandledKindIsNotCountedAsADeclaredRule pins the direction of the
+// default arm in fieldConstrains.
+//
+// declaresARule accepts a policy as soon as one written key constrains, so
+// returning true for a kind the function cannot evaluate accepts a policy whose
+// only rule may enforce nothing. That is the fail-open direction and the exact
+// shape of the ruleless policies the guard exists to refuse, and the comment on
+// that arm claimed it was the safe one.
+func TestAnUnhandledKindIsNotCountedAsADeclaredRule(t *testing.T) {
+	for _, tc := range []struct {
+		name  string
+		value any
+	}{
+		{"a map", map[string]string{"a": "b"}},
+		{"a pointer", new(int)},
+		{"a struct", struct{ A int }{A: 1}},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			v := reflect.ValueOf(tc.value)
+			if constrainableKind(v.Kind()) {
+				t.Fatalf("%s is a kind fieldConstrains handles, so this case does not reach "+
+					"the arm under test", v.Kind())
+			}
+			if fieldConstrains("someRule", v) {
+				t.Errorf("fieldConstrains counted a %s as a declared rule, so a policy whose "+
+					"only rule is such a field loads while constraining nothing", v.Kind())
+			}
+		})
+	}
+}
+
 // TestEveryRuleFieldResolvesThroughTheReflectionMapping guards the one direction
 // the reflection lookup can fail open.
 //
@@ -273,8 +322,23 @@ func TestEveryRuleFieldResolvesThroughTheReflectionMapping(t *testing.T) {
 					sectionTag, field.Name)
 				continue
 			}
-			if _, ok := ruleField(rules, sectionTag, fieldTag); !ok {
+			resolved, ok := ruleField(rules, sectionTag, fieldTag)
+			if !ok {
 				t.Errorf("rules.%s.%s does not resolve through ruleField", sectionTag, fieldTag)
+				continue
+			}
+
+			// Resolving is not enough: fieldConstrains decides on Kind, and its
+			// default arm refuses to call an unhandled kind a rule, which refuses
+			// the whole policy when it is the only rule written. Checking tags and
+			// resolution alone left that arm reachable with the suite green, so a
+			// rule field added as a *int or a map[string]string would have started
+			// refusing legitimate policies with no test saying why.
+			if !constrainableKind(resolved.Kind()) {
+				t.Errorf("rules.%s.%s is a %s, which fieldConstrains does not handle, so it "+
+					"falls to the default arm and is not counted as a declared rule. Add the "+
+					"kind to fieldConstrains and to constrainableKind together.",
+					sectionTag, fieldTag, resolved.Kind())
 			}
 			checked++
 		}

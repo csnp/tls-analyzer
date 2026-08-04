@@ -243,13 +243,24 @@ func fieldConstrains(key string, v reflect.Value) bool {
 		}
 		return false
 	default:
-		// Unreachable: every rule field is a string, int, bool or []string, and
-		// TestEveryRuleFieldResolvesThroughTheReflectionMapping walks the schema
-		// so a field of any other kind is caught when it is added rather than
-		// silently landing here. Counting an unknown kind as a constraint is the
-		// safe direction for the guard, since the cost is refusing to call a
-		// policy ruleless rather than accepting one that cannot fail.
-		return true
+		// A kind this function does not understand cannot be shown to constrain
+		// anything, so it does not count as a declared rule.
+		//
+		// Both halves of the previous comment here were false. It called this arm
+		// unreachable on the strength of a walk test that only checks yaml tags and
+		// that each field resolves through ruleField, never its Kind, so a rule
+		// field added as a *int or a map[string]string reached this arm with the
+		// suite green. And it called returning true the safe direction, which is
+		// backwards: declaresARule accepts a policy when any field constrains, so
+		// true accepts a policy whose only rule may enforce nothing, which is the
+		// fail-open direction and the exact shape of the ruleless policies this
+		// guard exists to refuse. False refuses the file instead, which is a
+		// message the author can act on.
+		//
+		// TestEveryRuleFieldResolvesThroughTheReflectionMapping now asserts Kind as
+		// well, so a field of an unhandled kind fails the suite when it is added
+		// rather than arriving here silently.
+		return false
 	}
 }
 
