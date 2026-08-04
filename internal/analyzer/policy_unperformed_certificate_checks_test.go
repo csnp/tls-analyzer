@@ -118,6 +118,16 @@ func TestAnUnsetCheckResultIsNotReadAsAPass(t *testing.T) {
 
 	pr := e.Evaluate(scanWithChainCheckResult(unset, unset), policy)
 
+	// Assert each check separately. Complete is a single aggregate over both, so
+	// asserting only that would still hold with one of the two arms broken, and a
+	// mutation that made exactly one of them read "" as a pass survived this test
+	// until it named them individually.
+	for _, rule := range []string{"certificate.nameMatch", "certificate.chainTrust"} {
+		if findSkippedRule(pr, rule) == nil {
+			t.Errorf("%s was not recorded as skipped for a certificate whose check was never "+
+				"set, so the zero value reads as a pass; skipped=%v", rule, pr.SkippedRules)
+		}
+	}
 	if pr.Complete {
 		t.Errorf("a certificate whose checks were never recorded produced a complete verdict, "+
 			"so an unset field reads as a pass; skipped=%v", pr.SkippedRules)
