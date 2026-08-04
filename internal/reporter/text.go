@@ -28,6 +28,17 @@ const (
 
 // Report writes the scan result as formatted text.
 func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
+	// Whether the scan failed is decided on the RAW result and the report is
+	// rendered from the scrubbed copy. Those must not be the same value: scrubbing
+	// collapses control characters and trims, so an Error consisting only of them
+	// scrubs to empty, and deciding on the copy would send a target that was never
+	// reached down the fully-graded path. That is the inverse of the defect the
+	// branch below exists to prevent, introduced by the scrubbing that fixed a
+	// different one. No real value reaches it today because the error is built
+	// from err.Error() and always carries prose, but a decision taken on a
+	// transformed value is a decision about a different value.
+	scanFailed := result.Error != ""
+
 	// Scrub once, at the door. Every print site below renders text that cannot
 	// move a terminal cursor, whether or not whoever wrote it thought about
 	// forgery. See sanitizedForText for why this is not done per print site.
@@ -43,7 +54,7 @@ func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
 	// path and which survived in batch because the error travels on the result
 	// rather than as a returned error. JSON carried the reason all along; text,
 	// the default format, discarded it.
-	if result.Error != "" {
+	if scanFailed {
 		r.printHeader(w, result)
 		r.printScanError(w, result.Error)
 		return nil

@@ -222,7 +222,8 @@ var printPolicyCmd = &cobra.Command{
 		if !ok {
 			names := evaluator.ListPolicies()
 			sort.Strings(names)
-			return fmt.Errorf("unknown policy: %s. Available: %s", args[0], strings.Join(names, ", "))
+			return fmt.Errorf("unknown policy: %s. Available: %s",
+				sanitize.ForReport(args[0], sanitize.MaxReportDetail), strings.Join(names, ", "))
 		}
 
 		out, err := yaml.Marshal(policy)
@@ -375,7 +376,8 @@ func runScan(cmd *cobra.Command, args []string) error {
 			var ok bool
 			policy, ok = evaluator.GetPolicy(policyName)
 			if !ok {
-				return fmt.Errorf("unknown policy: %s (use 'policies' command to list available policies)", policyName)
+				return fmt.Errorf("unknown policy: %s (use 'policies' command to list available policies)",
+					sanitize.ForReport(policyName, sanitize.MaxReportDetail))
 			}
 		}
 	}
@@ -404,10 +406,28 @@ func runScan(cmd *cobra.Command, args []string) error {
 // network allows.
 type scanFunc func(ctx context.Context, target string) (*types.ScanResult, error)
 
+// scrubbedError renders an error's message with control characters collapsed,
+// while still unwrapping to the original.
+//
+// Errors reaching stderr carry the target back to the user, and the target may
+// come from a --targets file somebody else wrote, so stderr is a forgery surface
+// too: it shares the terminal with the report and a sweep prints it after every
+// report it produced. The message cannot simply be rebuilt with %s, because
+// main unwraps with errors.As to tell a policy-gate failure (exit 2) from a scan
+// failure (exit 1), and flattening the chain would silently change the exit code
+// this tool's own CI guidance depends on. So scrub the text and keep the chain.
+type scrubbedError struct{ err error }
+
+func (e scrubbedError) Error() string {
+	return sanitize.ForReport(e.err.Error(), sanitize.MaxReportDetail)
+}
+
+func (e scrubbedError) Unwrap() error { return e.err }
+
 func scanSingleTarget(ctx context.Context, scan scanFunc, cnsa2 *analyzer.CNSA2Analyzer, policyEval *analyzer.PolicyEvaluator, target string, policy *types.Policy, output io.Writer) error {
 	result, err := scan(ctx, target)
 	if err != nil {
-		return fmt.Errorf("scan failed: %w", err)
+		return fmt.Errorf("scan failed: %w", scrubbedError{err})
 	}
 
 	// Add CNSA 2.0 analysis

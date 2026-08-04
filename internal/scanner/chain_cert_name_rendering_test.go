@@ -311,3 +311,41 @@ func TestAHostileNameCannotTruncateTheWalksHedge(t *testing.T) {
 		})
 	}
 }
+
+// TestTheOrganizationalUnitIsUsedWhenThereIsNoCommonNameOrOrganization
+//
+// The fallback was CommonName then Subject.String() then serial; correcting the
+// "CN=" defect narrowed the middle step to CommonName then Organization, and
+// that silently discarded every other subject attribute. Several long-lived
+// roots are identified by organizational unit alone, and dropping them straight
+// to a serial number is a real loss for a human who has to go and find the
+// certificate, which is what this function exists to help with.
+func TestTheOrganizationalUnitIsUsedWhenThereIsNoCommonNameOrOrganization(t *testing.T) {
+	now := time.Now()
+	expired := now.Add(-48 * time.Hour)
+
+	cert, _, err := signedCert(&x509.Certificate{
+		SerialNumber: big.NewInt(11),
+		Subject: pkix.Name{
+			OrganizationalUnit: []string{"Class 3 Public Primary Certification Authority"},
+		},
+		NotBefore:             expired.Add(-time.Hour),
+		NotAfter:              expired,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("could not mint the fixture: %v", err)
+	}
+
+	reason := chainCertOutsideValidityReason(cert, now)
+	if !strings.Contains(reason, "Class 3 Public Primary Certification Authority") {
+		t.Errorf("a certificate identified only by its organizational unit should be named "+
+			"by it rather than by its serial, got %q", reason)
+	}
+	if strings.Contains(reason, "serial ") {
+		t.Errorf("the organizational unit was available, so the serial fallback should not "+
+			"fire: %q", reason)
+	}
+}

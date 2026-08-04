@@ -946,14 +946,25 @@ func chainCertName(cert *x509.Certificate) string {
 	// rendered as `the chain certificate "" expired on ...`, which is the exact
 	// literal this fallback exists to prevent. A value is present only if it
 	// survives the transformation the report applies to it.
-	// Common name, then organization, then the serial. This is what the comment
-	// above always said x509's own UnknownAuthorityError does, and what the code
-	// did not: the middle step used to be Subject.String(), which is a FORMATTED
-	// string carrying structural punctuation of its own. A subject whose values
-	// all scrub away still renders as "CN=", so the fallback did not fire and the
-	// reason named the certificate "CN=" instead of "". Less obviously broken and
-	// exactly as useless, which is the shape of a fix applied to the symptom.
-	candidates := append([]string{cert.Subject.CommonName}, cert.Subject.Organization...)
+	// Common name, then organization, then organizational unit, then the serial.
+	//
+	// The middle steps used to be a single one, Subject.String(), which is a
+	// FORMATTED string carrying structural punctuation of its own. A subject whose
+	// values all scrub away still renders as "CN=", so the fallback did not fire
+	// and the reason named the certificate "CN=" instead of "": less obviously
+	// broken and exactly as useless, which is the shape of a fix applied to the
+	// symptom rather than the defect.
+	//
+	// Reading the attributes individually avoids that. The organizational unit is
+	// here because dropping straight to the serial for a certificate carrying one
+	// is a real loss of message quality: several long-lived roots are identified
+	// by OU alone, and a serial number is the worst identifier for a human who has
+	// to go and find the certificate. x509's own UnknownAuthorityError stops at
+	// organization, which is the precedent this followed at first, but matching it
+	// is a weaker reason than naming the certificate well.
+	candidates := []string{cert.Subject.CommonName}
+	candidates = append(candidates, cert.Subject.Organization...)
+	candidates = append(candidates, cert.Subject.OrganizationalUnit...)
 	for _, candidate := range candidates {
 		if scrubbed := sanitize.ForReport(candidate, sanitize.MaxReportDetail); scrubbed != "" {
 			return truncateChainCertName(scrubbed)
@@ -1011,8 +1022,15 @@ func truncateChainCertName(name string) string {
 }
 
 // quotedWidth reports how many characters %q renders s as, excluding the
-// surrounding quotes. strconv.Quote escapes each rune independently, so the
-// widths sum and a caller can spend the budget one rune at a time.
+// surrounding quotes.
+//
+// strconv.Quote escapes each rune independently, so for VALID UTF-8 the widths
+// sum and a caller can spend the budget one rune at a time. That does not hold
+// for invalid UTF-8: a lone 0xff renders as one escape whole-string but decodes
+// to U+FFFD when ranged, so the per-rune sum undercounts. The only caller feeds
+// this sanitize.ForReport output, which is always valid UTF-8 because ranging a
+// string yields U+FFFD for every invalid byte. A caller passing raw input would
+// get a silent undercount and a result over the bound.
 func quotedWidth(s string) int {
 	return len(strconv.Quote(s)) - 2
 }

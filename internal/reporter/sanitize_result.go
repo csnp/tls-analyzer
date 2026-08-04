@@ -41,11 +41,11 @@ import (
 // presented. Only the text report is read by a terminal, and only the text
 // report needs this.
 //
-// The fourteen per-print-site sanitize.ForReport calls text.go used to carry
+// The ten per-print-site sanitize.ForReport calls text.go used to carry
 // were removed when this was added, rather than kept as a second layer. They
 // were unreachable as an independent defence: every print helper in that file is
 // unexported and called only from Report, so nothing could reach one without
-// passing through here first. Keeping them would have left fourteen call sites
+// passing through here first. Keeping them would have left ten call sites
 // no test could distinguish from no call sites, which is the shape that just
 // cost this release a review round, where a %q was documented as an independent
 // defence and turned out to be silently carried by the sanitiser beside it.
@@ -73,7 +73,17 @@ func sanitizeInto(src, dst reflect.Value) {
 	case reflect.Struct:
 		// A struct holding unexported fields cannot be rebuilt field by field, and
 		// reflection cannot read them to try. time.Time is the one this type graph
-		// contains. Copy it whole: it carries no string a report prints.
+		// contains, and it is copied whole.
+		//
+		// It is NOT true that it carries no string a report prints, which is what
+		// this comment used to say. printHeader formats the timestamp with a MST
+		// layout element, which prints the location's zone name, and a
+		// time.FixedZone name is an arbitrary string this scrub does not reach. The
+		// copy also shares the caller's *time.Location. Neither is reachable from a
+		// scan, because the timestamp comes from time.Now() and a JSON round trip
+		// carries a numeric offset rather than a name, so this is a bound on the
+		// claim rather than a live hole: everything handed to the renderer is
+		// scrubbed EXCEPT strings behind a struct reflection cannot rebuild.
 		if hasUnexportedField(src.Type()) {
 			dst.Set(src)
 			return
@@ -87,6 +97,14 @@ func sanitizeInto(src, dst reflect.Value) {
 			return
 		}
 		dst.Set(reflect.MakeSlice(src.Type(), src.Len(), src.Len()))
+		for i := 0; i < src.Len(); i++ {
+			sanitizeInto(src.Index(i), dst.Index(i))
+		}
+
+	case reflect.Array:
+		// Fixed size, so dst is already the right shape. Handled explicitly
+		// because the default arm copies verbatim, and an array of strings would
+		// have been copied unscrubbed while looking covered.
 		for i := 0; i < src.Len(); i++ {
 			sanitizeInto(src.Index(i), dst.Index(i))
 		}

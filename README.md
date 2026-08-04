@@ -104,17 +104,25 @@ separately, whatever their outcome including when they did not run:
   requested, which is the `--sni` value when one is given and the target
   otherwise. When the two differ, the report says which name was verified.
 - **Chain trust.** The presented chain has to build to a root the scanning
-  machine trusts, for server authentication. Every certificate in the chain is
-  covered, not just the leaf: an expired intermediate fails the check on every
-  platform, because every other field in the report describes the leaf and the
-  leaf is usually healthy in that case. Where the platform reports the failure as
-  a validity-window failure, the reason also names which certificate and which
-  end of its window failed. Where it reports only that the chain is untrusted,
-  which macOS and Windows may do because they answer through the system verifier
-  rather than Go's, the check still fails and the reason is the one the platform
-  gave, which need not name a certificate. The verdict is machine-dependent: a
-  certificate from an internal CA is reported untrusted unless that CA is
-  installed on the machine running the scan, and a scan warning says so.
+  machine trusts, for server authentication. The question it answers is whether a
+  client on this machine would accept the chain, so the verdict is
+  machine-dependent by design: a certificate from an internal CA is reported
+  untrusted unless that CA is installed locally, and a scan warning says so.
+
+  Every certificate in the chain is covered, not just the leaf. When the
+  verifier rejects the chain over a validity window and the leaf is inside its
+  own, the reason names the offending certificate and which end of its window
+  failed, because every other field in the report describes the leaf and the leaf
+  is healthy in that case. Two limits are worth stating plainly. Where the
+  platform reports only that the chain is untrusted, which macOS and Windows may
+  do because they answer through the system verifier rather than Go's, the check
+  still fails but the reason is the platform's own and need not name a
+  certificate. And where the platform builds a valid path of its own, by
+  substituting a stored intermediate or fetching one, it does not reject the
+  chain at all, so no window is inspected and the chain is reported as trusted.
+  That is the honest answer to the question this check asks, since a client on
+  that machine would also accept it, but it means a chain another client rejects
+  can pass here.
 
 Either check failing scores the certificate dimension zero, for the same reason
 expiry does: no client will use the certificate.

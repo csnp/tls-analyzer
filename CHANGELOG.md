@@ -40,13 +40,13 @@ again after its first repair proved inert on macOS and Windows.
 
   The cause was an incomplete list, not a missing call. The sanitiser's own
   documentation named two sources of untrusted text, the policy file and the
-  scanned server's certificate, and fourteen call sites correctly covered those
+  scanned server's certificate, and ten call sites correctly covered those
   two. There is a third, the invocation: the target, which `--targets` may read
   from a file somebody else wrote, and `--sni`. Nothing covered it.
 
   This is the fourth repair of this defect class in one release and the first
   that does not depend on remembering. The text renderer now scrubs the entire
-  result once, on the way in, and the fourteen per-print-site calls were removed
+  result once, on the way in, and the ten per-print-site calls were removed
   rather than kept as a second layer: every print helper in that file is
   unexported and reachable only through the renderer's entry point, so they were
   not an independent defence and no test could tell them from nothing. A print

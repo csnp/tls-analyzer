@@ -86,11 +86,18 @@ func TestTheSweepRendersAWholeReportAndNotJustItsHeader(t *testing.T) {
 	}
 	out := buf.String()
 
-	// Every block that prints untrusted text. A heading missing here means the
-	// sweep is no longer reaching the print sites underneath it.
+	// EVERY block the report renders, not a sample. The first version of this
+	// list named six of the ten headings and set the numbers so loosely that any
+	// single section could stop rendering with both still satisfied, which made
+	// the floor decorative on the axis it existed for.
 	for _, section := range []string{
-		"CERTIFICATE", "Name check", "Chain trust",
-		"VULNERABILITIES", "SCAN COVERAGE", "RECOMMENDATIONS",
+		"OVERALL GRADE", "POLICY EVALUATION", "CNSA 2.0 COMPLIANCE TIMELINE",
+		"PROTOCOL SUPPORT", "CIPHER SUITES", "CERTIFICATE",
+		"QUANTUM RISK ASSESSMENT", "VULNERABILITIES", "RECOMMENDATIONS",
+		"SCAN COVERAGE",
+		// Field labels inside the certificate block, which is where the
+		// server-controlled text is densest.
+		"Name check", "Chain trust",
 	} {
 		if !strings.Contains(out, section) {
 			t.Errorf("the swept report has no %q section, so the forgery sweep is not "+
@@ -98,15 +105,44 @@ func TestTheSweepRendersAWholeReportAndNotJustItsHeader(t *testing.T) {
 		}
 	}
 
-	// A floor on how much of the payload actually reached output, so the sweep
-	// cannot pass on a report that renders the fields but drops the values.
-	if got := strings.Count(out, "FORGED"); got < 15 {
-		t.Errorf("only %d payloads reached the rendered report; the sweep is measuring "+
-			"far less of it than the %d fields it filled", got, 15)
+	// Numbers chosen to BIND. Measured at 9881 bytes and 52 payloads, so these
+	// sit just below that: loose enough to survive ordinary wording changes,
+	// tight enough that dropping a section trips them rather than sliding by.
+	if got := strings.Count(out, "FORGED"); got < 45 {
+		t.Errorf("only %d payloads reached the rendered report, below the floor of 45; "+
+			"a block that prints untrusted text has probably stopped rendering", got)
 	}
-	if len(out) < 3000 {
-		t.Errorf("the swept report is %d bytes, which is too short to be a whole report; "+
-			"the sweep is probably taking an early-return path", len(out))
+	if len(out) < 8500 {
+		t.Errorf("the swept report is %d bytes, below the floor of 8500; the sweep is "+
+			"probably taking an early-return path or has lost a section", len(out))
+	}
+}
+
+// TestTheSweepCoversTheNotScannedPathToo is the second coverage floor.
+//
+// The failed shape had no floor at all, on a path where TWO of the three fields
+// this release shipped raw live: the target in the header and the error in the
+// NOT SCANNED block. Without this, that half of the sweep was satisfied by any
+// non-empty output.
+func TestTheSweepCoversTheNotScannedPathToo(t *testing.T) {
+	var buf bytes.Buffer
+	if err := (&TextReporter{NoColor: true}).Report(&buf, hostileScanResult(t, shapeFailed)); err != nil {
+		t.Fatalf("report failed: %v", err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, "NOT SCANNED") {
+		t.Error("the failed shape did not render the NOT SCANNED block, so the sweep is " +
+			"not covering the error path at all")
+	}
+	if strings.Contains(out, "OVERALL GRADE") {
+		t.Error("the failed shape rendered a grade block; a target that was never reached " +
+			"must not be given a graded report")
+	}
+	// The target in the header and the error in the block, at minimum.
+	if got := strings.Count(out, "FORGED"); got < 3 {
+		t.Errorf("only %d payloads reached the NOT SCANNED report, below the floor of 3; "+
+			"the target and the error should both carry one", got)
 	}
 }
 
@@ -276,6 +312,11 @@ func fillHostile(v reflect.Value, depth int) {
 		elem := reflect.New(v.Type().Elem()).Elem()
 		fillHostile(elem, depth+1)
 		v.Set(reflect.Append(reflect.MakeSlice(v.Type(), 0, 1), elem))
+
+	case reflect.Array:
+		for i := 0; i < v.Len(); i++ {
+			fillHostile(v.Index(i), depth+1)
+		}
 
 	case reflect.Map:
 		if !v.CanSet() {
