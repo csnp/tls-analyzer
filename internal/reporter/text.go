@@ -5,7 +5,6 @@ import (
 	"io"
 	"strings"
 
-	"github.com/csnp/qramm-tls-analyzer/internal/sanitize"
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
@@ -29,6 +28,11 @@ const (
 
 // Report writes the scan result as formatted text.
 func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
+	// Scrub once, at the door. Every print site below renders text that cannot
+	// move a terminal cursor, whether or not whoever wrote it thought about
+	// forgery. See sanitizedForText for why this is not done per print site.
+	result = sanitizedForText(result)
+
 	// A target that could not be scanned has no measurements, so it gets no
 	// report. Batch mode records the failure on the result and carried on to the
 	// grade block, which rendered a zero-valued assessment as a finished
@@ -105,6 +109,11 @@ func (r *TextReporter) printScanError(w io.Writer, message string) {
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorRed, "NOT SCANNED"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, strings.Repeat("─", 63)))
 
+	// The message quotes the target back, so it carries whatever a --targets file
+	// put there, and in a batch sweep this block is printed between two scanned
+	// targets, which puts a full report above it to overprint. It is safe here
+	// because Report scrubbed the whole result on the way in, not because of
+	// anything this function does.
 	for _, line := range wrapText(message, 59) {
 		fmt.Fprintf(w, "    %s\n", line)
 	}
@@ -170,6 +179,12 @@ func (r *TextReporter) printScanWarnings(w io.Writer, warnings []string) {
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorYellow, "SCAN COVERAGE"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, strings.Repeat("─", 63)))
 
+	// Warnings are tool prose with untrusted values interpolated into them: the
+	// --sni warning carries the SNI value and the target. This is the LAST block
+	// of the report, so a cursor-up sequence here would rewrite any line above it,
+	// including the grade. Report scrubs the whole result before any of this
+	// runs, so a warning added later is covered without anyone remembering to
+	// wrap it.
 	for _, warning := range warnings {
 		fmt.Fprintf(w, "    - %s\n", warning)
 	}
@@ -193,9 +208,21 @@ func (r *TextReporter) printHeader(w io.Writer, result *types.ScanResult) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold+colorCyan, "  QRAMM TLS Analyzer - Quantum-Ready Security Assessment"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "═══════════════════════════════════════════════════════════════"))
 
-	fmt.Fprintf(w, "  %s %s\n", r.color(colorDim, "Target:"), result.Target)
+	// The target is untrusted text. It is usually typed by the person reading the
+	// report, but --targets reads it from a file that may have been written by
+	// someone else, and this line is the FIRST in the report, so an escape
+	// sequence here rewrites nothing above it but sets up the terminal for
+	// everything below.
+	fmt.Fprintf(w, "  %s %s\n", r.color(colorDim, "Target:"),
+		result.Target)
 	if result.IP != "" {
-		fmt.Fprintf(w, "  %s %s\n", r.color(colorDim, "IP:"), result.IP)
+		// Production fills this from net.IP.String(), so it cannot be hostile
+		// there. It is scrubbed at the door regardless, because deciding per field
+		// which values are "already safe by provenance" is the judgement that let
+		// three of the four earlier sanitiser fixes ship incomplete, and it was
+		// wrong twice in the review that produced this design.
+		fmt.Fprintf(w, "  %s %s\n", r.color(colorDim, "IP:"),
+			result.IP)
 	}
 	fmt.Fprintf(w, "  %s %s\n", r.color(colorDim, "Scanned:"), result.Timestamp.Format("2006-01-02 15:04:05 MST"))
 	fmt.Fprintf(w, "  %s %s\n\n", r.color(colorDim, "Duration:"), result.Duration.String())
@@ -456,8 +483,8 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 	// because the sanitiser lived in the analyzer package and nothing here
 	// reached it.
 	fmt.Fprintf(w, "    Status:      %s\n", status)
-	fmt.Fprintf(w, "    Subject:     %s\n", sanitize.ForReport(cert.Subject, sanitize.MaxReportDetail))
-	fmt.Fprintf(w, "    Issuer:      %s\n", sanitize.ForReport(cert.Issuer, sanitize.MaxReportDetail))
+	fmt.Fprintf(w, "    Subject:     %s\n", cert.Subject)
+	fmt.Fprintf(w, "    Issuer:      %s\n", cert.Issuer)
 	fmt.Fprintf(w, "    Valid:       %s to %s\n",
 		cert.NotBefore.Format("2006-01-02"),
 		cert.NotAfter.Format("2006-01-02"))
@@ -470,7 +497,7 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 		// control characters became an empty entry.
 		sans := make([]string, 0, len(cert.SANs))
 		for _, s := range cert.SANs {
-			sans = append(sans, fmt.Sprintf("%q", sanitize.ForReport(s, sanitize.MaxReportDetail)))
+			sans = append(sans, fmt.Sprintf("%q", s))
 		}
 		fmt.Fprintf(w, "    SANs:        %s\n", strings.Join(sans, ", "))
 	}
@@ -480,13 +507,13 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 	// reader assumes passed.
 	fmt.Fprintf(w, "    Name check:  %s\n", r.certCheckLine(
 		cert.NameMatch,
-		"valid for "+sanitize.ForReport(cert.RequestedName, sanitize.MaxReportDetail),
-		sanitize.ForReport(cert.NameMismatchReason, sanitize.MaxReportDetail),
+		"valid for "+cert.RequestedName,
+		cert.NameMismatchReason,
 		"not checked against any name"))
 	fmt.Fprintf(w, "    Chain trust: %s\n", r.certCheckLine(
 		cert.ChainTrust,
 		"chains to a root this host trusts",
-		sanitize.ForReport(cert.ChainTrustReason, sanitize.MaxReportDetail),
+		cert.ChainTrustReason,
 		"not verified"))
 
 	if cert.IsSelfSigned {
@@ -591,12 +618,12 @@ func (r *TextReporter) printVulnerabilities(w io.Writer, vulns []types.Vulnerabi
 		// its sibling is not a smaller version of the fix, it is the same hole.
 		fmt.Fprintf(w, "    %s %s\n",
 			r.color(sevColor, fmt.Sprintf("[%-8s]", v.Severity)),
-			r.color(colorBold, sanitize.ForReport(v.Name, sanitize.MaxReportDetail)))
-		fmt.Fprintf(w, "              %s\n", sanitize.ForReport(v.Description, sanitize.MaxReportDetail))
+			r.color(colorBold, v.Name))
+		fmt.Fprintf(w, "              %s\n", v.Description)
 		if v.CVE != "" {
-			fmt.Fprintf(w, "              CVE: %s\n", sanitize.ForReport(v.CVE, sanitize.MaxReportDetail))
+			fmt.Fprintf(w, "              CVE: %s\n", v.CVE)
 		}
-		fmt.Fprintf(w, "              Fix: %s\n\n", sanitize.ForReport(v.Remediation, sanitize.MaxReportDetail))
+		fmt.Fprintf(w, "              Fix: %s\n\n", v.Remediation)
 	}
 }
 

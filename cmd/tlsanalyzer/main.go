@@ -20,6 +20,7 @@ import (
 
 	"github.com/csnp/qramm-tls-analyzer/internal/analyzer"
 	"github.com/csnp/qramm-tls-analyzer/internal/reporter"
+	"github.com/csnp/qramm-tls-analyzer/internal/sanitize"
 	"github.com/csnp/qramm-tls-analyzer/internal/scanner"
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 	"github.com/spf13/cobra"
@@ -545,6 +546,13 @@ func batchOutcome(results []*types.ScanResult) error {
 		if result != nil && result.Error != "" {
 			failed = append(failed, result.Target)
 		}
+	}
+
+	// These names came from the targets file, so they are untrusted text on their
+	// way to a terminal. stderr is not the report, but it shares the terminal with
+	// it, and a sweep prints this line after every report it produced.
+	for i := range failed {
+		failed[i] = sanitize.ForReport(failed[i], sanitize.MaxReportDetail)
 	}
 
 	switch len(failed) {
