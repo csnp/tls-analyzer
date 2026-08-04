@@ -18,11 +18,12 @@ operator this upgrade is safe to take unattended, and it is not.
 
 The release began as a reporting release: the score breakdown now reconciles,
 the CNSA 2.0 verdicts state their differing scope, and batch output is
-deterministic. Three gate runs then found a series of fail-open defects in the
-analysis itself, and those are what set the version. Each round found the next
-one a level below the last fix, and the most serious of them, a chain check that
-stepped aside for the wrong certificate, was found by the third round in code the
-second round had just tightened.
+deterministic. Repeated review rounds then found a series of fail-open defects in
+the analysis itself, and those are what set the version. Each round found the
+next one a level below the last fix, several of them inside the previous round's
+fix, and the most serious, a chain check that stepped aside for the wrong
+certificate, was found in code an earlier round had just tightened and then found
+again after its first repair proved inert on macOS and Windows.
 
 ### Security
 
