@@ -21,7 +21,6 @@ import (
 	"strings"
 	"sync"
 	"time"
-	"unicode/utf8"
 
 	"github.com/csnp/qramm-tls-analyzer/internal/sanitize"
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
@@ -241,9 +240,18 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 	// notice that "Target: example.com" and "valid for cloudflare.com" are not
 	// the same claim.
 	if s.config.SNI != "" && !strings.EqualFold(s.config.SNI, host) {
+		// Both values are untrusted: --sni is typed at the command line and the
+		// target may come from a --targets file someone else wrote. The reporter
+		// sanitises every warning, which is what stops an escape sequence here
+		// rewriting the report; bounding each value as well is what stops a long
+		// one pushing the tool's own words past the report's 500-byte cap, since
+		// this sentence ends with prose rather than beginning with it. A name
+		// this long is not one anybody typed, and the truncation is visible.
 		result.ScanWarnings = append(result.ScanWarnings, fmt.Sprintf(
 			"--sni requested the certificate for %s, so the certificate checks answer for that "+
-				"name and not for the target %s", s.config.SNI, host))
+				"name and not for the target %s",
+			sanitize.ForReport(s.config.SNI, maxWarningValue),
+			sanitize.ForReport(host, maxWarningValue)))
 	}
 
 	if !s.config.CheckVulns {
@@ -748,8 +756,23 @@ func verifyCertificateChain(
 	verifyCertificateChainAt(leaf, intermediates, parsed, roots, time.Now())
 }
 
-// verifyCertificateChainAt is verifyCertificateChain as of a given instant, so
-// the whole verdict for one connection can share one clock.
+// verifyCertificateChainAt is verifyCertificateChain as of a given instant.
+//
+// The instant governs the judgements THIS package makes: which end of its window
+// a certificate is outside, and whether the leaf's own expiry is the thing being
+// reported. It does NOT govern x509.Verify, which is not passed a CurrentTime
+// and so reads the system clock itself. So a leaf that expires in the gap
+// between the captured instant and the Verify call is current by this package's
+// reckoning and expired by the verifier's, and the report then says the leaf is
+// current while blaming the trust store for a certificate it never saw.
+//
+// In production the gap is the microseconds between capturing the instant and
+// the call, so reaching it needs a leaf expiring inside that window. Passing
+// CurrentTime closes it (both verifiers honour it; darwin calls
+// SecTrustSetVerifyDate) but changes what every test driving a synthetic clock
+// measures, so it is deferred to 0.4.1 rather than made late in a release.
+// Stated here rather than left as "one clock for the whole verdict", which is
+// what this comment used to claim and is not true.
 func verifyCertificateChainAt(
 	leaf *x509.Certificate,
 	intermediates []*x509.Certificate,
@@ -917,20 +940,26 @@ func chainCertOutsideValidityReason(cert *x509.Certificate, now time.Time) strin
 // UnknownAuthorityError falls back the same way, to organization and then to the
 // serial number.
 func chainCertName(cert *x509.Certificate) string {
-	name := strings.TrimSpace(cert.Subject.CommonName)
-	if name == "" {
-		name = strings.TrimSpace(cert.Subject.String())
+	// Decide emptiness on the SCRUBBED value, because that is what the reader
+	// sees. Testing the raw value let a common name of 300 control bytes count as
+	// present, so no fallback fired, and scrubbing then emptied it: the reason
+	// rendered as `the chain certificate "" expired on ...`, which is the exact
+	// literal this fallback exists to prevent. A value is present only if it
+	// survives the transformation the report applies to it.
+	// Common name, then organization, then the serial. This is what the comment
+	// above always said x509's own UnknownAuthorityError does, and what the code
+	// did not: the middle step used to be Subject.String(), which is a FORMATTED
+	// string carrying structural punctuation of its own. A subject whose values
+	// all scrub away still renders as "CN=", so the fallback did not fire and the
+	// reason named the certificate "CN=" instead of "". Less obviously broken and
+	// exactly as useless, which is the shape of a fix applied to the symptom.
+	candidates := append([]string{cert.Subject.CommonName}, cert.Subject.Organization...)
+	for _, candidate := range candidates {
+		if scrubbed := sanitize.ForReport(candidate, sanitize.MaxReportDetail); scrubbed != "" {
+			return truncateChainCertName(scrubbed)
+		}
 	}
-	if name == "" {
-		return "serial " + cert.SerialNumber.String()
-	}
-	// Scrub before capping, because the reason renders the name with %q and that
-	// expands one control byte into four printable ones. Capping the raw name at
-	// 120 left a name of 120 control bytes rendering as 473, which pushed the
-	// tool's own words past the report's own 500-byte cap: the very outcome the
-	// cap exists to prevent. Scrubbing first means the capped length is the
-	// rendered length.
-	return truncateChainCertName(sanitize.ForReport(name, sanitize.MaxReportDetail))
+	return "serial " + cert.SerialNumber.String()
 }
 
 // maxChainCertName bounds the server-chosen part of a chain-failure reason.
@@ -942,35 +971,58 @@ func chainCertName(cert *x509.Certificate) string {
 // a trusted root" produced a chain-trust line containing that phrase and neither
 // the word "expired" nor the date.
 //
-// The bound is applied to the SCRUBBED name, so it is the rendered length rather
-// than the raw one. Capping the raw name was not enough: %q expands a control
-// byte to four printable ones, so 120 raw control bytes rendered as 473 and blew
-// the report's own budget anyway.
+// The bound is applied to the name AS %q WILL RENDER IT, not to its byte length.
+// Capping the raw name was not enough: %q expands a control byte to four
+// printable ones, so 120 raw control bytes rendered as 473 and blew the report's
+// own budget. Scrubbing first was not enough either, which is the correction
+// this release makes: scrubbing removes control bytes but leaves the Unicode
+// FORMAT characters alone, and %q escapes those to six characters each, so a
+// scrubbed 120-byte name still rendered to roughly 300 and truncated the hedge
+// off the end of the composed reason. Measuring what %q produces is the only
+// bound that holds for every input.
 const maxChainCertName = 120
 
+// maxWarningValue bounds an untrusted value interpolated into a scan warning.
+//
+// Smaller than the report's field budget because a warning is tool prose with
+// values inside it, and the prose has to survive: the sentence does not end with
+// the value. A DNS name may legally reach 253 bytes, but one longer than this is
+// not a name anyone typed, and the truncation is visible to the reader.
+const maxWarningValue = 120
+
 func truncateChainCertName(name string) string {
-	if len(name) <= maxChainCertName {
+	if quotedWidth(name) <= maxChainCertName {
 		return name
 	}
-	// Cut on a rune boundary; slicing bytes would emit invalid UTF-8.
+	// Cut on a rune boundary; slicing bytes would emit invalid UTF-8. The budget
+	// is spent in RENDERED characters, so a rune that %q will escape costs what
+	// its escape costs rather than what it occupies in memory.
 	var b strings.Builder
 	total := 0
 	for _, r := range name {
-		n := utf8.RuneLen(r)
-		if total+n > maxChainCertName-3 {
+		w := quotedWidth(string(r))
+		if total+w > maxChainCertName-3 {
 			break
 		}
 		b.WriteRune(r)
-		total += n
+		total += w
 	}
 	return b.String() + "..."
 }
 
+// quotedWidth reports how many characters %q renders s as, excluding the
+// surrounding quotes. strconv.Quote escapes each rune independently, so the
+// widths sum and a caller can spend the budget one rune at a time.
+func quotedWidth(s string) int {
+	return len(strconv.Quote(s)) - 2
+}
+
 // parseCertificate extracts relevant info from an x509 certificate, as of now.
 //
-// Production uses parseCertificateAt so that every judgement about one
-// connection shares a single instant; this wrapper keeps the simpler signature
-// for callers that do not care.
+// Production uses parseCertificateAt so that the judgements this package makes
+// about one connection share a single instant; this wrapper keeps the simpler
+// signature for callers that do not care. x509.Verify is the exception and reads
+// its own clock, which verifyCertificateChainAt records.
 func parseCertificate(cert *x509.Certificate) *types.Certificate {
 	return parseCertificateAt(cert, time.Now())
 }

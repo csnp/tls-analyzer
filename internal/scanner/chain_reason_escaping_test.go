@@ -26,12 +26,24 @@ import (
 // it was asserting a false premise about the surrounding code.
 //
 // The reason is built with %q rather than %s, which renders control characters
-// as escaped text. That is load-bearing, not incidental: with %s an ANSI
-// sequence in a CommonName would reach this string unescaped. The rendered
-// report is defended separately, by sanitising every server-chosen field at the
-// text reporter, and by TestAServerCannotForgeTheReportThroughItsCertificate.
-// This test keeps the verb from changing back, so the two defences stay
-// independent rather than one silently carrying both.
+// as escaped text.
+//
+// This comment used to claim the %q and the report sanitiser "stay independent
+// rather than one silently carrying both", and that this test kept the verb from
+// changing back. An adversarial review falsified it by mutating all three %q
+// verbs to %s: the entire suite still passed. The scrubbing in chainCertName
+// removes the control characters before the format verb sees them, so for
+// control characters the sanitiser was silently carrying both, exactly as the
+// comment said it must not.
+//
+// What %q still does on its own is bound the server's text to the quoted span,
+// so a name containing a double quote cannot close it and have the remainder
+// read as this tool's prose. That property needs no control character, so
+// scrubbing does not cover it, and it is asserted by
+// TestTheQuotingInTheChainReasonIsLoadBearing in
+// chain_cert_name_rendering_test.go. That test is what now keeps the verb from
+// changing back. The tests below cover control characters, which both defences
+// handle.
 
 // certificateWithSubject mints a self-signed certificate carrying the given
 // common name, and returns the error rather than failing, so a caller can assert
