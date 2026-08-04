@@ -18,10 +18,60 @@ operator this upgrade is safe to take unattended, and it is not.
 
 The release began as a reporting release: the score breakdown now reconciles,
 the CNSA 2.0 verdicts state their differing scope, and batch output is
-deterministic. Two gate runs then found six fail-open defects in the analysis
-itself, and those are what set the version.
+deterministic. Three gate runs then found a series of fail-open defects in the
+analysis itself, and those are what set the version. Each round found the next
+one a level below the last fix, and the most serious of them, a chain check that
+stepped aside for the wrong certificate, was found by the third round in code the
+second round had just tightened.
+
+A fourth thing changes for anyone using the built-in policies: all five set
+`certificate.minValidityDays`, and a certificate with less remaining than the
+policy asks for now fails that policy rather than passing it with a note.
 
 ### Security
+
+- **An expired intermediate certificate was reported as a healthy chain.** A
+  chain built from a valid trusted root, an expired intermediate and a perfectly
+  current leaf was reported as not evaluated rather than failed, took the
+  certificate dimension's full 25 of 25 as "Certificate is current", graded
+  `A+ 100/100` with zero findings, and satisfied a policy with exit 0. An expired
+  intermediate is the most common real-world chain failure there is, and no field
+  of the report carried it: every other field describes the leaf, and the leaf
+  was healthy. The chain check stepped aside whenever Go reported a validity
+  failure, on the grounds that the certificate's window "is reported on its own",
+  but Go reports that for any certificate in the chain and names the offender
+  separately, while the expiry flags are derived from the leaf alone. The
+  exemption now applies only when the offending certificate is the leaf, and any
+  other certificate in the chain fails the check with a reason naming it and
+  which end of its window failed.
+
+  The second half of the same defect was that a check which did not run was
+  indistinguishable from one that passed. `notPerformed` was neither a violation
+  nor a skipped rule in any consumer, so the one mechanism that fails closed
+  never fired. Both certificate checks now record a skipped rule when they did
+  not run, which marks the verdict incomplete and exits 2, the same path
+  `certificate.requireCt` already took.
+
+- **A policy file holding more than one YAML document silently applied only the
+  first.** A file whose first document was trivially satisfiable and whose second
+  was strict reported the first document's name, `COMPLIANT 100/100` and exit 0,
+  while the second document alone failed the same host with seven violations and
+  exit 2. The rules the author wrote were discarded without a word and the
+  verdict named a policy that was only part of the file. Such a file is refused
+  now, naming how many documents were found. A leading or trailing `---` around a
+  single document is ordinary YAML and still loads.
+
+- **A policy whose rules could only warn could never fail.** The guard that
+  refuses a policy enforcing nothing asks whether a VALUE can constrain, never
+  whether the RULE can produce a violation, and two rules appended only to
+  warnings, which neither the compliance verdict nor the exit code reads. So
+  `quantum.requirePqcCertificates: true` on its own, and
+  `certificate.minValidityDays: 3650` on its own, each reported
+  `COMPLIANT 98/100` with exit 0 forever, in the same report that measured the
+  requirement as unmet. Both rule names state a requirement, so an unmet one is a
+  violation now. This is the floor reading `minVersion` is given above and for
+  the same reason: a user who wanted an advisory can remove the rule, while a
+  user who wanted a requirement previously got silence.
 
 - **A policy file could forge the report it appeared in.** A policy file is
   untrusted input: it arrives from a vendor, a repository or a colleague, and its
@@ -68,6 +118,25 @@ itself, and those are what set the version.
   untrusted input and this tool runs in CI.
 
 ### Fixed
+
+- **A certificate in its final hours raised no expiring-soon finding at all.**
+  The finding was guarded on the remaining-days count being above zero, standing
+  in for "the certificate has not expired". That count truncates hours to whole
+  days, so a certificate with under 24 hours left counts zero and cleared neither
+  that guard nor the expiry finding. The last day of a certificate's life, the
+  window where renewal is most urgent, produced silence. The guard asks whether
+  the certificate has expired now, which is the question it always meant.
+
+- **A comment claimed a guard was safe in a direction where it was not.** The
+  check deciding whether a policy declares any enforceable rule called its own
+  fallback arm unreachable, on the strength of a test that inspects yaml tags but
+  never the field's kind, so a rule field added as a pointer or a map would have
+  reached it with the suite green. The same comment called accepting an unknown
+  kind the safe direction, which is backwards: a policy is accepted as soon as
+  one rule appears to constrain, so accepting admits a policy that may enforce
+  nothing, the exact shape the guard exists to refuse. The arm refuses now, and
+  the test asserts the kind against a separately written list so an unhandled
+  kind fails the suite when it is added.
 
 - **A text report written with `-o <file>` carried ANSI escape codes.** Colour
   was decided from whether stdout was a terminal, even though the report was
