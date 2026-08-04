@@ -34,25 +34,30 @@ second round had just tightened.
   `--skip-quantum`, where that dimension is excluded and the rest rescaled, the
   same chain graded `A+ 100/100`. An expired intermediate is the most common
   real-world chain failure there is, and no field of the report carried it: every
-  other field describes the leaf, and the leaf was healthy. The chain check stepped aside whenever Go reported a validity
-  failure, on the grounds that the certificate's window "is reported on its own",
-  but Go reports that for any certificate in the chain and names the offender
-  separately, while the expiry flags are derived from the leaf alone. The
-  exemption now applies only when the offending certificate is the leaf, and any
-  other certificate in the chain fails the check with a reason naming it and
-  which end of its window failed.
+  other field describes the leaf, and the leaf was healthy.
 
-  The verdict is decided on the leaf's own validity window rather than on which
-  certificate the verifier blamed, because only one of Go's two verifiers
-  answers that question truthfully. Every real scan passes a nil root pool, which
-  on macOS and Windows routes to the platform verifier, and those report the
-  LEAF as the offender whatever actually failed. A first version of this fix
-  compared the blamed certificate against the leaf and was therefore inert on
-  exactly the platforms most operators run, while the whole suite stayed green,
-  because every test passes an explicit pool and that is the only configuration
-  reaching the pure-Go verifier. If a verifier reports a window failure and the
-  leaf is inside its window, the certificate at fault is by definition not the
-  leaf, whichever verifier answered.
+  The chain check stepped aside whenever Go reported a validity failure, on the
+  grounds that the certificate's window "is reported on its own". Go reports that
+  for any certificate in the chain, while the expiry flags are derived from the
+  leaf alone, so for an expired intermediate nothing reported the window
+  anywhere. The check now steps aside only when the LEAF's own window is the one
+  that failed. Any other certificate in the chain fails the check, with a reason
+  naming that certificate and which end of its window failed, because every other
+  field of the report describes the leaf and in this case the leaf is healthy.
+
+  The verdict is decided on the leaf's own window rather than on which
+  certificate the verifier blamed, because only one of Go's two verifiers answers
+  that question truthfully. Every real scan passes a nil root pool, which on
+  macOS and Windows routes to the platform verifier, and those report the leaf as
+  the offender whatever actually failed. A first version of this fix compared the
+  blamed certificate against the leaf and was therefore inert on exactly the
+  platforms most operators run, while the whole suite stayed green, because every
+  test passes an explicit pool and that is the only configuration reaching the
+  pure-Go verifier. If a window failure is reported and the leaf is inside its
+  window, the certificate at fault is by definition not the leaf, whichever
+  verifier answered. Where the verifier does not identify it, the report says the
+  failure is in an intermediate or the root and that this platform cannot say
+  which, rather than naming a certificate the same report shows as current.
 
   The second half of the same defect was that a check which did not run was
   indistinguishable from one that passed. `notPerformed` was neither a violation
