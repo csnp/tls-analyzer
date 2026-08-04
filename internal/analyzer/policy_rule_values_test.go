@@ -48,6 +48,10 @@ func scanForRuleValues() *types.ScanResult {
 			DaysUntilExpiry:    60,
 			NotBefore:          notBefore,
 			NotAfter:           notBefore.AddDate(0, 0, 90),
+			// A real scan always records both checks. Left at the zero value the
+			// verdict is incomplete for a reason these tests are not about.
+			NameMatch:  types.CheckPassed,
+			ChainTrust: types.CheckPassed,
 		},
 		QuantumRisk: types.QuantumRiskAssessment{Assessed: true, Score: 64},
 	}

@@ -1023,6 +1023,20 @@ func (e *PolicyEvaluator) evaluateCipher(result *types.ScanResult, rules *types.
 	}
 }
 
+// chainTrustActual states why the chain was not trusted, for the Actual field of
+// the violation.
+//
+// This read "chain verification failed" regardless of cause, which discarded the
+// one detail an operator needs to act: which certificate is at fault. An expired
+// INTERMEDIATE is not visible in anything else the report prints about the
+// certificate, because every other field describes the leaf.
+func chainTrustActual(cert *types.Certificate) string {
+	if cert.ChainTrustReason == "" {
+		return "chain verification failed"
+	}
+	return cert.ChainTrustReason
+}
+
 func (e *PolicyEvaluator) evaluateCertificate(result *types.ScanResult, rules *types.CertificateRules, pr *types.PolicyResult) {
 	if result.Certificate == nil {
 		pr.Violations = append(pr.Violations, types.PolicyViolation{
@@ -1047,7 +1061,25 @@ func (e *PolicyEvaluator) evaluateCertificate(result *types.ScanResult, rules *t
 	// that printed "NOT VALID FOR THIS NAME" and scored Certificate 0/25. The
 	// individual rules were each satisfied, which is exactly why this has to be
 	// its own check rather than an adjustment to them.
-	if cert.NameMatch == types.CheckFailed {
+	//
+	// Each check has a third state, and that state was the missing half of the
+	// expired-intermediate CRITICAL. CheckNotPerformed was read as neither a
+	// violation nor a skip here and in every other consumer, so "the check did
+	// not run" was indistinguishable from "the check passed" all the way to the
+	// exit code. A check that did not run cannot establish that the certificate
+	// policy is satisfied, so it is recorded as a skipped rule and the verdict is
+	// marked incomplete, the same fail-closed path certificate.requireCt takes.
+	//
+	// Only CheckPassed is written as an accepting arm, and every other value
+	// skips. That is deliberate and the default arm IS reachable: CheckResult is
+	// a string whose zero value is "", not CheckNotPerformed, so a Certificate
+	// built by a consumer of pkg/types that never set these fields arrives here
+	// with "". Listing CheckNotPerformed instead of defaulting would read that ""
+	// as acceptance, which is the same fail-open one level down. Scans made by
+	// this scanner always set both fields, so no real scan reaches the arm by
+	// that route.
+	switch cert.NameMatch {
+	case types.CheckFailed:
 		reason := cert.NameMismatchReason
 		if reason == "" {
 			reason = "the certificate is not valid for the name it was requested under"
@@ -1061,16 +1093,40 @@ func (e *PolicyEvaluator) evaluateCertificate(result *types.ScanResult, rules *t
 			Remediation: "Serve a certificate whose subject alternative names cover " +
 				cert.RequestedName,
 		})
+	case types.CheckPassed:
+	default:
+		reason := cert.NameMismatchReason
+		if reason == "" {
+			reason = "the name check did not run in this scan"
+		}
+		pr.SkippedRules = append(pr.SkippedRules, types.SkippedPolicyRule{
+			Rule: "certificate.nameMatch",
+			Reason: reason + ", so there is no evidence either way that this certificate " +
+				"authenticates the name it was requested under",
+		})
 	}
-	if cert.ChainTrust == types.CheckFailed {
+
+	switch cert.ChainTrust {
+	case types.CheckFailed:
 		pr.Violations = append(pr.Violations, types.PolicyViolation{
 			Rule:        "certificate.chainTrust",
 			Severity:    types.SeverityCritical,
 			Description: "Certificate chain does not build to a trusted root",
 			Expected:    "a chain to a root in the trust store of the host running the scan",
-			Actual:      "chain verification failed",
+			Actual:      chainTrustActual(cert),
 			Remediation: "Serve the full chain, including any intermediate certificates, " +
 				"from a publicly trusted CA",
+		})
+	case types.CheckPassed:
+	default:
+		reason := cert.ChainTrustReason
+		if reason == "" {
+			reason = "the chain check did not run in this scan"
+		}
+		pr.SkippedRules = append(pr.SkippedRules, types.SkippedPolicyRule{
+			Rule: "certificate.chainTrust",
+			Reason: reason + ", so there is no evidence either way that this chain builds " +
+				"to a trusted root",
 		})
 	}
 

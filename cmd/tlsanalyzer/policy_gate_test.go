@@ -196,6 +196,9 @@ func TestSingleTargetPolicyGatePassesACompliantHost(t *testing.T) {
 			Certificate: &types.Certificate{
 				PublicKeyAlgorithm: "ECDSA", PublicKeyBits: 384,
 				SignatureAlgorithm: "ECDSA-SHA384", DaysUntilExpiry: 90,
+				// This host is meant to satisfy the policy outright, and a real
+				// scan of such a host records both certificate checks as passed.
+				NameMatch: types.CheckPassed, ChainTrust: types.CheckPassed,
 			},
 			QuantumRisk: types.QuantumRiskAssessment{Assessed: true, Score: 50},
 		}, nil

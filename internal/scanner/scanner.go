@@ -2,6 +2,7 @@
 package scanner
 
 import (
+	"bytes"
 	"context"
 	"crypto/ecdh"
 	"crypto/ecdsa"
@@ -700,10 +701,22 @@ func verifyCertificateName(leaf *x509.Certificate, parsed *types.Certificate, re
 // store. Tests pass an explicit pool so the suite never depends on the trust
 // store of the machine it runs on.
 //
-// Expiry is deliberately not reported here. An expired certificate fails chain
-// verification too, and reporting that as a second, differently worded trust
-// failure would state one defect twice; expiry has its own finding and its own
-// place in the score.
+// The LEAF's own validity window is deliberately not reported here. An expired
+// leaf fails chain verification too, and reporting that as a second, differently
+// worded trust failure would state one defect twice; the leaf's window has its
+// own finding and its own place in the score.
+//
+// That exemption is about the leaf and only the leaf. Go returns
+// CertificateInvalidError{Reason: Expired} for ANY certificate in the chain and
+// names the offender in invalid.Cert, while Certificate.Expired and
+// Certificate.NotYetValid are derived from the leaf alone. Applying the
+// exemption without checking which certificate it describes swallowed an expired
+// INTERMEDIATE, the most common real-world chain failure there is: a valid root,
+// an expired intermediate and a perfectly current leaf reported the chain as not
+// evaluated, scored the certificate dimension 25 of 25 as "Certificate is
+// current", graded A 91/100 with zero findings, and passed the policy gate with
+// exit 0. Nothing anywhere reported the window the reason string promised was
+// "reported on its own", because for the leaf there was nothing to report.
 func verifyCertificateChain(
 	leaf *x509.Certificate,
 	intermediates []*x509.Certificate,
@@ -727,14 +740,53 @@ func verifyCertificateChain(
 
 	var invalid x509.CertificateInvalidError
 	if errors.As(err, &invalid) && invalid.Reason == x509.Expired {
-		parsed.ChainTrust = types.CheckNotPerformed
-		parsed.ChainTrustReason = "not evaluated because the certificate is outside its validity period, " +
-			"which is reported on its own"
+		// invalid.Cert is the certificate whose window failed. Step aside only
+		// when that is the leaf, whose window is reported on its own. When it is
+		// any other certificate in the chain, nothing else looks at it, so this
+		// is the only place it can be reported and it is a failure.
+		if invalid.Cert != nil && bytes.Equal(invalid.Cert.Raw, leaf.Raw) {
+			parsed.ChainTrust = types.CheckNotPerformed
+			parsed.ChainTrustReason = "not evaluated because the certificate is outside its validity period, " +
+				"which is reported on its own"
+			return
+		}
+
+		parsed.ChainTrust = types.CheckFailed
+		parsed.ChainTrustReason = chainCertOutsideValidityReason(invalid.Cert)
 		return
 	}
 
 	parsed.ChainTrust = types.CheckFailed
 	parsed.ChainTrustReason = err.Error()
+}
+
+// chainCertOutsideValidityReason describes a chain certificate other than the
+// leaf whose validity window has failed.
+//
+// x509 reports Expired for both ends of the window, so the message states which
+// end it is rather than assuming expiry. The subject is named because the
+// operator has to find that certificate to replace it, and it is not the one
+// they were looking at.
+func chainCertOutsideValidityReason(cert *x509.Certificate) string {
+	if cert == nil {
+		return "a certificate in the chain other than the leaf is outside its validity period"
+	}
+
+	now := time.Now()
+	switch {
+	case now.After(cert.NotAfter):
+		return fmt.Sprintf(
+			"the chain certificate %q expired on %s, so the chain does not build to a trusted root",
+			cert.Subject.CommonName, cert.NotAfter.UTC().Format("2006-01-02"))
+	case now.Before(cert.NotBefore):
+		return fmt.Sprintf(
+			"the chain certificate %q is not valid until %s, so the chain does not build to a trusted root",
+			cert.Subject.CommonName, cert.NotBefore.UTC().Format("2006-01-02"))
+	default:
+		return fmt.Sprintf(
+			"the chain certificate %q is outside its validity period, so the chain does not "+
+				"build to a trusted root", cert.Subject.CommonName)
+	}
 }
 
 // parseCertificate extracts relevant info from an x509 certificate.

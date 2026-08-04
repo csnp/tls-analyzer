@@ -34,6 +34,12 @@ func scanWithoutQuantumAssessment() *types.ScanResult {
 			PublicKeyBits:      384,
 			SignatureAlgorithm: "ECDSA-SHA384",
 			DaysUntilExpiry:    90,
+			// A real scan always records both checks, and this fixture stands for
+			// a host where everything except the quantum assessment was measured.
+			// Leaving them at the zero value would make the verdict incomplete for
+			// a reason this test is not about.
+			NameMatch:  types.CheckPassed,
+			ChainTrust: types.CheckPassed,
 		},
 		QuantumRisk: types.QuantumRiskAssessment{},
 	}
