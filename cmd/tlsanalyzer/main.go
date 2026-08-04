@@ -131,11 +131,16 @@ It analyzes:
   • CNSA 2.0 compliance timeline
   • Security vulnerabilities and misconfigurations
 
-Quantum Ready grades:
-  Q+  ready: hybrid or full PQC key exchange in place
-  Q   partial: some post-quantum protection available
-  Q-  limited: minimal post-quantum protection
-  QV  vulnerable: classical key exchange only
+Quantum Ready grades, from the quantum readiness score:
+  Q+ 80-100   Q 50-79   Q- 20-49   QV below 20
+
+  The score weights the key exchange at 80 and the certificate at 20, so a
+  server offering hybrid key exchange with a classical certificate scores 64
+  and grades Q, not Q+. Reaching Q+ takes either a full post-quantum key
+  exchange, or hybrid key exchange plus a post-quantum certificate, and no
+  publicly trusted CA issues one of those yet. Hybrid key exchange is the best
+  posture most operators can reach today, and the report says so beside the
+  grade rather than asking for work that cannot be done.
 
 TLS Security grades:
   A+ 95-100   A 85-94   B 75-84   C 60-74   D 40-59   F below 40
