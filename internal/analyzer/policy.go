@@ -840,12 +840,19 @@ func (e *PolicyEvaluator) GetPolicy(name string) (*types.Policy, bool) {
 	return &p, ok
 }
 
-// ListPolicies returns all available policy names.
+// ListPolicies returns all available policy names, in a stable order.
+//
+// Sorted because the names are printed: by the `policies` command, and by the
+// refusal that names the built-ins after an unknown `extends`. Ranging the map
+// gave a different order on every run, which makes a golden-output test flaky
+// and a CI diff noisy for a value that never changed. knownProtocolVersions
+// sorts for the same reason.
 func (e *PolicyEvaluator) ListPolicies() []string {
 	names := make([]string, 0, len(e.policies))
 	for name := range e.policies {
 		names = append(names, name)
 	}
+	sort.Strings(names)
 	return names
 }
 
