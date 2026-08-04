@@ -8,6 +8,7 @@ import (
 	"testing"
 	"time"
 
+	"github.com/csnp/qramm-tls-analyzer/internal/sanitize"
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
@@ -295,15 +296,69 @@ func TestAServerCannotPushTheVerdictOutOfTheChainReason(t *testing.T) {
 		t.Fatalf("build certificate: %v", err)
 	}
 
-	reason := chainCertOutsideValidityReason(cert, now)
+	// Assert on the RENDERED form, not the raw reason. The tool's words are
+	// appended after the name, so in the raw string they always survive and the
+	// assertion would be vacuous. The layer the cap exists for is the report,
+	// which applies its own budget on top.
+	rendered := sanitize.ForReport(chainCertOutsideValidityReason(cert, now),
+		sanitize.MaxReportDetail)
 
 	for _, want := range []string{"expired on", "does not build to a trusted root"} {
-		if !strings.Contains(reason, want) {
-			t.Errorf("the tool's own words %q were pushed out by a long certificate name, "+
-				"so the server chose what the verdict line says: %q", want, reason)
+		if !strings.Contains(rendered, want) {
+			t.Errorf("the tool's own words %q were pushed out of the rendered line by a long "+
+				"certificate name, so the server chose what the verdict says: %q",
+				want, rendered)
 		}
 	}
-	if strings.Contains(reason, "the chain builds to a trusted root") {
-		t.Errorf("the server's forged phrase survived in full: %q", reason)
+	if strings.Contains(rendered, "the chain builds to a trusted root") {
+		t.Errorf("the server's forged phrase survived in full: %q", rendered)
+	}
+}
+
+// TestAControlHeavyNameCannotPushTheVerdictOutEither is the case the byte cap
+// alone did not hold. The reason renders the name with %q, which expands one
+// control byte into four printable ones, so a name capped at 120 raw bytes could
+// still render as 473 and blow the report's own budget.
+func TestAControlHeavyNameCannotPushTheVerdictOutEither(t *testing.T) {
+	now := time.Now()
+	cert, err := certificateWithSubject(strings.Repeat("\x01", 300),
+		now.AddDate(-2, 0, 0), now.AddDate(0, -1, 0))
+	if err != nil {
+		t.Fatalf("build certificate: %v", err)
+	}
+
+	rendered := sanitize.ForReport(chainCertOutsideValidityReason(cert, now),
+		sanitize.MaxReportDetail)
+
+	for _, want := range []string{"expired on", "does not build to a trusted root"} {
+		if !strings.Contains(rendered, want) {
+			t.Errorf("a control-heavy certificate name pushed %q out of the rendered "+
+				"line: %q", want, rendered)
+		}
+	}
+}
+
+// TestTheWalkFindsANotYetValidChainCertificateToo covers the other end of the
+// window in the presented-chain walk. x509 reports the same reason for both
+// ends, and a walk that only looked for expiry would pass every test above while
+// missing a pre-staged intermediate.
+func TestTheWalkFindsANotYetValidChainCertificateToo(t *testing.T) {
+	now := time.Now()
+	chain := buildThreeLevelChain(t, now.AddDate(0, 1, 0), now.AddDate(5, 0, 0))
+
+	parsed := parseCertificateAt(chain.leaf, now)
+	applyValidityWindowVerdict(chain.leaf, chain.leaf,
+		[]*x509.Certificate{chain.inter}, now, parsed)
+
+	if parsed.ChainTrust != types.CheckFailed {
+		t.Fatalf("chainTrust=%v, want failed", parsed.ChainTrust)
+	}
+	if !strings.Contains(parsed.ChainTrustReason, chain.inter.Subject.CommonName) {
+		t.Errorf("the walk did not find the not-yet-valid intermediate the server "+
+			"presented: %q", parsed.ChainTrustReason)
+	}
+	if !strings.Contains(parsed.ChainTrustReason, "not valid until") {
+		t.Errorf("the reason does not say which end of the window failed: %q",
+			parsed.ChainTrustReason)
 	}
 }

@@ -23,6 +23,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/csnp/qramm-tls-analyzer/internal/sanitize"
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
@@ -619,17 +620,26 @@ func (s *Scanner) probeConnection(ctx context.Context, host string, port int) (
 	var chain []types.Certificate
 
 	if len(state.PeerCertificates) > 0 {
-		cert = parseCertificate(state.PeerCertificates[0])
+		// One instant for every judgement about this connection's certificates.
+		// The expiry flags, the chain verdict and the reason text each used to
+		// read the clock separately, so a certificate crossing a boundary between
+		// two of those reads produced a report whose certificate section and chain
+		// line contradicted each other, in one direction blaming a CA that was
+		// fine.
+		now := time.Now()
+
+		cert = parseCertificateAt(state.PeerCertificates[0], now)
 
 		// The handshake above deliberately skipped verification. Run the two
 		// checks it skipped, separately, so neither answer is inferred from the
 		// other and neither is silently absent.
 		verifyCertificateName(state.PeerCertificates[0], cert, cfg.ServerName)
-		verifyCertificateChain(
-			state.PeerCertificates[0], state.PeerCertificates[1:], cert, s.config.TrustRoots)
+		verifyCertificateChainAt(
+			state.PeerCertificates[0], state.PeerCertificates[1:], cert,
+			s.config.TrustRoots, now)
 
 		for _, c := range state.PeerCertificates[1:] {
-			chain = append(chain, *parseCertificate(c))
+			chain = append(chain, *parseCertificateAt(c, now))
 		}
 	}
 
@@ -735,6 +745,18 @@ func verifyCertificateChain(
 	parsed *types.Certificate,
 	roots *x509.CertPool,
 ) {
+	verifyCertificateChainAt(leaf, intermediates, parsed, roots, time.Now())
+}
+
+// verifyCertificateChainAt is verifyCertificateChain as of a given instant, so
+// the whole verdict for one connection can share one clock.
+func verifyCertificateChainAt(
+	leaf *x509.Certificate,
+	intermediates []*x509.Certificate,
+	parsed *types.Certificate,
+	roots *x509.CertPool,
+	now time.Time,
+) {
 	pool := x509.NewCertPool()
 	for _, c := range intermediates {
 		pool.AddCert(c)
@@ -752,11 +774,7 @@ func verifyCertificateChain(
 
 	var invalid x509.CertificateInvalidError
 	if errors.As(err, &invalid) && invalid.Reason == x509.Expired {
-		// One clock for the whole verdict. parseCertificate, this decision and the
-		// reason string each used to read time.Now() separately, and a leaf
-		// crossing a boundary between two of those reads produced a report whose
-		// certificate section and chain line contradicted each other.
-		applyValidityWindowVerdict(leaf, invalid.Cert, intermediates, time.Now(), parsed)
+		applyValidityWindowVerdict(leaf, invalid.Cert, intermediates, now, parsed)
 		return
 	}
 
@@ -834,7 +852,16 @@ func applyValidityWindowVerdict(
 			continue
 		}
 		if now.After(candidate.NotAfter) || now.Before(candidate.NotBefore) {
-			parsed.ChainTrustReason = chainCertOutsideValidityReason(candidate, now)
+			// Hedged, because the server chose this list and the platform verifier
+			// did not say which certificate it rejected. This one is genuinely
+			// outside its window and genuinely presented, both observed here; that
+			// it is the reason the path failed is a further claim this code cannot
+			// make, and a server can ship an expired extra certificate that is not
+			// on the failing path at all.
+			parsed.ChainTrustReason = chainCertOutsideValidityReason(candidate, now) +
+				". That certificate was presented by this server and is outside its own " +
+				"validity period; this platform's verifier does not say which certificate " +
+				"it rejected, so check the rest of the chain too"
 			return
 		}
 	}
@@ -897,7 +924,13 @@ func chainCertName(cert *x509.Certificate) string {
 	if name == "" {
 		return "serial " + cert.SerialNumber.String()
 	}
-	return truncateChainCertName(name)
+	// Scrub before capping, because the reason renders the name with %q and that
+	// expands one control byte into four printable ones. Capping the raw name at
+	// 120 left a name of 120 control bytes rendering as 473, which pushed the
+	// tool's own words past the report's own 500-byte cap: the very outcome the
+	// cap exists to prevent. Scrubbing first means the capped length is the
+	// rendered length.
+	return truncateChainCertName(sanitize.ForReport(name, sanitize.MaxReportDetail))
 }
 
 // maxChainCertName bounds the server-chosen part of a chain-failure reason.
@@ -907,8 +940,12 @@ func chainCertName(cert *x509.Certificate) string {
 // push the tool's own words off the end. Measured: an intermediate whose common
 // name was 474 bytes ending "and this certificate is valid; the chain builds to
 // a trusted root" produced a chain-trust line containing that phrase and neither
-// the word "expired" nor the date. Capping the name instead of only the sentence
-// means the tool's words always survive, whatever the server calls itself.
+// the word "expired" nor the date.
+//
+// The bound is applied to the SCRUBBED name, so it is the rendered length rather
+// than the raw one. Capping the raw name was not enough: %q expands a control
+// byte to four printable ones, so 120 raw control bytes rendered as 473 and blew
+// the report's own budget anyway.
 const maxChainCertName = 120
 
 func truncateChainCertName(name string) string {
@@ -929,9 +966,17 @@ func truncateChainCertName(name string) string {
 	return b.String() + "..."
 }
 
-// parseCertificate extracts relevant info from an x509 certificate.
+// parseCertificate extracts relevant info from an x509 certificate, as of now.
+//
+// Production uses parseCertificateAt so that every judgement about one
+// connection shares a single instant; this wrapper keeps the simpler signature
+// for callers that do not care.
 func parseCertificate(cert *x509.Certificate) *types.Certificate {
-	now := time.Now()
+	return parseCertificateAt(cert, time.Now())
+}
+
+// parseCertificateAt extracts relevant info as of the given instant.
+func parseCertificateAt(cert *x509.Certificate, now time.Time) *types.Certificate {
 
 	// Calculate fingerprints
 	sha256sum := sha256Fingerprint(cert.Raw)

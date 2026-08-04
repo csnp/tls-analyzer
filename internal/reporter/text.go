@@ -581,14 +581,22 @@ func (r *TextReporter) printVulnerabilities(w io.Writer, vulns []types.Vulnerabi
 			sevColor = colorBlue
 		}
 
+		// The findings block carries the same server-chosen text the certificate
+		// block does: CERT_CHAIN_UNTRUSTED interpolates ChainTrustReason into its
+		// description and CERT_NAME_MISMATCH interpolates NameMismatchReason, and
+		// x509 builds the latter by joining the certificate's DNS names raw. So an
+		// ANSI sequence in a SAN reached this line unescaped and could overprint it
+		// with a passing verdict, surviving --no-color, while the certificate block
+		// three sections above was already defended. Sanitising one block and not
+		// its sibling is not a smaller version of the fix, it is the same hole.
 		fmt.Fprintf(w, "    %s %s\n",
 			r.color(sevColor, fmt.Sprintf("[%-8s]", v.Severity)),
-			r.color(colorBold, v.Name))
-		fmt.Fprintf(w, "              %s\n", v.Description)
+			r.color(colorBold, sanitize.ForReport(v.Name, sanitize.MaxReportDetail)))
+		fmt.Fprintf(w, "              %s\n", sanitize.ForReport(v.Description, sanitize.MaxReportDetail))
 		if v.CVE != "" {
-			fmt.Fprintf(w, "              CVE: %s\n", v.CVE)
+			fmt.Fprintf(w, "              CVE: %s\n", sanitize.ForReport(v.CVE, sanitize.MaxReportDetail))
 		}
-		fmt.Fprintf(w, "              Fix: %s\n\n", v.Remediation)
+		fmt.Fprintf(w, "              Fix: %s\n\n", sanitize.ForReport(v.Remediation, sanitize.MaxReportDetail))
 	}
 }
 

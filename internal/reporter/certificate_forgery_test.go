@@ -153,3 +153,138 @@ func TestThePassedNameIsSanitisedToo(t *testing.T) {
 		t.Error("a raw control character from the requested name reached the rendered report")
 	}
 }
+
+// TestSANsAreQuotedSoOneNameCannotReadAsTwo covers the per-item quoting, which
+// shipped with no test: removing it survived the whole suite.
+//
+// Sanitising collapses control characters to spaces, so an unquoted comma join
+// let a name containing a NUL read as two names, and a name that was entirely
+// control characters became an empty entry between two commas.
+func TestSANsAreQuotedSoOneNameCannotReadAsTwo(t *testing.T) {
+	cert := &types.Certificate{
+		Subject:       "CN=example.com",
+		Issuer:        "CN=Example CA",
+		RequestedName: "example.com",
+		SANs: []string{
+			"real.example.com",
+			"evil.example\x00also.example.com",
+			"a,b.example.com",
+		},
+		NameMatch:  types.CheckPassed,
+		ChainTrust: types.CheckPassed,
+		NotBefore:  time.Unix(0, 0).UTC(),
+		NotAfter:   time.Unix(0, 0).UTC(),
+	}
+
+	out := reportFor(t, cert)
+
+	var sansLine string
+	for _, line := range strings.Split(out, "\n") {
+		if strings.Contains(line, "SANs:") {
+			sansLine = line
+			break
+		}
+	}
+	if sansLine == "" {
+		t.Fatal("no SANs line in the report, so this test measures nothing")
+	}
+
+	// Each name is one quoted token, so the boundaries are unambiguous however
+	// the name itself renders.
+	if strings.Count(sansLine, `"`) != 6 {
+		t.Errorf("SANs are not individually quoted, so a name containing a separator or "+
+			"a control character is indistinguishable from two names: %q", sansLine)
+	}
+	if !strings.Contains(sansLine, `"a,b.example.com"`) {
+		t.Errorf("a name containing a comma is not bounded by its own quotes: %q", sansLine)
+	}
+}
+
+// TestTheFindingsBlockCannotBeForgedEither covers the sibling of the certificate
+// block. CERT_CHAIN_UNTRUSTED interpolates ChainTrustReason into its description
+// and CERT_NAME_MISMATCH interpolates NameMismatchReason, which x509 builds by
+// joining the certificate's DNS names raw. Both then reached the findings line
+// unescaped while the certificate block above was already defended.
+//
+// This shipped once as a fix with no test: removing the sanitise call from the
+// findings block survived the whole suite.
+func TestTheFindingsBlockCannotBeForgedEither(t *testing.T) {
+	var buf bytes.Buffer
+	r := &TextReporter{NoColor: true}
+	result := &types.ScanResult{
+		Target:    "example.com",
+		Host:      "example.com",
+		Port:      443,
+		Timestamp: time.Unix(0, 0).UTC(),
+		Grade:     types.Grade{Letter: "F", Score: 0, QuantumGrade: types.QuantumGradeNotAssessed},
+		Vulnerabilities: []types.Vulnerability{{
+			ID:          "CERT_NAME_MISMATCH",
+			Name:        "Certificate Name Mismatch" + hostileText,
+			Severity:    types.SeverityHigh,
+			Description: "The certificate served for example.com is not valid for that name (" + hostileText + ")",
+			Remediation: "Install a certificate whose names include " + hostileText,
+			CVE:         hostileText,
+		}},
+	}
+	if err := r.Report(&buf, result); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	out := buf.String()
+
+	if !strings.Contains(out, "Innocent CA") {
+		t.Fatalf("the finding text never reached the report, so this test measures "+
+			"nothing:\n%s", out)
+	}
+	for _, bad := range []struct {
+		name string
+		ch   string
+	}{
+		{"ESC", "\x1b"},
+		{"carriage return", "\r"},
+	} {
+		if strings.Contains(out, bad.ch) {
+			t.Errorf("a raw %s reached the findings block, so a server can overprint a "+
+				"finding line with a passing verdict", bad.name)
+		}
+	}
+	for _, line := range strings.Split(out, "\n") {
+		if strings.TrimSpace(line) == "Chain trust: OK   Status: VALID" {
+			t.Errorf("the finding text produced a line that reads as the tool's own "+
+				"verdict: %q", line)
+		}
+	}
+}
+
+// TestAnOrdinaryFindingIsPrintedInFull is the control for the case above.
+func TestAnOrdinaryFindingIsPrintedInFull(t *testing.T) {
+	var buf bytes.Buffer
+	r := &TextReporter{NoColor: true}
+	result := &types.ScanResult{
+		Target:    "example.com",
+		Host:      "example.com",
+		Port:      443,
+		Timestamp: time.Unix(0, 0).UTC(),
+		Grade:     types.Grade{Letter: "F", Score: 0, QuantumGrade: types.QuantumGradeNotAssessed},
+		Vulnerabilities: []types.Vulnerability{{
+			ID:          "CERT_CHAIN_UNTRUSTED",
+			Name:        "Certificate Chain Not Trusted",
+			Severity:    types.SeverityHigh,
+			Description: `The presented chain does not build to a trusted root (the chain certificate "Example Intermediate CA" expired on 2026-07-04).`,
+			Remediation: "Serve the full chain including every intermediate.",
+		}},
+	}
+	if err := r.Report(&buf, result); err != nil {
+		t.Fatalf("report: %v", err)
+	}
+	out := buf.String()
+
+	for _, want := range []string{
+		"Certificate Chain Not Trusted",
+		`the chain certificate "Example Intermediate CA" expired on 2026-07-04`,
+		"Serve the full chain including every intermediate.",
+	} {
+		if !strings.Contains(out, want) {
+			t.Errorf("an ordinary finding lost %q from the report", want)
+		}
+	}
+}

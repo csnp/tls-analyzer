@@ -55,9 +55,13 @@ second round had just tightened.
   test passes an explicit pool and that is the only configuration reaching the
   pure-Go verifier. If a window failure is reported and the leaf is inside its
   window, the certificate at fault is by definition not the leaf, whichever
-  verifier answered. Where the verifier does not identify it, the report says the
-  failure is in an intermediate or the root and that this platform cannot say
-  which, rather than naming a certificate the same report shows as current.
+  verifier answered. Where the verifier does not identify it, the scan looks for
+  itself: the server presented the rest of the chain on the same connection, so a
+  certificate outside its own window is visible from the dates it carries and is
+  named, on every platform. The attribution is hedged, because the server chose
+  that list and can ship an expired certificate that is not on the failing path.
+  Where nothing presented is outside its window, the report says the certificate
+  at fault came from this machine's trust store rather than from the server.
 
   The second half of the same defect was that a check which did not run was
   indistinguishable from one that passed. `notPerformed` was neither a violation
@@ -139,6 +143,15 @@ second round had just tightened.
   untrusted input and this tool runs in CI.
 
 ### Fixed
+
+- **A scanned server could also forge the findings block.** The
+  `CERT_CHAIN_UNTRUSTED` and `CERT_NAME_MISMATCH` descriptions interpolate the
+  chain and name reasons, and x509 builds the name reason by joining the
+  certificate's own DNS names raw, so an ANSI sequence in a subject alternative
+  name reached the finding line unescaped and could overprint it with a passing
+  verdict, surviving `--no-color`. The certificate section three blocks above was
+  defended first; sanitising one block and not its sibling is not a smaller
+  version of that fix, it is the same hole.
 
 - **A scanned server could forge the certificate section of the report.** The
   subject, issuer, SANs and both check reasons are chosen by the server, and the
