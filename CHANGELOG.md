@@ -24,10 +24,6 @@ one a level below the last fix, and the most serious of them, a chain check that
 stepped aside for the wrong certificate, was found by the third round in code the
 second round had just tightened.
 
-A fourth thing changes for anyone using the built-in policies: all five set
-`certificate.minValidityDays`, and a certificate with less remaining than the
-policy asks for now fails that policy rather than passing it with a note.
-
 ### Security
 
 - **An expired intermediate certificate was reported as a healthy chain.** A
@@ -61,17 +57,24 @@ policy asks for now fails that policy rather than passing it with a note.
   now, naming how many documents were found. A leading or trailing `---` around a
   single document is ordinary YAML and still loads.
 
-- **A policy whose rules could only warn could never fail.** The guard that
+- **A policy whose rules could only warn was accepted as a gate.** The guard that
   refuses a policy enforcing nothing asks whether a VALUE can constrain, never
-  whether the RULE can produce a violation, and two rules appended only to
-  warnings, which neither the compliance verdict nor the exit code reads. So
+  whether the RULE can produce a violation. Two rules report only into warnings,
+  which neither the compliance verdict nor the exit code reads, so
   `quantum.requirePqcCertificates: true` on its own, and
-  `certificate.minValidityDays: 3650` on its own, each reported
+  `certificate.minValidityDays: 3650` on its own, each loaded and then reported
   `COMPLIANT 98/100` with exit 0 forever, in the same report that measured the
-  requirement as unmet. Both rule names state a requirement, so an unmet one is a
-  violation now. This is the floor reading `minVersion` is given above and for
-  the same reason: a user who wanted an advisory can remove the rule, while a
-  user who wanted a requirement previously got silence.
+  requirement as unmet.
+
+  Both rules warn deliberately and `docs/policies.md` gives the reason for each:
+  a certificate inside its renewal window is not misconfigured, and no publicly
+  trusted CA issues a post-quantum certificate today, so failing a build on
+  either would fail correctly configured hosts for a condition the operator
+  cannot remedy. They still warn. What changed is that neither one can any longer
+  be the rule that makes a policy look enforceable, so a policy built only from
+  them is refused when it loads, naming the rule at fault rather than reporting
+  that the policy "defines no rules", which would be false. A policy that also
+  contains an enforceable rule is unaffected, and the warnings still appear.
 
 - **A policy file could forge the report it appeared in.** A policy file is
   untrusted input: it arrives from a vendor, a repository or a colleague, and its

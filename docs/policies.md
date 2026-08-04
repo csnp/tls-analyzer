@@ -182,7 +182,8 @@ rules:
     # Minimum days until expiry. This one is a warning threshold: a certificate
     # below it is reported as expiring soon but does NOT fail the policy, so do
     # not use it as a CI gate on renewal. An already expired certificate is a
-    # violation.
+    # violation. Because it cannot fail a policy, it cannot be the only rule a
+    # policy defines; see "Rules that only warn" below.
     minValidityDays: 30
 
     # Maximum certificate lifetime in days
@@ -224,7 +225,9 @@ rules:
     requireHybridKeyExchange: true
 
     # Require a post-quantum certificate signature. No publicly trusted CA
-    # issues one yet, so this raises a warning rather than a violation.
+    # issues one yet, so this raises a warning rather than a violation. Because
+    # it cannot fail a policy, it cannot be the only rule a policy defines; see
+    # "Rules that only warn" below.
     requirePqcCertificates: false
 
     # Minimum quantum readiness score (0-100)
@@ -399,6 +402,32 @@ tlsanalyzer policies
 
 `--policy` and `--policy-file` both name a policy, so passing both is an error
 rather than one silently winning.
+
+A file holding more than one YAML document is also refused. Only the first
+document would be applied, so the rules in the rest would be discarded without a
+word while the verdict named a policy that was only part of the file. Put each
+policy in its own file. A leading or trailing `---` around a single document is
+ordinary YAML and is accepted.
+
+### Rules that only warn
+
+Two rules report a warning and can never produce a violation:
+
+| Rule | Why it only warns |
+|---|---|
+| `certificate.minValidityDays` | A certificate inside its renewal window is not misconfigured. Failing on it would fail every host running a 90-day certificate through the last month of its life. |
+| `quantum.requirePqcCertificates` | No publicly trusted CA issues an ML-DSA or SLH-DSA certificate today, so no operator can remedy it. |
+
+Both still appear in the report, and both still lower the policy score. Neither
+changes the compliance verdict or the exit code.
+
+Because neither can fail a policy, neither can be the only rule a policy
+defines. A file whose rules are all drawn from that table is refused when it
+loads, naming the rule at fault: such a policy would report `COMPLIANT` with
+exit 0 against every host forever, including hosts the same scan had already
+measured as not meeting it. Add at least one rule that can produce a violation,
+or use `extends`. A policy that mixes these rules with enforceable ones is
+unaffected.
 
 ## Best Practices
 

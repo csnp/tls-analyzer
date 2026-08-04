@@ -19,6 +19,15 @@ import (
 // writePolicyFile lives in policy_rule_values_test.go and writes into the test's
 // own t.TempDir, so no test here can observe a file another test wrote.
 
+func findWarning(pr *types.PolicyResult, rule string) *types.PolicyViolation {
+	for i := range pr.Warnings {
+		if pr.Warnings[i].Rule == rule {
+			return &pr.Warnings[i]
+		}
+	}
+	return nil
+}
+
 const trivialDocument = `name: Part One
 version: "1.0"
 description: trivially satisfiable
@@ -133,13 +142,20 @@ func TestSeparatorsAroundASingleDocumentAreNotExtraDocuments(t *testing.T) {
 	}
 }
 
-// TestAWarningOnlyRuleCanFailAPolicy is the reproduction of the second HIGH.
+// TestAPolicyOfOnlyWarningRulesIsRefused is the reproduction of the second HIGH.
 //
-// certificate.minValidityDays and quantum.requirePqcCertificates appended to
+// certificate.minValidityDays and quantum.requirePqcCertificates report into
 // Warnings, which neither the compliance verdict nor the exit code reads, so
 // either rule on its own reported COMPLIANT 98/100 with exit 0 forever while the
-// scan had measured the requirement as unmet.
-func TestAWarningOnlyRuleCanFailAPolicy(t *testing.T) {
+// same scan measured the requirement as unmet.
+//
+// Both rules warn by design and docs/policies.md states why for each: a
+// certificate inside its renewal window is not misconfigured, and no publicly
+// trusted CA issues a post-quantum certificate today. So the defect is not that
+// they warn, it is that the guard refusing unenforceable policies asked whether
+// a VALUE could constrain rather than whether the RULE could produce a
+// violation, and so let a policy made only of these load as a gate.
+func TestAPolicyOfOnlyWarningRulesIsRefused(t *testing.T) {
 	for _, tc := range []struct {
 		name string
 		body string
@@ -165,96 +181,83 @@ rules:
     requirePqcCertificates: true
 `,
 		},
+		{
+			name: "both together",
+			rule: "certificate.minValidityDays",
+			body: `name: both warning rules
+version: "1.0"
+rules:
+  certificate:
+    minValidityDays: 3650
+  quantum:
+    requirePqcCertificates: true
+`,
+		},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			path := writePolicyFile(t, tc.body)
 
 			e := NewPolicyEvaluator()
-			policy, err := e.LoadPolicy(path)
-			if err != nil {
-				t.Fatalf("load policy: %v", err)
+			_, err := e.LoadPolicy(path)
+			if err == nil {
+				t.Fatalf("a policy whose only rule is %s loaded, and it can never fail, so "+
+					"it reports compliant with exit 0 against every host forever", tc.rule)
 			}
 
-			// A host that meets nothing the rule asks for: a classical certificate
-			// with 63 days left, which is what cloudflare.com measured at.
-			result := scanWithChainCheckResult(types.CheckPassed, types.CheckPassed)
-			result.Certificate.DaysUntilExpiry = 63
-			result.Certificate.QuantumSafe = false
-
-			pr := e.Evaluate(result, policy)
-
-			if findViolation(pr, tc.rule) == nil {
-				t.Errorf("%s raised no violation against a scan that measured the requirement "+
-					"as unmet; warnings=%v", tc.rule, pr.Warnings)
+			// The refusal must describe THIS problem. "Defines no rules" is false
+			// here: the policy does define one, it just cannot fail.
+			if !strings.Contains(err.Error(), tc.rule) {
+				t.Errorf("the refusal %q does not name the rule at fault (%s)",
+					err.Error(), tc.rule)
 			}
-			if pr.Compliant {
-				t.Errorf("a policy whose only rule is %s reported COMPLIANT %d/100 against a "+
-					"scan that measured the requirement as unmet, so the rule can never fail",
-					tc.rule, pr.Score)
+			if strings.Contains(err.Error(), "defines no rules") {
+				t.Errorf("the refusal says the policy defines no rules, which is false: it "+
+					"defines %s. %q", tc.rule, err.Error())
 			}
 		})
 	}
 }
 
-// TestAMetRequirementIsStillCompliant is the control for the promotion. Raising
-// the violation unconditionally would satisfy the test above and fail every
-// host, including those that satisfy the rule.
-func TestAMetRequirementIsStillCompliant(t *testing.T) {
-	for _, tc := range []struct {
-		name        string
-		body        string
-		rule        string
-		days        int
-		quantumSafe bool
-	}{
-		{
-			name: "validity above the minimum",
-			rule: "certificate.minValidityDays",
-			body: `name: thirty day minimum
+// TestAWarningOnlyRuleStillWarnsAlongsideARealRule is the control that keeps the
+// documented behaviour. The rules are supposed to warn; only a policy made
+// ENTIRELY of them is refused. Treating them as violations would fail every host
+// running a 90-day certificate through the last month of its life, and every
+// host on the internet for the PQC rule, which is why they warn.
+func TestAWarningOnlyRuleStillWarnsAlongsideARealRule(t *testing.T) {
+	path := writePolicyFile(t, `name: mixed
 version: "1.0"
 rules:
   certificate:
-    minValidityDays: 30
-`,
-			days:        90,
-			quantumSafe: false,
-		},
-		{
-			name: "a post-quantum certificate",
-			rule: "quantum.requirePqcCertificates",
-			body: `name: pqc certificates
-version: "1.0"
-rules:
+    minEccKeySize: 256
+    minValidityDays: 3650
   quantum:
     requirePqcCertificates: true
-`,
-			days:        90,
-			quantumSafe: true,
-		},
-	} {
-		t.Run(tc.name, func(t *testing.T) {
-			path := writePolicyFile(t, tc.body)
+`)
 
-			e := NewPolicyEvaluator()
-			policy, err := e.LoadPolicy(path)
-			if err != nil {
-				t.Fatalf("load policy: %v", err)
-			}
+	e := NewPolicyEvaluator()
+	policy, err := e.LoadPolicy(path)
+	if err != nil {
+		t.Fatalf("a policy with one enforceable rule was refused: %v", err)
+	}
 
-			result := scanWithChainCheckResult(types.CheckPassed, types.CheckPassed)
-			result.Certificate.DaysUntilExpiry = tc.days
-			result.Certificate.QuantumSafe = tc.quantumSafe
+	result := scanWithChainCheckResult(types.CheckPassed, types.CheckPassed)
+	result.Certificate.DaysUntilExpiry = 63
+	result.Certificate.QuantumSafe = false
 
-			pr := e.Evaluate(result, policy)
+	pr := e.Evaluate(result, policy)
 
-			if v := findViolation(pr, tc.rule); v != nil {
-				t.Errorf("%s raised a violation against a scan that satisfies it: "+
-					"Expected %q, Actual %q", tc.rule, v.Expected, v.Actual)
-			}
-			if !pr.Compliant {
-				t.Errorf("a host satisfying the only rule in the policy was reported "+
-					"non-compliant; violations=%v", pr.Violations)
-			}
-		})
+	for _, rule := range []string{"certificate.minValidityDays", "quantum.requirePqcCertificates"} {
+		if findWarning(pr, rule) == nil {
+			t.Errorf("%s raised no warning against a scan that measured it as unmet; "+
+				"warnings=%v", rule, pr.Warnings)
+		}
+		if findViolation(pr, rule) != nil {
+			t.Errorf("%s was raised as a violation. It warns by design; see docs/policies.md",
+				rule)
+		}
+	}
+	if !pr.Compliant {
+		t.Errorf("warnings made the verdict non-compliant, which would fail a build on a "+
+			"certificate inside its renewal window; violations=%v", pr.Violations)
 	}
 }

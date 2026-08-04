@@ -144,6 +144,22 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 // Both shapes produced COMPLIANT 100/100 with exit 0 from a policy that
 // constrains nothing. Reading the value the evaluator will actually use removes
 // the disagreement rather than trying to keep two readers in step.
+// warningOnlyRuleKeys names the rules that report into Warnings and can never
+// produce a violation, so they can never fail a policy.
+//
+// Both are deliberate, and docs/policies.md states why for each: a certificate
+// inside its renewal window is not misconfigured, and no publicly trusted CA
+// issues a post-quantum certificate today. Warning is the right report for both.
+// What was wrong was letting either one, alone, make a policy look enforceable.
+//
+// TestEveryWarningOnlyRuleIsListed keeps this in step with the evaluator by
+// walking the evaluator for rules that reach Warnings, so a rule that moves
+// between Warnings and Violations cannot leave this list stale.
+var warningOnlyRuleKeys = map[string]bool{
+	"certificate.minValidityDays":    true,
+	"quantum.requirePqcCertificates": true,
+}
+
 func declaresARule(data []byte, rules types.PolicyRules) bool {
 	var doc struct {
 		Rules map[string]map[string]yaml.Node `yaml:"rules"`
@@ -161,6 +177,16 @@ func declaresARule(data []byte, rules types.PolicyRules) bool {
 			// A label enforces nothing on its own, so a policy consisting only of
 			// one is as empty as a policy with no rules at all.
 			if key == "cnsa2TargetYear" {
+				continue
+			}
+			// Nor does a rule that can only ever warn. This guard asked whether a
+			// VALUE could constrain and never whether the RULE could produce a
+			// violation, so `minValidityDays: 3650` alone, and
+			// `requirePqcCertificates: true` alone, each loaded and then reported
+			// COMPLIANT 98/100 with exit 0 forever, in the same report that
+			// measured the requirement as unmet. Neither rule can fail a policy by
+			// design, so neither can be the thing that makes one enforceable.
+			if warningOnlyRuleKeys[sectionKey+"."+key] {
 				continue
 			}
 			if node.Tag == "!!null" {
@@ -692,6 +718,20 @@ func validateProtocolVersionValues(rules *types.ProtocolRules) error {
 	return nil
 }
 
+// writtenWarningOnlyRules names the warning-only rules this policy actually set,
+// so the refusal can quote them back to the author.
+func writtenWarningOnlyRules(policy *types.Policy) []string {
+	var written []string
+	if policy.Rules.Certificate.MinValidityDays > 0 {
+		written = append(written, "certificate.minValidityDays")
+	}
+	if policy.Rules.Quantum.RequirePQCCertificates {
+		written = append(written, "quantum.requirePqcCertificates")
+	}
+	sort.Strings(written)
+	return written
+}
+
 // validatePolicy refuses a policy that cannot produce a meaningful verdict.
 func validatePolicy(policy *types.Policy, path string, declaresRule bool) error {
 	if strings.TrimSpace(policy.Name) == "" {
@@ -701,6 +741,17 @@ func validatePolicy(policy *types.Policy, path string, declaresRule bool) error 
 	}
 
 	if !declaresRule {
+		// Say which of the two cases this is. "Defines no rules" is false for a
+		// policy that writes rules which happen to be warning-only, and a message
+		// that describes the wrong problem sends the author looking in the wrong
+		// place.
+		if written := writtenWarningOnlyRules(policy); len(written) > 0 {
+			return fmt.Errorf("policy %q in %s defines only rules that report a warning and "+
+				"can never fail a policy (%s), so nothing can fail it and a compliant verdict "+
+				"from it would mean nothing. Add at least one rule that can produce a "+
+				"violation, or use 'extends' to inherit one of the built-in policies",
+				policy.Name, path, strings.Join(written, ", "))
+		}
 		return fmt.Errorf("policy %q in %s defines no rules, so nothing can fail it and a "+
 			"compliant verdict from it would mean nothing. Add at least one rule, or use "+
 			"'extends' to inherit one of the built-in policies", policy.Name, path)
@@ -1222,23 +1273,19 @@ func (e *PolicyEvaluator) evaluateCertificate(result *types.ScanResult, rules *t
 			Remediation: remediation,
 		})
 	} else if rules.MinValidityDays > 0 && cert.DaysUntilExpiry < rules.MinValidityDays {
-		// A stated minimum the scan measured as unmet is a violation.
-		//
-		// This appended to Warnings, which no exit code and no compliance verdict
-		// reads, so the rule could never fail: `minValidityDays: 3650` alone
-		// reported COMPLIANT 98/100 with exit 0 forever, against a certificate the
-		// same scan measured at 63 days. The rule's name states a minimum, which is
-		// the same floor reading minVersion is given above and for the same reason:
-		// a user who wanted an advisory can remove the rule, while a user who
-		// wanted a requirement previously got silence.
-		pr.Violations = append(pr.Violations, types.PolicyViolation{
+		// Deliberately a warning, not a violation. docs/policies.md states the
+		// reason: a certificate inside its renewal window is not misconfigured,
+		// and failing a build on it would fail every host running a 90-day
+		// certificate for the last month of its life. See warningOnlyRuleKeys,
+		// which stops a policy made only of rules like this from loading as
+		// though it could gate anything.
+		pr.Warnings = append(pr.Warnings, types.PolicyViolation{
 			Rule:        "certificate.minValidityDays",
 			Severity:    types.SeverityMedium,
-			Description: "Certificate validity remaining is below the policy minimum",
+			Description: "Certificate expiring soon",
 			Expected:    fmt.Sprintf(">= %d days until expiry", rules.MinValidityDays),
 			Actual:      fmt.Sprintf("%d days until expiry", cert.DaysUntilExpiry),
-			Remediation: "Renew the certificate, or lower certificate.minValidityDays if a " +
-				"shorter remaining lifetime is acceptable",
+			Remediation: "Plan certificate renewal",
 		})
 	}
 
@@ -1442,25 +1489,21 @@ func (e *PolicyEvaluator) evaluateQuantum(result *types.ScanResult, rules *types
 
 	// Check PQC certificate requirement.
 	//
-	// This appended to Warnings, which no exit code and no compliance verdict
-	// reads, so `requirePqcCertificates: true` alone reported COMPLIANT 98/100
-	// with exit 0 forever, against a certificate the same scan measured as
-	// classical. The rule says "require", so an unmet requirement is a violation,
-	// the same floor reading minVersion and minValidityDays are given.
-	//
-	// That no public CA issues ML-DSA certificates today is a fact about the
-	// world, not a reason for the tool to report the requirement as satisfied. A
-	// policy that states it and means "not yet" should not state it.
+	// Deliberately a warning, not a violation. docs/policies.md states the
+	// reason: no publicly trusted CA issues an ML-DSA or SLH-DSA certificate
+	// today, so failing on it would fail every host on the internet for a
+	// condition no operator can remedy. See warningOnlyRuleKeys, which stops a
+	// policy made only of rules like this from loading as though it could gate
+	// anything.
 	if rules.RequirePQCCertificates {
 		if result.Certificate == nil || !result.Certificate.QuantumSafe {
-			pr.Violations = append(pr.Violations, types.PolicyViolation{
+			pr.Warnings = append(pr.Warnings, types.PolicyViolation{
 				Rule:        "quantum.requirePqcCertificates",
 				Severity:    types.SeverityMedium,
-				Description: "Post-quantum certificate required, and this certificate is classical",
+				Description: "PQC certificate required (future requirement)",
 				Expected:    "ML-DSA or SLH-DSA certificate",
 				Actual:      "Classical certificate",
-				Remediation: "Deploy a post-quantum certificate once a CA you trust issues one, " +
-					"or remove quantum.requirePqcCertificates until that is possible",
+				Remediation: "Plan migration to PQC certificates when available from CAs",
 			})
 		}
 	}
