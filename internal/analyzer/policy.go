@@ -276,7 +276,64 @@ func (e *PolicyEvaluator) decodePolicy(data []byte, onto types.Policy) (types.Po
 			schemaPathsInErrors.Replace(err.Error()))
 	}
 
+	// Everything after the first `---` was read by nobody.
+	//
+	// A file whose first document was trivially satisfiable and whose second was
+	// strict reported the first document's name, COMPLIANT, 100/100 and exit 0,
+	// while the second document alone failed the same host with 7 violations and
+	// exit 2. The rules the author wrote were discarded in silence, and the
+	// verdict named a policy that was only part of the file.
+	//
+	// Refusing is the only safe direction, per this loader's own rule that a gate
+	// passing on an input it did not understand is the worst available to it.
+	// Guessing which document was meant, or merging them, would both be a verdict
+	// about a policy nobody wrote.
+	if extra := countRemainingDocuments(dec); extra > 0 {
+		return onto, fmt.Errorf(
+			"the policy file contains %d YAML documents separated by '---', and only the "+
+				"first would be applied, so the rules in %s would be discarded in silence. "+
+				"Put each policy in its own file and apply one with --policy-file",
+			extra+1, otherDocuments(extra))
+	}
+
 	return onto, nil
+}
+
+// countRemainingDocuments counts what is left in the stream after the document
+// already decoded.
+//
+// A document that does not parse still counts: it is a document the author
+// wrote, and refusing the file names a real problem either way.
+//
+// Emptiness is judged on the decoded VALUE, not on the node. A trailing `---`
+// with nothing after it still yields a DocumentNode with one child, so
+// yaml.Node reports Kind 1 and one content item exactly as a real document
+// does, and a check on Kind never fires. Decoding into an interface gives nil
+// for a document that carries nothing, which is the question actually being
+// asked: did the author write a policy there that is being discarded.
+func countRemainingDocuments(dec *yaml.Decoder) int {
+	count := 0
+	for {
+		var doc any
+		err := dec.Decode(&doc)
+		if errors.Is(err, io.EOF) {
+			return count
+		}
+		// A separator with nothing after it declares no rules, so it is not a
+		// discarded policy and refusing the file over it would be a false alarm.
+		if err == nil && doc == nil {
+			continue
+		}
+		count++
+	}
+}
+
+// otherDocuments names the documents after the first, for the refusal message.
+func otherDocuments(n int) string {
+	if n == 1 {
+		return "the other one"
+	}
+	return fmt.Sprintf("the other %d", n)
 }
 
 // schemaPathsInErrors rewrites the Go type names the YAML decoder reports into
@@ -1154,13 +1211,23 @@ func (e *PolicyEvaluator) evaluateCertificate(result *types.ScanResult, rules *t
 			Remediation: remediation,
 		})
 	} else if rules.MinValidityDays > 0 && cert.DaysUntilExpiry < rules.MinValidityDays {
-		pr.Warnings = append(pr.Warnings, types.PolicyViolation{
+		// A stated minimum the scan measured as unmet is a violation.
+		//
+		// This appended to Warnings, which no exit code and no compliance verdict
+		// reads, so the rule could never fail: `minValidityDays: 3650` alone
+		// reported COMPLIANT 98/100 with exit 0 forever, against a certificate the
+		// same scan measured at 63 days. The rule's name states a minimum, which is
+		// the same floor reading minVersion is given above and for the same reason:
+		// a user who wanted an advisory can remove the rule, while a user who
+		// wanted a requirement previously got silence.
+		pr.Violations = append(pr.Violations, types.PolicyViolation{
 			Rule:        "certificate.minValidityDays",
 			Severity:    types.SeverityMedium,
-			Description: "Certificate expiring soon",
+			Description: "Certificate validity remaining is below the policy minimum",
 			Expected:    fmt.Sprintf(">= %d days until expiry", rules.MinValidityDays),
 			Actual:      fmt.Sprintf("%d days until expiry", cert.DaysUntilExpiry),
-			Remediation: "Plan certificate renewal",
+			Remediation: "Renew the certificate, or lower certificate.minValidityDays if a " +
+				"shorter remaining lifetime is acceptable",
 		})
 	}
 
@@ -1362,16 +1429,27 @@ func (e *PolicyEvaluator) evaluateQuantum(result *types.ScanResult, rules *types
 		}
 	}
 
-	// Check PQC certificate requirement
+	// Check PQC certificate requirement.
+	//
+	// This appended to Warnings, which no exit code and no compliance verdict
+	// reads, so `requirePqcCertificates: true` alone reported COMPLIANT 98/100
+	// with exit 0 forever, against a certificate the same scan measured as
+	// classical. The rule says "require", so an unmet requirement is a violation,
+	// the same floor reading minVersion and minValidityDays are given.
+	//
+	// That no public CA issues ML-DSA certificates today is a fact about the
+	// world, not a reason for the tool to report the requirement as satisfied. A
+	// policy that states it and means "not yet" should not state it.
 	if rules.RequirePQCCertificates {
 		if result.Certificate == nil || !result.Certificate.QuantumSafe {
-			pr.Warnings = append(pr.Warnings, types.PolicyViolation{
+			pr.Violations = append(pr.Violations, types.PolicyViolation{
 				Rule:        "quantum.requirePqcCertificates",
 				Severity:    types.SeverityMedium,
-				Description: "PQC certificate required (future requirement)",
+				Description: "Post-quantum certificate required, and this certificate is classical",
 				Expected:    "ML-DSA or SLH-DSA certificate",
 				Actual:      "Classical certificate",
-				Remediation: "Plan migration to PQC certificates when available from CAs",
+				Remediation: "Deploy a post-quantum certificate once a CA you trust issues one, " +
+					"or remove quantum.requirePqcCertificates until that is possible",
 			})
 		}
 	}
