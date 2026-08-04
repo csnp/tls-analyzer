@@ -24,8 +24,8 @@ func TestEveryControlCharacterIsCollapsed(t *testing.T) {
 		{"DEL", "a\x7fb"},
 		{"vertical tab", "a\vb"},
 		{"form feed", "a\fb"},
-		{"C1 CSI", "ab"},
-		{"C1 NEL", "ab"},
+		{"C1 CSI", "a\u009bb"},
+		{"C1 NEL", "a\u0085b"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			out := ForReport(tc.in, 100)
