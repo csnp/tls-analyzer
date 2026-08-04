@@ -122,6 +122,15 @@ second round had just tightened.
 
 ### Fixed
 
+- **The scan coverage notes did not say that revocation is never checked.** That
+  section exists to enumerate what the scan does not cover, and it already
+  disclosed the protocol probe range, the cipher enumeration limit, whose
+  preference the negotiated suite reflects, and the trust store the chain is
+  verified against. Leaving revocation out invited a reader to treat the list as
+  complete, and revocation is the check most likely to be assumed once a chain
+  is reported as trusted. Nothing in the report ever claimed a certificate was
+  unrevoked; it now says so out loud, and names a way to check.
+
 - **A certificate in its final hours raised no expiring-soon finding at all.**
   The finding was guarded on the remaining-days count being above zero, standing
   in for "the certificate has not expired". That count truncates hours to whole

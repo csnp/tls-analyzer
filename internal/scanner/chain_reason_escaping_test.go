@@ -1,0 +1,124 @@
+package scanner
+
+import (
+	"crypto/x509"
+	"crypto/x509/pkix"
+	"math/big"
+	"strings"
+	"testing"
+	"time"
+)
+
+// A server chooses every subject in the chain it presents, and the chain-failure
+// reason is rendered straight into a human-readable report: certCheckLine prints
+// it with no sanitising step of its own.
+//
+// Reporting an expired chain certificate means naming it, which puts
+// attacker-controlled text on that path for the first time. Before this, the
+// expired case produced a fixed string, and the other failures carried
+// err.Error(), which for an untrusted root is "x509: certificate signed by
+// unknown authority" and holds no subject at all.
+//
+// The reason is built with %q rather than %s, which renders control characters
+// as escaped text. That is load-bearing, not incidental: with %s an ANSI
+// sequence in a CommonName would reach the terminal and could overprint the
+// verdict line above it, which is the same class as the policy-name defect this
+// release already fixed. This test exists so the verb cannot be changed back.
+
+// certificateWithSubject mints a self-signed certificate carrying the given
+// common name, and returns the error rather than failing, so a caller can assert
+// on it.
+func certificateWithSubject(cn string, notBefore, notAfter time.Time) (*x509.Certificate, error) {
+	cert, _, err := signedCert(&x509.Certificate{
+		SerialNumber:          big.NewInt(1),
+		Subject:               pkix.Name{CommonName: cn},
+		NotBefore:             notBefore,
+		NotAfter:              notAfter,
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}, nil, nil)
+	return cert, err
+}
+
+// TestAChainReasonNeverCarriesRawControlCharacters is the reproduction guard.
+func TestAChainReasonNeverCarriesRawControlCharacters(t *testing.T) {
+	now := time.Now()
+
+	// An ANSI sequence that clears the line and rewrites it, plus a newline, is
+	// what an attacker would use to overprint the verdict.
+	hostile := "Innocent CA\x1b[2K\r\x1b[32m  Chain trust: OK\x1b[0m\nStatus: VALID"
+
+	for _, tc := range []struct {
+		name                string
+		notBefore, notAfter time.Time
+	}{
+		{"expired", now.AddDate(-2, 0, 0), now.AddDate(0, -1, 0)},
+		{"not yet valid", now.AddDate(0, 1, 0), now.AddDate(5, 0, 0)},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			cert, err := certificateWithSubject(hostile, tc.notBefore, tc.notAfter)
+			if err != nil {
+				t.Fatalf("build certificate: %v", err)
+			}
+
+			reason := chainCertOutsideValidityReason(cert)
+
+			// Guard the fixture: if the subject did not survive into the reason at
+			// all, this test would pass without exercising anything.
+			if !strings.Contains(reason, "Innocent CA") {
+				t.Fatalf("the reason does not name the certificate, so this test is not "+
+					"measuring what it says: %q", reason)
+			}
+
+			for _, bad := range []struct {
+				name string
+				ch   string
+			}{
+				{"ESC", "\x1b"},
+				{"newline", "\n"},
+				{"carriage return", "\r"},
+			} {
+				if strings.Contains(reason, bad.ch) {
+					t.Errorf("a raw %s from the certificate subject reached the chain reason, "+
+						"which is printed into the report with no escaping of its own, so a "+
+						"server can overprint the verdict line: %q", bad.name, reason)
+				}
+			}
+		})
+	}
+}
+
+// TestAChainReasonStillNamesAnOrdinarySubject is the control. Stripping the
+// subject entirely, or rendering it unrecognisably, would satisfy the test above
+// while removing the one detail an operator needs to find the certificate.
+func TestAChainReasonStillNamesAnOrdinarySubject(t *testing.T) {
+	now := time.Now()
+	cert, err := certificateWithSubject("Example Intermediate CA", now.AddDate(-2, 0, 0),
+		now.AddDate(0, -1, 0))
+	if err != nil {
+		t.Fatalf("build certificate: %v", err)
+	}
+
+	reason := chainCertOutsideValidityReason(cert)
+	if !strings.Contains(reason, "Example Intermediate CA") {
+		t.Errorf("an ordinary subject is not named in the reason, so the report does not "+
+			"say which certificate to replace: %q", reason)
+	}
+	if !strings.Contains(reason, "expired on") {
+		t.Errorf("the reason does not say which end of the window failed: %q", reason)
+	}
+}
+
+// TestAMissingOffendingCertificateStillProducesAReason covers the nil path. Go
+// populates invalid.Cert today, but a reason that read "<nil>" or panicked would
+// be a worse failure than the one being reported.
+func TestAMissingOffendingCertificateStillProducesAReason(t *testing.T) {
+	reason := chainCertOutsideValidityReason(nil)
+	if reason == "" {
+		t.Fatal("no reason at all for a nil certificate")
+	}
+	if strings.Contains(reason, "nil") || strings.Contains(reason, "%!") {
+		t.Errorf("the nil path leaks a formatting artifact into the report: %q", reason)
+	}
+}

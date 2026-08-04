@@ -220,6 +220,17 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 			"the certificate chain is verified against the trust store of the machine running "+
 				"this scan, so a certificate issued by an internal CA is reported untrusted "+
 				"unless that CA is installed here")
+
+		// Revocation is the check a reader is most likely to assume happened once
+		// the chain verdict says the chain is trusted, and it is the one this
+		// scanner does not perform. The rest of this section enumerates what the
+		// scan does not cover, so leaving revocation out of it invites the reader
+		// to treat the list as complete and the omission as a non-issue. Nothing
+		// in the report claims a certificate is unrevoked; this says so out loud.
+		result.ScanWarnings = append(result.ScanWarnings,
+			"revocation is not checked. This scanner does not fetch CRLs or query OCSP, so a "+
+				"chain reported as trusted may still have been revoked. Check revocation "+
+				"separately, for example with 'openssl ocsp' or your CA's status endpoint")
 	}
 
 	// --sni asks the server for a different name than the target, so the
