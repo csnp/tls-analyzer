@@ -4,9 +4,11 @@ import (
 	"crypto/ecdsa"
 	"crypto/elliptic"
 	"crypto/rand"
+	"crypto/tls"
 	"crypto/x509"
 	"crypto/x509/pkix"
 	"math/big"
+	"net"
 	"strings"
 	"testing"
 	"time"
@@ -34,9 +36,18 @@ func signedCert(
 	tmpl, parent *x509.Certificate,
 	parentKey *ecdsa.PrivateKey,
 ) (*x509.Certificate, *ecdsa.PrivateKey, error) {
+	cert, _, key, err := signedCertDER(tmpl, parent, parentKey)
+	return cert, key, err
+}
+
+// signedCertDER also returns the DER, which a server needs to present a chain.
+func signedCertDER(
+	tmpl, parent *x509.Certificate,
+	parentKey *ecdsa.PrivateKey,
+) (*x509.Certificate, []byte, *ecdsa.PrivateKey, error) {
 	key, err := ecdsa.GenerateKey(elliptic.P256(), rand.Reader)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	signer, signee := parentKey, parent
 	if signer == nil {
@@ -44,23 +55,27 @@ func signedCert(
 	}
 	der, err := x509.CreateCertificate(rand.Reader, tmpl, signee, &key.PublicKey, signer)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
 	cert, err := x509.ParseCertificate(der)
 	if err != nil {
-		return nil, nil, err
+		return nil, nil, nil, err
 	}
-	return cert, key, nil
+	return cert, der, key, nil
 }
 
 // threeLevelChain is a root, an intermediate and a leaf, with the intermediate's
 // validity window supplied by the caller so a test can place it in the past, in
 // the future, or squarely around now.
+//
+// serving carries the chain a server actually presents, leaf first, so the same
+// fixture can be driven through the whole Scan path against a local listener.
 type threeLevelChain struct {
-	root  *x509.Certificate
-	inter *x509.Certificate
-	leaf  *x509.Certificate
-	roots *x509.CertPool
+	root    *x509.Certificate
+	inter   *x509.Certificate
+	leaf    *x509.Certificate
+	roots   *x509.CertPool
+	serving tls.Certificate
 }
 
 func buildThreeLevelChain(t *testing.T, interNotBefore, interNotAfter time.Time) threeLevelChain {
@@ -80,7 +95,7 @@ func buildThreeLevelChain(t *testing.T, interNotBefore, interNotAfter time.Time)
 		t.Fatalf("build root: %v", err)
 	}
 
-	inter, interKey, err := signedCert(&x509.Certificate{
+	inter, interDER, interKey, err := signedCertDER(&x509.Certificate{
 		SerialNumber:          big.NewInt(2),
 		Subject:               pkix.Name{CommonName: "chain position test intermediate"},
 		NotBefore:             interNotBefore,
@@ -95,10 +110,11 @@ func buildThreeLevelChain(t *testing.T, interNotBefore, interNotAfter time.Time)
 
 	// The leaf is current in every fixture here. The whole point is that the
 	// defect is invisible in every field that describes the leaf.
-	leaf, _, err := signedCert(&x509.Certificate{
+	leaf, leafDER, leafKey, err := signedCertDER(&x509.Certificate{
 		SerialNumber:          big.NewInt(3),
 		Subject:               pkix.Name{CommonName: "localhost"},
 		DNSNames:              []string{"localhost"},
+		IPAddresses:           []net.IP{net.ParseIP("127.0.0.1")},
 		NotBefore:             now.AddDate(0, -1, 0),
 		NotAfter:              now.AddDate(1, 0, 0),
 		KeyUsage:              x509.KeyUsageDigitalSignature,
@@ -112,7 +128,17 @@ func buildThreeLevelChain(t *testing.T, interNotBefore, interNotAfter time.Time)
 	roots := x509.NewCertPool()
 	roots.AddCert(root)
 
-	return threeLevelChain{root: root, inter: inter, leaf: leaf, roots: roots}
+	return threeLevelChain{
+		root:  root,
+		inter: inter,
+		leaf:  leaf,
+		roots: roots,
+		serving: tls.Certificate{
+			Certificate: [][]byte{leafDER, interDER},
+			PrivateKey:  leafKey,
+			Leaf:        leaf,
+		},
+	}
 }
 
 // TestExpiredIntermediateFailsChainTrust is the reproduction. Measured before
@@ -296,5 +322,76 @@ func TestExpiredIntermediateScoresTheCertificateDimensionZero(t *testing.T) {
 	if !found {
 		t.Errorf("no CERT_CHAIN_UNTRUSTED finding for a chain with an expired intermediate; "+
 			"got %d findings", len(result.Vulnerabilities))
+	}
+}
+
+// TestScanOfAServerWithAnExpiredIntermediate drives the whole Scan path against
+// a real listener, rather than calling the chain check directly.
+//
+// This cannot be reproduced through the CLI on this platform: the binary has no
+// flag for the trust store, and Go on macOS verifies through the system verifier
+// and ignores SSL_CERT_FILE, so a hand-built root is never trusted and the
+// handshake fails with UnknownAuthority before the branch under test is reached.
+// Setting TrustRoots in-process is what makes the branch reachable, and it is
+// the same field the library exposes to callers.
+func TestScanOfAServerWithAnExpiredIntermediate(t *testing.T) {
+	now := time.Now()
+	chain := buildThreeLevelChain(t, now.AddDate(-2, 0, 0), now.AddDate(0, -1, 0))
+
+	host, port := startLocalTLSServer(t, chain.serving)
+
+	cfg := localScanConfig()
+	cfg.TrustRoots = chain.roots
+	result := scanLocal(t, cfg, host, port)
+
+	// Guard the fixture: if the root were not trusted the handshake would fail
+	// with UnknownAuthority and never reach the expiry branch, so the assertions
+	// below would pass for the wrong reason.
+	if strings.Contains(result.Certificate.ChainTrustReason, "not trusted") {
+		t.Fatalf("the test root was not trusted, so the branch under test never ran: %q",
+			result.Certificate.ChainTrustReason)
+	}
+	if result.Certificate.Expired || result.Certificate.NotYetValid {
+		t.Fatalf("fixture is wrong: the leaf must be current, got expired=%v notYetValid=%v",
+			result.Certificate.Expired, result.Certificate.NotYetValid)
+	}
+
+	if result.Certificate.ChainTrust != types.CheckFailed {
+		t.Errorf("a full scan of a server presenting an expired intermediate reported "+
+			"chainTrust=%v (%q)", result.Certificate.ChainTrust,
+			result.Certificate.ChainTrustReason)
+	}
+	if f := certificateFactor(t, result); f.Score == f.MaxScore {
+		t.Errorf("the certificate dimension scored full %d/%d (%q) on a scan of a server no "+
+			"client would accept, grading %s %d/100",
+			f.Score, f.MaxScore, f.Details, result.Grade.Letter, result.Grade.Score)
+	}
+	if findVulnerability(result, "CERT_CHAIN_UNTRUSTED") == nil {
+		t.Errorf("a full scan raised no CERT_CHAIN_UNTRUSTED finding; got %d findings",
+			len(result.Vulnerabilities))
+	}
+}
+
+// TestScanOfAServerWithACurrentChain is the control for the scan-level test. A
+// fix that failed every chain would satisfy the test above while breaking every
+// healthy scan, and this is the assertion that tells those apart at the same
+// level.
+func TestScanOfAServerWithACurrentChain(t *testing.T) {
+	now := time.Now()
+	chain := buildThreeLevelChain(t, now.AddDate(-1, 0, 0), now.AddDate(5, 0, 0))
+
+	host, port := startLocalTLSServer(t, chain.serving)
+
+	cfg := localScanConfig()
+	cfg.TrustRoots = chain.roots
+	result := scanLocal(t, cfg, host, port)
+
+	if result.Certificate.ChainTrust != types.CheckPassed {
+		t.Errorf("a scan of a server presenting a wholly current chain reported "+
+			"chainTrust=%v (%q)", result.Certificate.ChainTrust,
+			result.Certificate.ChainTrustReason)
+	}
+	if findVulnerability(result, "CERT_CHAIN_UNTRUSTED") != nil {
+		t.Errorf("a healthy chain raised CERT_CHAIN_UNTRUSTED")
 	}
 }
