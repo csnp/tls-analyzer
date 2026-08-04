@@ -27,6 +27,50 @@ again after its first repair proved inert on macOS and Windows.
 
 ### Security
 
+- **The invocation itself could forge the report: a `--targets` file or an
+  `--sni` value rewrote the grade a finished scan had printed.** A value carrying
+  an ANSI cursor-up sequence reached the terminal unescaped through three print
+  sites, so a report that measured `D (41/100)` displayed `A+ (100/100)`. It
+  survived `--no-color`, and under `-o` it was worse: this tool strips its own
+  colour from a saved report, so the injected sequences were the only escape
+  bytes in the file an auditor opens later. The exit code and the JSON stayed
+  honest throughout, which is exactly why the text report had to be fixed rather
+  than relied on. A targets file is the same "arrives from a vendor, a repository
+  or a colleague" shape this release already treats a policy file as.
+
+  The cause was an incomplete list, not a missing call. The sanitiser's own
+  documentation named two sources of untrusted text, the policy file and the
+  scanned server's certificate, and fourteen call sites correctly covered those
+  two. There is a third, the invocation: the target, which `--targets` may read
+  from a file somebody else wrote, and `--sni`. Nothing covered it.
+
+  This is the fourth repair of this defect class in one release and the first
+  that does not depend on remembering. The text renderer now scrubs the entire
+  result once, on the way in, and the fourteen per-print-site calls were removed
+  rather than kept as a second layer: every print helper in that file is
+  unexported and reachable only through the renderer's entry point, so they were
+  not an independent defence and no test could tell them from nothing. A print
+  site added later is covered without anyone thinking about it. A test fills
+  every string the result type carries, found by reflection rather than by a
+  list, renders text, JSON, SARIF and CBOM, and fails on any byte that can steer
+  a terminal, so a field added to the result type is covered the day it is added.
+  JSON, SARIF and CBOM are deliberately left carrying what the server really
+  sent, since their encoders escape control characters rather than executing
+  them.
+
+  Also closed by the same work: a certificate whose common name was entirely
+  control characters was named `""` in the chain-failure reason, because the
+  fallback to another identifier tested the raw value for emptiness and scrubbed
+  afterwards, so it never fired. It now decides on the value the reader will
+  actually see, and falls back through the organization to the serial number,
+  which is what the code's own comment always said it did. The cap that stops a
+  server pushing this tool's words out of the report is now measured in what `%q`
+  renders rather than in bytes: scrubbing removes control characters but leaves
+  Unicode format characters, which `%q` expands roughly threefold, and a hostile
+  name could still truncate away the sentence saying the platform verifier did
+  not identify which certificate it rejected. `U+2028` and `U+2029` are collapsed
+  along with the other line terminators.
+
 - **An expired intermediate certificate was reported as a healthy chain.** A
   chain built from a valid trusted root, an expired intermediate and a perfectly
   current leaf was reported as not evaluated rather than failed, took the
@@ -59,8 +103,12 @@ again after its first repair proved inert on macOS and Windows.
   verifier answered. Where the verifier does not identify it, the scan looks for
   itself: the server presented the rest of the chain on the same connection, so a
   certificate outside its own window is visible from the dates it carries and is
-  named, on every platform. The attribution is hedged, because the server chose
-  that list and can ship an expired certificate that is not on the failing path.
+  named. That naming applies wherever the platform reports a validity-window
+  failure at all; where it reports only that the chain is untrusted, which macOS
+  and Windows may do, the check still fails and the reason is the platform's own,
+  which need not name a certificate. The attribution is hedged, because the
+  server chose that list and can ship an expired certificate that is not on the
+  failing path.
   Where nothing presented is outside its window, the report says the certificate
   at fault came from this machine's trust store rather than from the server.
 

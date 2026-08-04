@@ -105,12 +105,16 @@ separately, whatever their outcome including when they did not run:
   otherwise. When the two differ, the report says which name was verified.
 - **Chain trust.** The presented chain has to build to a root the scanning
   machine trusts, for server authentication. Every certificate in the chain is
-  covered, not just the leaf: an expired intermediate fails the check and the
-  reason names which certificate and which end of its window failed, because
-  every other field in the report describes the leaf and the leaf is usually
-  healthy in that case. The verdict is machine-dependent: a certificate from an
-  internal CA is reported untrusted unless that CA is installed on the machine
-  running the scan, and a scan warning says so.
+  covered, not just the leaf: an expired intermediate fails the check on every
+  platform, because every other field in the report describes the leaf and the
+  leaf is usually healthy in that case. Where the platform reports the failure as
+  a validity-window failure, the reason also names which certificate and which
+  end of its window failed. Where it reports only that the chain is untrusted,
+  which macOS and Windows may do because they answer through the system verifier
+  rather than Go's, the check still fails and the reason is the one the platform
+  gave, which need not name a certificate. The verdict is machine-dependent: a
+  certificate from an internal CA is reported untrusted unless that CA is
+  installed on the machine running the scan, and a scan warning says so.
 
 Either check failing scores the certificate dimension zero, for the same reason
 expiry does: no client will use the certificate.
