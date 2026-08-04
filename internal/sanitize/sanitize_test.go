@@ -107,13 +107,43 @@ func TestALongHostileStringIsBothScrubbedAndCapped(t *testing.T) {
 	}
 }
 
-// TestTheCapIsNotDefeatedByATinyBudget guards the arithmetic. maxLen below the
-// length of the ellipsis must not produce a negative budget or a panic.
-func TestTheCapIsNotDefeatedByATinyBudget(t *testing.T) {
-	for _, maxLen := range []int{0, 1, 2, 3, 4} {
+// TestATinyBudgetIsHandledWithoutPanicOrInvalidUTF8 guards the arithmetic below
+// the length of the ellipsis.
+//
+// It is named for what it checks. An earlier name claimed it guarded the cap
+// itself, and it did not: it asserted only that the output was valid UTF-8, so
+// mutating the `budget = 1` floor to 40 survived it. The cap genuinely does not
+// hold for maxLen under 4, because the ellipsis alone is three bytes, and
+// TestTheOutputIsBoundedAboveTheEllipsis below states the bound the function
+// actually keeps rather than one it does not.
+func TestATinyBudgetIsHandledWithoutPanicOrInvalidUTF8(t *testing.T) {
+	for _, maxLen := range []int{-1, 0, 1, 2, 3, 4} {
 		out := ForReport("abcdefghij", maxLen)
 		if !utf8.ValidString(out) {
 			t.Errorf("maxLen=%d produced invalid UTF-8: %q", maxLen, out)
+		}
+		// The floor keeps one rune plus the ellipsis, so the output never
+		// collapses to nothing and never grows with a smaller budget.
+		if len(out) > 4 {
+			t.Errorf("maxLen=%d produced %d bytes (%q); a tiny budget must not produce "+
+				"more output than a small one", maxLen, len(out), out)
+		}
+	}
+}
+
+// TestTheOutputIsBoundedAboveTheEllipsis pins the cap where it does hold, from
+// both sides, so the floor cannot be raised without failing.
+func TestTheOutputIsBoundedAboveTheEllipsis(t *testing.T) {
+	long := strings.Repeat("x", 5000)
+	for _, maxLen := range []int{5, 10, 50, 120, 500} {
+		out := ForReport(long, maxLen)
+		if len(out) > maxLen {
+			t.Errorf("maxLen=%d produced %d bytes, over the cap", maxLen, len(out))
+		}
+		// And it must not truncate far below the budget, or the cap is doing more
+		// than it claims and the report loses text it was allowed to keep.
+		if len(out) < maxLen-3 {
+			t.Errorf("maxLen=%d produced only %d bytes, well under the budget", maxLen, len(out))
 		}
 	}
 }

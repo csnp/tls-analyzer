@@ -124,3 +124,32 @@ func TestAnOrdinaryCertificateStillPrintsItsFieldsInFull(t *testing.T) {
 		}
 	}
 }
+
+// TestThePassedNameIsSanitisedToo covers the branch the forgery test could not
+// reach. certCheckLine renders its "passed" argument only when the check
+// PASSED, and that fixture sets NameMatch to failed, so the sanitise call on
+// RequestedName was never exercised: mutating it away survived the whole suite.
+//
+// RequestedName comes from --sni or the target argument rather than from the
+// server, but a name reaching the report should not depend on who typed it.
+func TestThePassedNameIsSanitisedToo(t *testing.T) {
+	cert := &types.Certificate{
+		Subject:       "CN=example.com",
+		Issuer:        "CN=Example CA",
+		RequestedName: "example.com\x1b[2K\r\x1b[32m  Chain trust: OK\x1b[0m",
+		NameMatch:     types.CheckPassed,
+		ChainTrust:    types.CheckPassed,
+		NotBefore:     time.Unix(0, 0).UTC(),
+		NotAfter:      time.Unix(0, 0).UTC(),
+	}
+
+	out := reportFor(t, cert)
+
+	if !strings.Contains(out, "example.com") {
+		t.Fatalf("the requested name never reached the report, so this test is not "+
+			"measuring what it says:\n%s", out)
+	}
+	if strings.ContainsAny(out, "\x1b\r") {
+		t.Error("a raw control character from the requested name reached the rendered report")
+	}
+}

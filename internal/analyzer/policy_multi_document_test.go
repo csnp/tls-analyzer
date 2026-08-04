@@ -305,3 +305,103 @@ func TestAMalformedLaterDocumentIsRefusedAndTerminates(t *testing.T) {
 		})
 	}
 }
+
+// TestTheDocumentCountDoesNotAssertATotalItDidNotFinishCounting pins the
+// message against the walk's own limits.
+//
+// The walk stops at the first document that does not parse, so anything after
+// it is never counted. Asserting a total there understated the file: four
+// documents with a malformed second reported "contains 2 YAML documents ... the
+// other one would be discarded", when three were being discarded.
+func TestTheDocumentCountDoesNotAssertATotalItDidNotFinishCounting(t *testing.T) {
+	third := "name: Part Three\nversion: \"1.0\"\nrules:\n  cipher:\n    minKeySize: 256\n"
+	fourth := "name: Part Four\nversion: \"1.0\"\nrules:\n  cipher:\n    minKeySize: 128\n"
+
+	t.Run("stopped early on a malformed document", func(t *testing.T) {
+		path := writePolicyFile(t,
+			trivialDocument+"---\nfoo: [unclosed\n---\n"+third+"---\n"+fourth)
+
+		_, err := NewPolicyEvaluator().LoadPolicy(path)
+		if err == nil {
+			t.Fatal("the file was accepted")
+		}
+		if !strings.Contains(err.Error(), "at least") {
+			t.Errorf("the refusal asserts a total the walk did not finish counting, so it "+
+				"understates how much of the file is being discarded: %q", err.Error())
+		}
+		if strings.Contains(err.Error(), "the other one") {
+			t.Errorf("the refusal claims exactly one other document when it stopped "+
+				"counting early: %q", err.Error())
+		}
+	})
+
+	t.Run("counted the whole file", func(t *testing.T) {
+		path := writePolicyFile(t, trivialDocument+"---\n"+strictDocument+"---\n"+third)
+
+		_, err := NewPolicyEvaluator().LoadPolicy(path)
+		if err == nil {
+			t.Fatal("the file was accepted")
+		}
+		// Here the count IS exact, so hedging would be its own inaccuracy.
+		if strings.Contains(err.Error(), "at least") {
+			t.Errorf("the refusal hedges a count it completed: %q", err.Error())
+		}
+		if !strings.Contains(err.Error(), "3 YAML documents") {
+			t.Errorf("the refusal does not report the exact count it reached: %q", err.Error())
+		}
+	})
+}
+
+// TestAnInertWarningOnlyValueIsNotCalledAdvisory keeps the refusal's diagnosis
+// honest about values as well as keys.
+//
+// The evaluator gates minValidityDays on > 0 and requirePqcCertificates on true,
+// so a zero or a false makes the rule emit nothing at all. Naming it and saying
+// it "will stay advisory, reporting a warning" describes behaviour the author
+// will never see. Those files get the plain "defines no rules", which is true.
+func TestAnInertWarningOnlyValueIsNotCalledAdvisory(t *testing.T) {
+	for _, tc := range []struct {
+		name string
+		body string
+	}{
+		{"minValidityDays zero", "name: z\nversion: \"1.0\"\nrules:\n  certificate:\n    minValidityDays: 0\n"},
+		{"minValidityDays negative", "name: n\nversion: \"1.0\"\nrules:\n  certificate:\n    minValidityDays: -5\n"},
+		{"requirePqcCertificates false", "name: f\nversion: \"1.0\"\nrules:\n  quantum:\n    requirePqcCertificates: false\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writePolicyFile(t, tc.body)
+
+			_, err := NewPolicyEvaluator().LoadPolicy(path)
+			if err == nil {
+				t.Fatal("a policy that constrains nothing was accepted")
+			}
+			if strings.Contains(err.Error(), "advisory") {
+				t.Errorf("the refusal says the rule will report a warning, but this value "+
+					"makes the evaluator emit nothing at all: %q", err.Error())
+			}
+			if !strings.Contains(err.Error(), "defines no rules") {
+				t.Errorf("the refusal does not give the accurate diagnosis for a rule set to "+
+					"its no-op value: %q", err.Error())
+			}
+		})
+	}
+}
+
+// TestAWarningOnlyRuleWithAConstrainingValueIsStillNamed is the control for the
+// case above. Gating on the value must not stop the real case being named.
+func TestAWarningOnlyRuleWithAConstrainingValueIsStillNamed(t *testing.T) {
+	path := writePolicyFile(t,
+		"name: real\nversion: \"1.0\"\nrules:\n  certificate:\n    minValidityDays: 3650\n")
+
+	_, err := NewPolicyEvaluator().LoadPolicy(path)
+	if err == nil {
+		t.Fatal("a policy of only warning rules was accepted")
+	}
+	if !strings.Contains(err.Error(), "certificate.minValidityDays") {
+		t.Errorf("the refusal no longer names a warning-only rule that does constrain: %q",
+			err.Error())
+	}
+	if !strings.Contains(err.Error(), "advisory") {
+		t.Errorf("the refusal no longer warns that the rule stays advisory: %q", err.Error())
+	}
+}

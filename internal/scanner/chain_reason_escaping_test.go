@@ -70,7 +70,7 @@ func TestAChainReasonNeverCarriesRawControlCharacters(t *testing.T) {
 				t.Fatalf("build certificate: %v", err)
 			}
 
-			reason := chainCertOutsideValidityReason(cert)
+			reason := chainCertOutsideValidityReason(cert, time.Now())
 
 			// Guard the fixture: if the subject did not survive into the reason at
 			// all, this test would pass without exercising anything.
@@ -108,7 +108,7 @@ func TestAChainReasonStillNamesAnOrdinarySubject(t *testing.T) {
 		t.Fatalf("build certificate: %v", err)
 	}
 
-	reason := chainCertOutsideValidityReason(cert)
+	reason := chainCertOutsideValidityReason(cert, time.Now())
 	if !strings.Contains(reason, "Example Intermediate CA") {
 		t.Errorf("an ordinary subject is not named in the reason, so the report does not "+
 			"say which certificate to replace: %q", reason)
@@ -122,7 +122,7 @@ func TestAChainReasonStillNamesAnOrdinarySubject(t *testing.T) {
 // populates invalid.Cert today, but a reason that read "<nil>" or panicked would
 // be a worse failure than the one being reported.
 func TestAMissingOffendingCertificateStillProducesAReason(t *testing.T) {
-	reason := chainCertOutsideValidityReason(nil)
+	reason := chainCertOutsideValidityReason(nil, time.Now())
 	if reason == "" {
 		t.Fatal("no reason at all for a nil certificate")
 	}

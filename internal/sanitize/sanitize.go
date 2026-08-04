@@ -20,6 +20,11 @@ import (
 	"unicode/utf8"
 )
 
+// MaxReportDetail is the budget every report field uses. It lives here so the
+// analyzer and the reporter cannot drift apart on it, which is the same shape as
+// the two copies of the sanitiser this package was extracted to remove.
+const MaxReportDetail = 500
+
 // ForReport collapses control characters to spaces and caps the length.
 //
 // Collapsing rather than deleting keeps the text's shape recognisable, so a

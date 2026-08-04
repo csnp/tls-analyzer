@@ -46,7 +46,7 @@ func TestAnExpiredIntermediateFailsEvenWhenTheVerifierBlamesTheLeaf(t *testing.T
 
 	// This is exactly what root_darwin.go hands back: the reason is Expired and
 	// the certificate blamed is the leaf, which is current.
-	applyValidityWindowVerdict(chain.leaf, chain.leaf, parsed)
+	applyValidityWindowVerdict(chain.leaf, chain.leaf, nil, time.Now(), parsed)
 
 	if parsed.Expired || parsed.NotYetValid {
 		t.Fatalf("fixture is wrong: the leaf must be current for this to be the platform case")
@@ -79,7 +79,7 @@ func TestTheGoVerifierShapeStillNamesTheOffender(t *testing.T) {
 	parsed := parseCertificate(chain.leaf)
 
 	// This is what the pure-Go verifier hands back: the intermediate is blamed.
-	applyValidityWindowVerdict(chain.leaf, chain.inter, parsed)
+	applyValidityWindowVerdict(chain.leaf, chain.inter, nil, time.Now(), parsed)
 
 	if parsed.ChainTrust != types.CheckFailed {
 		t.Errorf("chainTrust=%v, want failed", parsed.ChainTrust)
@@ -121,7 +121,7 @@ func TestAnExpiredLeafIsStillLeftToTheExpiryFinding(t *testing.T) {
 				t.Fatal("fixture is wrong: the leaf must be expired")
 			}
 
-			applyValidityWindowVerdict(expiredLeaf, tc.blamed, parsed)
+			applyValidityWindowVerdict(expiredLeaf, tc.blamed, nil, time.Now(), parsed)
 
 			if parsed.ChainTrust != types.CheckNotPerformed {
 				t.Errorf("an expired leaf failed the chain check as well as raising its own "+
@@ -154,7 +154,7 @@ func TestANotYetValidLeafIsAlsoLeftToItsOwnFinding(t *testing.T) {
 		t.Fatal("fixture is wrong: the leaf must be not yet valid")
 	}
 
-	applyValidityWindowVerdict(futureLeaf, futureLeaf, parsed)
+	applyValidityWindowVerdict(futureLeaf, futureLeaf, nil, time.Now(), parsed)
 
 	if parsed.ChainTrust != types.CheckNotPerformed {
 		t.Errorf("a not-yet-valid leaf failed the chain check as well as raising its own "+
@@ -172,7 +172,7 @@ func TestTheVerdictDoesNotDependOnTheCallerPopulatingTheResult(t *testing.T) {
 
 	// Deliberately NOT parseCertificate: an empty result, as the older tests use.
 	empty := &types.Certificate{}
-	applyValidityWindowVerdict(chain.leaf, chain.leaf, empty)
+	applyValidityWindowVerdict(chain.leaf, chain.leaf, nil, time.Now(), empty)
 
 	if empty.ChainTrust != types.CheckFailed {
 		t.Errorf("the verdict changed because the caller had not populated the result "+
@@ -184,3 +184,126 @@ func TestTheVerdictDoesNotDependOnTheCallerPopulatingTheResult(t *testing.T) {
 func bigOne() *big.Int { return big.NewInt(1) }
 
 func subjectCN(cn string) pkix.Name { return pkix.Name{CommonName: cn} }
+
+// TestTheOffenderIsFoundFromThePresentedChainWhenTheVerifierWillNotSayIt is the
+// case that makes the platform path useful rather than merely correct.
+//
+// The platform verifier blames the leaf whatever failed, so its answer is no
+// answer. The server presented the rest of the chain on the same connection
+// though, and a certificate outside its window is visible from the dates it
+// carries. An earlier version printed "this platform's verifier does not report
+// which one; inspect the chain with 'openssl s_client -showcerts'", sending the
+// operator to fetch data the scanner was already holding.
+func TestTheOffenderIsFoundFromThePresentedChainWhenTheVerifierWillNotSayIt(t *testing.T) {
+	now := time.Now()
+	chain := buildThreeLevelChain(t, now.AddDate(-2, 0, 0), now.AddDate(0, -1, 0))
+
+	parsed := parseCertificate(chain.leaf)
+	// Platform shape: the leaf is blamed, and the presented chain is supplied.
+	applyValidityWindowVerdict(chain.leaf, chain.leaf,
+		[]*x509.Certificate{chain.inter}, now, parsed)
+
+	if parsed.ChainTrust != types.CheckFailed {
+		t.Fatalf("chainTrust=%v, want failed", parsed.ChainTrust)
+	}
+	if !strings.Contains(parsed.ChainTrustReason, chain.inter.Subject.CommonName) {
+		t.Errorf("the reason does not name the expired intermediate, though the server "+
+			"presented it on this connection: %q", parsed.ChainTrustReason)
+	}
+	if strings.Contains(parsed.ChainTrustReason, "openssl") {
+		t.Errorf("the reason sends the operator to another tool for data this scan "+
+			"already holds: %q", parsed.ChainTrustReason)
+	}
+}
+
+// TestNothingPresentedIsExpiredSaysSoRatherThanNamingTheLeaf covers the residual
+// case: the platform verifier can reject on a certificate from its own store
+// that the server never sent. Naming one would be a guess.
+func TestNothingPresentedIsExpiredSaysSoRatherThanNamingTheLeaf(t *testing.T) {
+	now := time.Now()
+	// Every presented certificate is current.
+	chain := buildThreeLevelChain(t, now.AddDate(-1, 0, 0), now.AddDate(5, 0, 0))
+
+	parsed := parseCertificate(chain.leaf)
+	applyValidityWindowVerdict(chain.leaf, chain.leaf,
+		[]*x509.Certificate{chain.inter}, now, parsed)
+
+	if parsed.ChainTrust != types.CheckFailed {
+		t.Fatalf("chainTrust=%v, want failed", parsed.ChainTrust)
+	}
+	if strings.Contains(parsed.ChainTrustReason, chain.leaf.Subject.CommonName) ||
+		strings.Contains(parsed.ChainTrustReason, chain.inter.Subject.CommonName) {
+		t.Errorf("a certificate was named although none presented is outside its "+
+			"window: %q", parsed.ChainTrustReason)
+	}
+	// x509 reports the same reason for both ends of the window, and this is the
+	// branch where nobody said which end, so the text must not claim "expired".
+	if strings.Contains(parsed.ChainTrustReason, "expired") {
+		t.Errorf("the reason asserts expiry in the one branch where the end of the "+
+			"window is unknown: %q", parsed.ChainTrustReason)
+	}
+}
+
+// TestAChainCertificateWithoutACommonNameIsStillIdentified covers chainCertName,
+// which had no test at all: replacing its whole body with the pre-fix
+// cert.Subject.CommonName left the suite green.
+func TestAChainCertificateWithoutACommonNameIsStillIdentified(t *testing.T) {
+	now := time.Now()
+	noCN, _, err := signedCert(&x509.Certificate{
+		SerialNumber: big.NewInt(123456789),
+		Subject: pkix.Name{
+			Organization:       []string{"Legacy Root Org"},
+			OrganizationalUnit: []string{"Certification Authority"},
+		},
+		NotBefore:             now.AddDate(-2, 0, 0),
+		NotAfter:              now.AddDate(0, -1, 0),
+		KeyUsage:              x509.KeyUsageCertSign,
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("build certificate: %v", err)
+	}
+	if noCN.Subject.CommonName != "" {
+		t.Fatal("fixture is wrong: this certificate must have no common name")
+	}
+
+	reason := chainCertOutsideValidityReason(noCN, now)
+	if strings.Contains(reason, `""`) {
+		t.Errorf("a certificate identified only by organization was named as the empty "+
+			"string, which tells the operator nothing: %q", reason)
+	}
+	if !strings.Contains(reason, "Legacy Root Org") {
+		t.Errorf("the reason does not carry any identifying detail: %q", reason)
+	}
+}
+
+// TestAServerCannotPushTheVerdictOutOfTheChainReason pins the name cap.
+//
+// The report caps the rendered line, and the server-chosen name sits at the
+// FRONT of the sentence, so without a bound of its own a long name pushes the
+// tool's own words off the end. Measured before the cap: a 474-byte common name
+// ending "and this certificate is valid; the chain builds to a trusted root"
+// produced a line carrying that phrase and neither "expired" nor the date.
+func TestAServerCannotPushTheVerdictOutOfTheChainReason(t *testing.T) {
+	now := time.Now()
+	padding := strings.Repeat("A", 420)
+	forged := padding + " and this certificate is valid; the chain builds to a trusted root"
+
+	cert, err := certificateWithSubject(forged, now.AddDate(-2, 0, 0), now.AddDate(0, -1, 0))
+	if err != nil {
+		t.Fatalf("build certificate: %v", err)
+	}
+
+	reason := chainCertOutsideValidityReason(cert, now)
+
+	for _, want := range []string{"expired on", "does not build to a trusted root"} {
+		if !strings.Contains(reason, want) {
+			t.Errorf("the tool's own words %q were pushed out by a long certificate name, "+
+				"so the server chose what the verdict line says: %q", want, reason)
+		}
+	}
+	if strings.Contains(reason, "the chain builds to a trusted root") {
+		t.Errorf("the server's forged phrase survived in full: %q", reason)
+	}
+}

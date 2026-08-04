@@ -325,12 +325,16 @@ func (e *PolicyEvaluator) decodePolicy(data []byte, onto types.Policy) (types.Po
 	// passing on an input it did not understand is the worst available to it.
 	// Guessing which document was meant, or merging them, would both be a verdict
 	// about a policy nobody wrote.
-	if extra := countRemainingDocuments(dec); extra > 0 {
+	if extra, complete := countRemainingDocuments(dec); extra > 0 {
+		total := fmt.Sprintf("%d", extra+1)
+		if !complete {
+			total = "at least " + total
+		}
 		return onto, fmt.Errorf(
-			"the policy file contains %d YAML documents separated by '---', and only the "+
+			"the policy file contains %s YAML documents separated by '---', and only the "+
 				"first would be applied, so the rules in %s would be discarded in silence. "+
 				"Put each policy in its own file and apply one with --policy-file",
-			extra+1, otherDocuments(extra))
+			total, otherDocuments(extra, complete))
 	}
 
 	return onto, nil
@@ -348,14 +352,13 @@ func (e *PolicyEvaluator) decodePolicy(data []byte, onto types.Policy) (types.Po
 // does, and a check on Kind never fires. Decoding into an interface gives nil
 // for a document that carries nothing, which is the question actually being
 // asked: did the author write a policy there that is being discarded.
-func countRemainingDocuments(dec *yaml.Decoder) int {
-	count := 0
+func countRemainingDocuments(dec *yaml.Decoder) (count int, complete bool) {
 	for {
 		var doc any
 		err := dec.Decode(&doc)
 		switch {
 		case errors.Is(err, io.EOF):
-			return count
+			return count, true
 
 		case err != nil:
 			// A document that does not parse still counts, and counting it ENDS
@@ -369,8 +372,10 @@ func countRemainingDocuments(dec *yaml.Decoder) int {
 			// rather than a rejected file.
 			//
 			// One more document is enough to refuse the file, which is the outcome
-			// either way, so there is nothing to gain by reading further.
-			return count + 1
+			// either way, so there is nothing to gain by reading further. The count
+			// is a lower bound from here, and the caller says so rather than
+			// asserting a total it did not finish counting.
+			return count + 1, false
 
 		case doc == nil:
 			// A separator with nothing after it declares no rules, so it is not a
@@ -384,7 +389,13 @@ func countRemainingDocuments(dec *yaml.Decoder) int {
 }
 
 // otherDocuments names the documents after the first, for the refusal message.
-func otherDocuments(n int) string {
+//
+// When the walk stopped early on a malformed document the count is a lower
+// bound, so the phrasing must not claim a total the file may exceed.
+func otherDocuments(n int, complete bool) string {
+	if !complete {
+		return "the others"
+	}
 	if n == 1 {
 		return "the other one"
 	}
@@ -593,7 +604,7 @@ func sanitizeForReport(s string, maxLen int) string {
 // with a COMPLIANT one, surviving --no-color. Doing it once here covers every
 // consumer rather than every print site.
 func sanitizePolicyResult(pr *types.PolicyResult) {
-	const maxDetail = 500
+	const maxDetail = sanitize.MaxReportDetail
 	scrub := func(vs []types.PolicyViolation) {
 		for i := range vs {
 			vs[i].Description = sanitizeForReport(vs[i].Description, maxDetail)
@@ -703,13 +714,15 @@ func validateProtocolVersionValues(rules *types.ProtocolRules) error {
 // certificate.minValidityDays for an overlay that never mentioned it, and then
 // advised using 'extends' to a file already using 'extends'. The refusal was
 // right and both halves of its diagnosis were wrong.
-func writtenWarningOnlyRules(data []byte) []string {
+func writtenWarningOnlyRules(data []byte, rules types.PolicyRules) []string {
 	var doc struct {
 		Rules map[string]map[string]yaml.Node `yaml:"rules"`
 	}
 	if err := yaml.Unmarshal(data, &doc); err != nil {
 		return nil
 	}
+
+	decoded := reflect.ValueOf(rules)
 
 	var written []string
 	for sectionKey, section := range doc.Rules {
@@ -718,9 +731,19 @@ func writtenWarningOnlyRules(data []byte) []string {
 				continue
 			}
 			full := sectionKey + "." + key
-			if warningOnlyRuleKeys[full] {
-				written = append(written, full)
+			if !warningOnlyRuleKeys[full] {
+				continue
 			}
+			// Presence from the document, VALUE from the decoded rules, the same
+			// split declaresARule uses. Naming a rule on presence alone told the
+			// author that `minValidityDays: 0` "will stay advisory, reporting a
+			// warning", when a zero makes the evaluator emit nothing at all. Those
+			// inputs get the plain "defines no rules" message, which is true.
+			field, ok := ruleField(decoded, sectionKey, key)
+			if !ok || !fieldConstrains(key, field) {
+				continue
+			}
+			written = append(written, full)
 		}
 	}
 	sort.Strings(written)
@@ -740,7 +763,7 @@ func validatePolicy(policy *types.Policy, path string, declaresRule bool, data [
 		// policy that writes rules which happen to be warning-only, and a message
 		// that describes the wrong problem sends the author looking in the wrong
 		// place.
-		if written := writtenWarningOnlyRules(data); len(written) > 0 {
+		if written := writtenWarningOnlyRules(data, policy.Rules); len(written) > 0 {
 			// Say that the named rules stay advisory whatever else is added.
 			// Without that, the remedy this message offers looks like it makes the
 			// whole file enforceable: add one real rule and the file loads, but the

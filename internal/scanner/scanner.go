@@ -21,6 +21,7 @@ import (
 	"strings"
 	"sync"
 	"time"
+	"unicode/utf8"
 
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
@@ -751,7 +752,11 @@ func verifyCertificateChain(
 
 	var invalid x509.CertificateInvalidError
 	if errors.As(err, &invalid) && invalid.Reason == x509.Expired {
-		applyValidityWindowVerdict(leaf, invalid.Cert, parsed)
+		// One clock for the whole verdict. parseCertificate, this decision and the
+		// reason string each used to read time.Now() separately, and a leaf
+		// crossing a boundary between two of those reads produced a report whose
+		// certificate section and chain line contradicted each other.
+		applyValidityWindowVerdict(leaf, invalid.Cert, intermediates, time.Now(), parsed)
 		return
 	}
 
@@ -788,14 +793,17 @@ func verifyCertificateChain(
 // function must not depend on the caller having populated the result first,
 // because a hidden ordering coupling is the same shape of latent defect as the
 // one being fixed, and the existing suite calls this with an empty result.
-func applyValidityWindowVerdict(leaf, blamed *x509.Certificate, parsed *types.Certificate) {
-	now := time.Now()
-	leafOutsideItsWindow := now.After(leaf.NotAfter) || now.Before(leaf.NotBefore)
-
+func applyValidityWindowVerdict(
+	leaf *x509.Certificate,
+	blamed *x509.Certificate,
+	presented []*x509.Certificate,
+	now time.Time,
+	parsed *types.Certificate,
+) {
 	// The leaf's own window is reported on its own, by the expiry finding and by
 	// the certificate dimension, so the chain check steps aside rather than
 	// stating one defect twice.
-	if leafOutsideItsWindow {
+	if now.After(leaf.NotAfter) || now.Before(leaf.NotBefore) {
 		parsed.ChainTrust = types.CheckNotPerformed
 		parsed.ChainTrustReason = "not evaluated because the certificate is outside its validity period, " +
 			"which is reported on its own"
@@ -806,19 +814,41 @@ func applyValidityWindowVerdict(leaf, blamed *x509.Certificate, parsed *types.Ce
 	// looks at those certificates, so this is the only place it can be reported.
 	parsed.ChainTrust = types.CheckFailed
 
-	// Name the offender only when the verifier actually identified one. A
-	// platform verifier that blamed the leaf has told us nothing about which
-	// certificate failed, and repeating its answer would name a certificate the
-	// same report shows as current.
+	// Prefer the verifier's answer when it identified a certificate other than
+	// the leaf, since that is the one it actually rejected.
 	if blamed != nil && !bytes.Equal(blamed.Raw, leaf.Raw) {
-		parsed.ChainTrustReason = chainCertOutsideValidityReason(blamed)
+		parsed.ChainTrustReason = chainCertOutsideValidityReason(blamed, now)
 		return
 	}
-	parsed.ChainTrustReason = "a certificate in the chain other than the leaf is outside its " +
-		"validity period, so the chain does not build to a trusted root. The leaf is current, " +
-		"so the expired certificate is an intermediate or the root. This platform's certificate " +
-		"verifier does not report which one; inspect the chain with " +
-		"'openssl s_client -showcerts'"
+
+	// Otherwise find the offender ourselves rather than telling the operator to
+	// go and look. The platform verifier blames the leaf whatever failed, so its
+	// answer is no answer at all; but the server presented the rest of the chain
+	// on this same connection, and a certificate outside its window is visible
+	// from the dates it carries. An earlier version of this branch printed "this
+	// platform's verifier does not report which one, inspect the chain with
+	// openssl", which sent the operator to fetch data the scanner was already
+	// holding.
+	for _, candidate := range presented {
+		if candidate == nil || bytes.Equal(candidate.Raw, leaf.Raw) {
+			continue
+		}
+		if now.After(candidate.NotAfter) || now.Before(candidate.NotBefore) {
+			parsed.ChainTrustReason = chainCertOutsideValidityReason(candidate, now)
+			return
+		}
+	}
+
+	// Nothing the server presented is outside its window, so the offender is a
+	// certificate this scan never saw: the platform verifier builds paths from
+	// its own store, and can reject on a certificate the server did not send.
+	// Say that rather than naming one, and do not say "expired": x509 reports the
+	// same reason for both ends of the window and this branch is precisely the
+	// one where nobody told us which end.
+	parsed.ChainTrustReason = "a certificate in the chain is outside its validity period, so the " +
+		"chain does not build to a trusted root. The leaf is current, and every certificate " +
+		"this server presented is too, so the one at fault is a root or intermediate supplied " +
+		"by this machine's trust store rather than by the server"
 }
 
 // chainCertOutsideValidityReason describes a chain certificate other than the
@@ -828,13 +858,12 @@ func applyValidityWindowVerdict(leaf, blamed *x509.Certificate, parsed *types.Ce
 // end it is rather than assuming expiry. The subject is named because the
 // operator has to find that certificate to replace it, and it is not the one
 // they were looking at.
-func chainCertOutsideValidityReason(cert *x509.Certificate) string {
+func chainCertOutsideValidityReason(cert *x509.Certificate, now time.Time) string {
 	if cert == nil {
 		return "a certificate in the chain other than the leaf is outside its validity period"
 	}
 
 	name := chainCertName(cert)
-	now := time.Now()
 	switch {
 	case now.After(cert.NotAfter):
 		return fmt.Sprintf(
@@ -861,13 +890,43 @@ func chainCertOutsideValidityReason(cert *x509.Certificate) string {
 // UnknownAuthorityError falls back the same way, to organization and then to the
 // serial number.
 func chainCertName(cert *x509.Certificate) string {
-	if cn := strings.TrimSpace(cert.Subject.CommonName); cn != "" {
-		return cn
+	name := strings.TrimSpace(cert.Subject.CommonName)
+	if name == "" {
+		name = strings.TrimSpace(cert.Subject.String())
 	}
-	if subject := strings.TrimSpace(cert.Subject.String()); subject != "" {
-		return subject
+	if name == "" {
+		return "serial " + cert.SerialNumber.String()
 	}
-	return "serial " + cert.SerialNumber.String()
+	return truncateChainCertName(name)
+}
+
+// maxChainCertName bounds the server-chosen part of a chain-failure reason.
+//
+// The report caps the whole rendered line, and the name sits at the FRONT of the
+// sentence this package builds, so without a bound of its own a server could
+// push the tool's own words off the end. Measured: an intermediate whose common
+// name was 474 bytes ending "and this certificate is valid; the chain builds to
+// a trusted root" produced a chain-trust line containing that phrase and neither
+// the word "expired" nor the date. Capping the name instead of only the sentence
+// means the tool's words always survive, whatever the server calls itself.
+const maxChainCertName = 120
+
+func truncateChainCertName(name string) string {
+	if len(name) <= maxChainCertName {
+		return name
+	}
+	// Cut on a rune boundary; slicing bytes would emit invalid UTF-8.
+	var b strings.Builder
+	total := 0
+	for _, r := range name {
+		n := utf8.RuneLen(r)
+		if total+n > maxChainCertName-3 {
+			break
+		}
+		b.WriteRune(r)
+		total += n
+	}
+	return b.String() + "..."
 }
 
 // parseCertificate extracts relevant info from an x509 certificate.
