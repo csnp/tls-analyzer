@@ -3,6 +3,7 @@ package analyzer
 import (
 	"strings"
 	"testing"
+	"time"
 
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
@@ -259,5 +260,48 @@ rules:
 	if !pr.Compliant {
 		t.Errorf("warnings made the verdict non-compliant, which would fail a build on a "+
 			"certificate inside its renewal window; violations=%v", pr.Violations)
+	}
+}
+
+// TestAMalformedLaterDocumentIsRefusedAndTerminates is the reproduction of a
+// defect the multi-document refusal itself introduced.
+//
+// yaml.v3 does not advance past a syntax error: after one, every subsequent
+// Decode returns the SAME non-EOF error, forever. The document walk broke only
+// on io.EOF, so a policy file whose second document had a syntax error spun at
+// 100% CPU and never returned, before any network work and with no output at
+// all. In CI that reads as a hung scan rather than a rejected file.
+//
+// The walk had no case for a malformed later document, which is why this
+// shipped. The test is bounded by a channel rather than left to run, so a
+// regression fails the suite instead of hanging it.
+func TestAMalformedLaterDocumentIsRefusedAndTerminates(t *testing.T) {
+	for _, tc := range []struct {
+		name   string
+		second string
+	}{
+		{"unclosed flow sequence", "foo: [unclosed\n"},
+		{"tab indentation", "name: x\n\tbad: 1\n"},
+		{"undefined anchor", "foo: *nosuchanchor\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			path := writePolicyFile(t, trivialDocument+"---\n"+tc.second)
+
+			done := make(chan error, 1)
+			go func() {
+				_, err := NewPolicyEvaluator().LoadPolicy(path)
+				done <- err
+			}()
+
+			select {
+			case err := <-done:
+				if err == nil {
+					t.Fatal("a file whose second document does not parse was accepted")
+				}
+			case <-time.After(10 * time.Second):
+				t.Fatal("LoadPolicy did not return: the document walk does not terminate on " +
+					"a malformed document, so the CLI hangs before any scan begins")
+			}
+		})
 	}
 }

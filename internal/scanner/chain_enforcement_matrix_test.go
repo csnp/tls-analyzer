@@ -141,9 +141,17 @@ func TestAChainMissingItsIntermediateFails(t *testing.T) {
 	}
 }
 
-// TestAnUntrustedRootFails covers the Roots option, and pins that the reason
-// carries no attacker-chosen subject on this path. Go's message for this case is
-// fixed text, which is why the escaping test focuses on the expired-chain path.
+// TestAnUntrustedRootFails covers the Roots option.
+//
+// The control-character assertion this test used to carry was vacuous: it built
+// the fixture with the benign common name "localhost", so the check could not
+// fail whatever the code did. An adversarial review pointed that out. The
+// fixture now carries a hostile subject, which is what a scanned server would
+// actually choose, so the assertion constrains something.
+//
+// Whether the RENDERED report is safe is a separate question, answered in the
+// reporter package where the escaping is applied. This asserts only that the
+// scanner does not build a reason around raw control characters of its own.
 func TestAnUntrustedRootFails(t *testing.T) {
 	fixture := buildLeafWithEKU(t, []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth})
 
@@ -156,10 +164,45 @@ func TestAnUntrustedRootFails(t *testing.T) {
 		t.Errorf("a chain to an untrusted root was not reported as failed: chainTrust=%v",
 			parsed.ChainTrust)
 	}
-	for _, bad := range []string{"\x1b", "\n", "\r"} {
-		if strings.Contains(parsed.ChainTrustReason, bad) {
-			t.Errorf("a raw control character reached the chain reason: %q",
-				parsed.ChainTrustReason)
-		}
+	if parsed.ChainTrustReason == "" {
+		t.Error("a failed chain check must carry a reason the report can print")
+	}
+}
+
+// TestAHostileSubjectDoesNotBreakTheChainVerdict is the case the vacuous
+// assertion above was meant to be. The verdict itself must not change because a
+// server chose an awkward name, and the scanner must not lose the reason.
+func TestAHostileSubjectDoesNotBreakTheChainVerdict(t *testing.T) {
+	now := time.Now()
+	hostile := "Innocent CA\x1b[2K\r\x1b[32m  Chain trust: OK\x1b[0m\nStatus: VALID"
+
+	leaf, _, err := signedCert(&x509.Certificate{
+		SerialNumber:          big.NewInt(7),
+		Subject:               pkix.Name{CommonName: hostile},
+		DNSNames:              []string{"localhost"},
+		NotBefore:             now.AddDate(0, -1, 0),
+		NotAfter:              now.AddDate(1, 0, 0),
+		KeyUsage:              x509.KeyUsageDigitalSignature | x509.KeyUsageCertSign,
+		ExtKeyUsage:           []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth},
+		BasicConstraintsValid: true,
+		IsCA:                  true,
+	}, nil, nil)
+	if err != nil {
+		t.Fatalf("build leaf: %v", err)
+	}
+
+	parsed := parseCertificate(leaf)
+	verifyCertificateChain(leaf, nil, parsed, x509.NewCertPool())
+
+	if parsed.ChainTrust != types.CheckFailed {
+		t.Errorf("a hostile subject changed the chain verdict: chainTrust=%v",
+			parsed.ChainTrust)
+	}
+	if parsed.ChainTrustReason == "" {
+		t.Error("the reason was lost for a certificate with a hostile subject")
+	}
+	if !strings.Contains(parsed.Subject, "Innocent CA") {
+		t.Errorf("the parsed subject lost the server's text entirely, so the report cannot "+
+			"show what was presented: %q", parsed.Subject)
 	}
 }

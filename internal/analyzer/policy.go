@@ -9,8 +9,8 @@ import (
 	"reflect"
 	"sort"
 	"strings"
-	"unicode/utf8"
 
+	"github.com/csnp/qramm-tls-analyzer/internal/sanitize"
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 	"gopkg.in/yaml.v3"
 )
@@ -106,7 +106,7 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 	declares := declaresARule(data, standaloneRules) ||
 		(policy.Extends != "" && declaresARule(merged, policy.Rules))
 
-	if err := validatePolicy(&policy, path, declares); err != nil {
+	if err := validatePolicy(&policy, path, declares, data); err != nil {
 		return nil, err
 	}
 
@@ -353,15 +353,33 @@ func countRemainingDocuments(dec *yaml.Decoder) int {
 	for {
 		var doc any
 		err := dec.Decode(&doc)
-		if errors.Is(err, io.EOF) {
+		switch {
+		case errors.Is(err, io.EOF):
 			return count
-		}
-		// A separator with nothing after it declares no rules, so it is not a
-		// discarded policy and refusing the file over it would be a false alarm.
-		if err == nil && doc == nil {
+
+		case err != nil:
+			// A document that does not parse still counts, and counting it ENDS
+			// the walk.
+			//
+			// yaml.v3 does not advance past a syntax error: it returns the same
+			// non-EOF error on every subsequent Decode, forever. Looping until EOF
+			// therefore never terminated, and a policy file whose second document
+			// had a syntax error hung the process at 100% CPU before any network
+			// work, producing no output at all. In CI that reads as a hung scan
+			// rather than a rejected file.
+			//
+			// One more document is enough to refuse the file, which is the outcome
+			// either way, so there is nothing to gain by reading further.
+			return count + 1
+
+		case doc == nil:
+			// A separator with nothing after it declares no rules, so it is not a
+			// discarded policy and refusing the file over it would be a false alarm.
 			continue
+
+		default:
+			count++
 		}
-		count++
 	}
 }
 
@@ -562,49 +580,7 @@ func knownProtocolVersions() string {
 // throughout, which is exactly why the text report had to be fixed rather than
 // relied upon.
 func sanitizeForReport(s string, maxLen int) string {
-	var b strings.Builder
-	b.Grow(len(s))
-	for _, r := range s {
-		switch {
-		case r == '\t':
-			b.WriteRune(' ')
-		case r < 0x20 || r == 0x7f: // C0 controls, including newline and ESC
-			b.WriteRune(' ')
-		case r >= 0x80 && r <= 0x9f: // C1 controls, a second escape route
-			b.WriteRune(' ')
-		default:
-			b.WriteRune(r)
-		}
-	}
-	out := strings.TrimSpace(b.String())
-
-	// Collapsing the newlines stops the layout being forged; a very long single
-	// line would still wrap far enough to push the real verdict out of view, so
-	// cap it. Truncation is on a rune boundary, because cutting mid-sequence
-	// produces invalid UTF-8.
-	if len(out) > maxLen {
-		budget := maxLen - 3
-		if budget < 1 {
-			budget = 1
-		}
-		// Walk the runes once, accumulating the encoded length, rather than
-		// rebuilding the whole string to measure it after dropping each rune.
-		// That loop was O(n^2) in the length of untrusted policy text: a 300 KB
-		// policy name cost 100 seconds of CPU before any socket was opened, and
-		// every violation's Expected/Actual/Remediation goes through here too.
-		var cut strings.Builder
-		total := 0
-		for _, r := range out {
-			n := utf8.RuneLen(r)
-			if total+n > budget {
-				break
-			}
-			cut.WriteRune(r)
-			total += n
-		}
-		out = cut.String() + "..."
-	}
-	return out
+	return sanitize.ForReport(s, maxLen)
 }
 
 // sanitizePolicyResult scrubs every string in a verdict that can carry text from
@@ -718,22 +694,41 @@ func validateProtocolVersionValues(rules *types.ProtocolRules) error {
 	return nil
 }
 
-// writtenWarningOnlyRules names the warning-only rules this policy actually set,
-// so the refusal can quote them back to the author.
-func writtenWarningOnlyRules(policy *types.Policy) []string {
-	var written []string
-	if policy.Rules.Certificate.MinValidityDays > 0 {
-		written = append(written, "certificate.minValidityDays")
+// writtenWarningOnlyRules names the warning-only rules the DOCUMENT wrote, so
+// the refusal can quote them back to the author.
+//
+// It reads the document rather than the decoded rules for the same reason
+// declaresARule does: the decoded view of an inheriting policy is the MERGED
+// view, and every built-in sets minValidityDays. Judging on that named
+// certificate.minValidityDays for an overlay that never mentioned it, and then
+// advised using 'extends' to a file already using 'extends'. The refusal was
+// right and both halves of its diagnosis were wrong.
+func writtenWarningOnlyRules(data []byte) []string {
+	var doc struct {
+		Rules map[string]map[string]yaml.Node `yaml:"rules"`
 	}
-	if policy.Rules.Quantum.RequirePQCCertificates {
-		written = append(written, "quantum.requirePqcCertificates")
+	if err := yaml.Unmarshal(data, &doc); err != nil {
+		return nil
+	}
+
+	var written []string
+	for sectionKey, section := range doc.Rules {
+		for key, node := range section {
+			if node.Tag == "!!null" {
+				continue
+			}
+			full := sectionKey + "." + key
+			if warningOnlyRuleKeys[full] {
+				written = append(written, full)
+			}
+		}
 	}
 	sort.Strings(written)
 	return written
 }
 
 // validatePolicy refuses a policy that cannot produce a meaningful verdict.
-func validatePolicy(policy *types.Policy, path string, declaresRule bool) error {
+func validatePolicy(policy *types.Policy, path string, declaresRule bool, data []byte) error {
 	if strings.TrimSpace(policy.Name) == "" {
 		return fmt.Errorf("policy file %s sets no 'name'. A report has to be able to say which "+
 			"policy it applied, and an unnamed policy was reported as an empty policy name "+
@@ -745,7 +740,7 @@ func validatePolicy(policy *types.Policy, path string, declaresRule bool) error 
 		// policy that writes rules which happen to be warning-only, and a message
 		// that describes the wrong problem sends the author looking in the wrong
 		// place.
-		if written := writtenWarningOnlyRules(policy); len(written) > 0 {
+		if written := writtenWarningOnlyRules(data); len(written) > 0 {
 			// Say that the named rules stay advisory whatever else is added.
 			// Without that, the remedy this message offers looks like it makes the
 			// whole file enforceable: add one real rule and the file loads, but the

@@ -30,16 +30,29 @@ second round had just tightened.
   chain built from a valid trusted root, an expired intermediate and a perfectly
   current leaf was reported as not evaluated rather than failed, took the
   certificate dimension's full 25 of 25 as "Certificate is current", graded
-  `A+ 100/100` with zero findings, and satisfied a policy with exit 0. An expired
-  intermediate is the most common real-world chain failure there is, and no field
-  of the report carried it: every other field describes the leaf, and the leaf
-  was healthy. The chain check stepped aside whenever Go reported a validity
+  **A 91/100** with zero findings, and satisfied a policy with exit 0. With
+  `--skip-quantum`, where that dimension is excluded and the rest rescaled, the
+  same chain graded `A+ 100/100`. An expired intermediate is the most common
+  real-world chain failure there is, and no field of the report carried it: every
+  other field describes the leaf, and the leaf was healthy. The chain check stepped aside whenever Go reported a validity
   failure, on the grounds that the certificate's window "is reported on its own",
   but Go reports that for any certificate in the chain and names the offender
   separately, while the expiry flags are derived from the leaf alone. The
   exemption now applies only when the offending certificate is the leaf, and any
   other certificate in the chain fails the check with a reason naming it and
   which end of its window failed.
+
+  The verdict is decided on the leaf's own validity window rather than on which
+  certificate the verifier blamed, because only one of Go's two verifiers
+  answers that question truthfully. Every real scan passes a nil root pool, which
+  on macOS and Windows routes to the platform verifier, and those report the
+  LEAF as the offender whatever actually failed. A first version of this fix
+  compared the blamed certificate against the leaf and was therefore inert on
+  exactly the platforms most operators run, while the whole suite stayed green,
+  because every test passes an explicit pool and that is the only configuration
+  reaching the pure-Go verifier. If a verifier reports a window failure and the
+  leaf is inside its window, the certificate at fault is by definition not the
+  leaf, whichever verifier answered.
 
   The second half of the same defect was that a check which did not run was
   indistinguishable from one that passed. `notPerformed` was neither a violation
@@ -122,6 +135,18 @@ second round had just tightened.
 
 ### Fixed
 
+- **A scanned server could forge the certificate section of the report.** The
+  subject, issuer, SANs and both check reasons are chosen by the server, and the
+  text report printed them raw. macOS formats verifier errors as
+  `x509: "<subject>" certificate is not trusted`, so a common name carrying an
+  ANSI sequence reached the terminal through the chain-trust line and could clear
+  and rewrite the line above it, printing a green `Chain trust: OK` over the real
+  verdict. It survived `--no-color`, because the escape is in the data rather
+  than in the colouring, while the exit code and the JSON stayed honest. This is
+  the same forgery the policy-name fix in this release closed, on the path that
+  fix did not reach: the sanitiser lived in the analyzer package and nothing in
+  the reporter could call it. It now lives in its own package and both use it.
+
 - **The scan coverage notes did not say that revocation is never checked.** That
   section exists to enumerate what the scan does not cover, and it already
   disclosed the protocol probe range, the cipher enumeration limit, whose
@@ -130,6 +155,16 @@ second round had just tightened.
   complete, and revocation is the check most likely to be assumed once a chain
   is reported as trusted. Nothing in the report ever claimed a certificate was
   unrevoked; it now says so out loud, and names a way to check.
+
+- **A policy file whose second document had a syntax error hung the process.**
+  The multi-document refusal added in this release walked the rest of the stream
+  looking for more documents, and broke out only on end of input. yaml.v3 does
+  not advance past a syntax error: it returns the same error on every subsequent
+  read, forever. So the walk never terminated, and the tool spun at 100 percent
+  of a core before opening any socket, printing nothing at all. In CI that reads
+  as a hung scan rather than a rejected file. A document that does not parse is
+  now counted, which ends the walk and refuses the file, which was the outcome
+  either way.
 
 - **A certificate in its final hours raised no expiring-soon finding at all.**
   The finding was guarded on the remaining-days count being above zero, standing

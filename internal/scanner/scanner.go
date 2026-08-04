@@ -751,24 +751,74 @@ func verifyCertificateChain(
 
 	var invalid x509.CertificateInvalidError
 	if errors.As(err, &invalid) && invalid.Reason == x509.Expired {
-		// invalid.Cert is the certificate whose window failed. Step aside only
-		// when that is the leaf, whose window is reported on its own. When it is
-		// any other certificate in the chain, nothing else looks at it, so this
-		// is the only place it can be reported and it is a failure.
-		if invalid.Cert != nil && bytes.Equal(invalid.Cert.Raw, leaf.Raw) {
-			parsed.ChainTrust = types.CheckNotPerformed
-			parsed.ChainTrustReason = "not evaluated because the certificate is outside its validity period, " +
-				"which is reported on its own"
-			return
-		}
-
-		parsed.ChainTrust = types.CheckFailed
-		parsed.ChainTrustReason = chainCertOutsideValidityReason(invalid.Cert)
+		applyValidityWindowVerdict(leaf, invalid.Cert, parsed)
 		return
 	}
 
 	parsed.ChainTrust = types.CheckFailed
 	parsed.ChainTrustReason = err.Error()
+}
+
+// applyValidityWindowVerdict decides what a validity-window failure somewhere in
+// the chain means, given the leaf and whichever certificate the verifier blamed.
+//
+// It is a separate function because the decision has to hold for BOTH verifiers
+// Go can use, and only one of them tells the truth about which certificate
+// failed. When Roots is nil, which is what every real scan passes, Go routes to
+// the platform verifier on darwin, windows and ios (verify.go: "Use platform
+// verifiers, where available, if Roots is from SystemCertPool"). Those verifiers
+// construct CertificateInvalidError{c, Expired, ...} with c bound to the LEAF
+// whatever actually failed (root_darwin.go, root_windows.go), so on the
+// platforms most operators run, invalid.Cert names the leaf even when an
+// intermediate is the expired one.
+//
+// A first version of this fix compared invalid.Cert against the leaf and was
+// therefore inert exactly where it mattered: on macOS the comparison always
+// succeeded, the exemption always fired, and an expired intermediate still
+// graded A 91/100 with zero findings. The whole suite stayed green because every
+// test passes an explicit pool, which is the one configuration that reaches the
+// pure-Go verifier.
+//
+// So the decision is made on the leaf's OWN window, read from the leaf here
+// rather than from the parsed result: if the verifier reports a window failure
+// and the leaf is inside its window, the certificate at fault is by definition
+// not the leaf, whichever verifier answered.
+//
+// Reading it from the leaf rather than from parsed.Expired is deliberate. This
+// function must not depend on the caller having populated the result first,
+// because a hidden ordering coupling is the same shape of latent defect as the
+// one being fixed, and the existing suite calls this with an empty result.
+func applyValidityWindowVerdict(leaf, blamed *x509.Certificate, parsed *types.Certificate) {
+	now := time.Now()
+	leafOutsideItsWindow := now.After(leaf.NotAfter) || now.Before(leaf.NotBefore)
+
+	// The leaf's own window is reported on its own, by the expiry finding and by
+	// the certificate dimension, so the chain check steps aside rather than
+	// stating one defect twice.
+	if leafOutsideItsWindow {
+		parsed.ChainTrust = types.CheckNotPerformed
+		parsed.ChainTrustReason = "not evaluated because the certificate is outside its validity period, " +
+			"which is reported on its own"
+		return
+	}
+
+	// The leaf is current, so something else in the chain is not. Nothing else
+	// looks at those certificates, so this is the only place it can be reported.
+	parsed.ChainTrust = types.CheckFailed
+
+	// Name the offender only when the verifier actually identified one. A
+	// platform verifier that blamed the leaf has told us nothing about which
+	// certificate failed, and repeating its answer would name a certificate the
+	// same report shows as current.
+	if blamed != nil && !bytes.Equal(blamed.Raw, leaf.Raw) {
+		parsed.ChainTrustReason = chainCertOutsideValidityReason(blamed)
+		return
+	}
+	parsed.ChainTrustReason = "a certificate in the chain other than the leaf is outside its " +
+		"validity period, so the chain does not build to a trusted root. The leaf is current, " +
+		"so the expired certificate is an intermediate or the root. This platform's certificate " +
+		"verifier does not report which one; inspect the chain with " +
+		"'openssl s_client -showcerts'"
 }
 
 // chainCertOutsideValidityReason describes a chain certificate other than the
@@ -783,21 +833,41 @@ func chainCertOutsideValidityReason(cert *x509.Certificate) string {
 		return "a certificate in the chain other than the leaf is outside its validity period"
 	}
 
+	name := chainCertName(cert)
 	now := time.Now()
 	switch {
 	case now.After(cert.NotAfter):
 		return fmt.Sprintf(
 			"the chain certificate %q expired on %s, so the chain does not build to a trusted root",
-			cert.Subject.CommonName, cert.NotAfter.UTC().Format("2006-01-02"))
+			name, cert.NotAfter.UTC().Format("2006-01-02"))
 	case now.Before(cert.NotBefore):
 		return fmt.Sprintf(
 			"the chain certificate %q is not valid until %s, so the chain does not build to a trusted root",
-			cert.Subject.CommonName, cert.NotBefore.UTC().Format("2006-01-02"))
+			name, cert.NotBefore.UTC().Format("2006-01-02"))
 	default:
 		return fmt.Sprintf(
 			"the chain certificate %q is outside its validity period, so the chain does not "+
-				"build to a trusted root", cert.Subject.CommonName)
+				"build to a trusted root", name)
 	}
+}
+
+// chainCertName identifies a certificate for a human who has to go and find it.
+//
+// The common name alone is not enough. CA certificates identified only by
+// organization are real, particularly among the legacy cross-signed roots that
+// expire and break chains, and naming one of those produced the literal empty
+// string: `the chain certificate "" expired on ...`, which tells the operator
+// nothing at exactly the moment the message exists to help. x509's own
+// UnknownAuthorityError falls back the same way, to organization and then to the
+// serial number.
+func chainCertName(cert *x509.Certificate) string {
+	if cn := strings.TrimSpace(cert.Subject.CommonName); cn != "" {
+		return cn
+	}
+	if subject := strings.TrimSpace(cert.Subject.String()); subject != "" {
+		return subject
+	}
+	return "serial " + cert.SerialNumber.String()
 }
 
 // parseCertificate extracts relevant info from an x509 certificate.

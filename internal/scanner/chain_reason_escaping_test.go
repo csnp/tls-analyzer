@@ -14,16 +14,24 @@ import (
 // it with no sanitising step of its own.
 //
 // Reporting an expired chain certificate means naming it, which puts
-// attacker-controlled text on that path for the first time. Before this, the
-// expired case produced a fixed string, and the other failures carried
-// err.Error(), which for an untrusted root is "x509: certificate signed by
-// unknown authority" and holds no subject at all.
+// server-chosen text on this path.
+//
+// An earlier version of this comment claimed that text was arriving here for the
+// FIRST time, on the grounds that err.Error() holds no subject. Both halves were
+// false and an adversarial review demonstrated it: the Subject and Issuer lines
+// already printed raw, and macOS formats its verifier errors as
+// `x509: "<subject>" certificate is not trusted`, so err.Error() carries the
+// subject on the platform most operators run. Recorded because the correction
+// matters more than the claim: this file exists to test a safety property, and
+// it was asserting a false premise about the surrounding code.
 //
 // The reason is built with %q rather than %s, which renders control characters
 // as escaped text. That is load-bearing, not incidental: with %s an ANSI
-// sequence in a CommonName would reach the terminal and could overprint the
-// verdict line above it, which is the same class as the policy-name defect this
-// release already fixed. This test exists so the verb cannot be changed back.
+// sequence in a CommonName would reach this string unescaped. The rendered
+// report is defended separately, by sanitising every server-chosen field at the
+// text reporter, and by TestAServerCannotForgeTheReportThroughItsCertificate.
+// This test keeps the verb from changing back, so the two defences stay
+// independent rather than one silently carrying both.
 
 // certificateWithSubject mints a self-signed certificate carrying the given
 // common name, and returns the error rather than failing, so a caller can assert

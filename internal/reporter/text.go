@@ -5,6 +5,7 @@ import (
 	"io"
 	"strings"
 
+	"github.com/csnp/qramm-tls-analyzer/internal/sanitize"
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
@@ -199,6 +200,11 @@ func (r *TextReporter) printHeader(w io.Writer, result *types.ScanResult) {
 	fmt.Fprintf(w, "  %s %s\n", r.color(colorDim, "Scanned:"), result.Timestamp.Format("2006-01-02 15:04:05 MST"))
 	fmt.Fprintf(w, "  %s %s\n\n", r.color(colorDim, "Duration:"), result.Duration.String())
 }
+
+// maxCertDetail caps server-chosen certificate text in the report. Collapsing
+// the control characters stops the layout being forged; a very long single line
+// would still wrap far enough to push the verdict out of view.
+const maxCertDetail = 500
 
 // quantumGradeLegend explains the quantum readiness letters, which appeared in
 // the report and in --help with no key anywhere, so a reader could not tell
@@ -442,9 +448,19 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 		status = r.color(colorYellow, fmt.Sprintf("⚠ Expiring in %d days", cert.DaysUntilExpiry))
 	}
 
+	// Every string below is chosen by the scanned server, directly in the case of
+	// the subject and issuer, and by way of the verifier's error text in the case
+	// of the check reasons. macOS formats its verifier errors as
+	// `x509: "<subject>" certificate is not trusted`, so the subject reaches the
+	// reason too. An ANSI sequence in a common name could clear and rewrite the
+	// line above it, printing a green "Chain trust: OK" over the real verdict,
+	// and it survived --no-color. That is the same forgery the policy-name fix in
+	// this release closed; the certificate path had not been closed with it,
+	// because the sanitiser lived in the analyzer package and nothing here
+	// reached it.
 	fmt.Fprintf(w, "    Status:      %s\n", status)
-	fmt.Fprintf(w, "    Subject:     %s\n", cert.Subject)
-	fmt.Fprintf(w, "    Issuer:      %s\n", cert.Issuer)
+	fmt.Fprintf(w, "    Subject:     %s\n", sanitize.ForReport(cert.Subject, maxCertDetail))
+	fmt.Fprintf(w, "    Issuer:      %s\n", sanitize.ForReport(cert.Issuer, maxCertDetail))
 	fmt.Fprintf(w, "    Valid:       %s to %s\n",
 		cert.NotBefore.Format("2006-01-02"),
 		cert.NotAfter.Format("2006-01-02"))
@@ -452,7 +468,11 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 	fmt.Fprintf(w, "    Signature:   %s\n", cert.SignatureAlgorithm)
 
 	if len(cert.SANs) > 0 {
-		fmt.Fprintf(w, "    SANs:        %s\n", strings.Join(cert.SANs, ", "))
+		sans := make([]string, 0, len(cert.SANs))
+		for _, s := range cert.SANs {
+			sans = append(sans, sanitize.ForReport(s, maxCertDetail))
+		}
+		fmt.Fprintf(w, "    SANs:        %s\n", strings.Join(sans, ", "))
 	}
 
 	// Both checks are printed whatever their outcome, including when they did
@@ -460,13 +480,13 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 	// reader assumes passed.
 	fmt.Fprintf(w, "    Name check:  %s\n", r.certCheckLine(
 		cert.NameMatch,
-		"valid for "+cert.RequestedName,
-		cert.NameMismatchReason,
+		"valid for "+sanitize.ForReport(cert.RequestedName, maxCertDetail),
+		sanitize.ForReport(cert.NameMismatchReason, maxCertDetail),
 		"not checked against any name"))
 	fmt.Fprintf(w, "    Chain trust: %s\n", r.certCheckLine(
 		cert.ChainTrust,
 		"chains to a root this host trusts",
-		cert.ChainTrustReason,
+		sanitize.ForReport(cert.ChainTrustReason, maxCertDetail),
 		"not verified"))
 
 	if cert.IsSelfSigned {
