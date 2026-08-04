@@ -308,9 +308,21 @@ func (e *PolicyEvaluator) decodePolicy(data []byte, onto types.Policy) (types.Po
 			// untouched, which is how an empty file became a passing policy.
 			return onto, fmt.Errorf("the policy file contains no YAML document")
 		}
+		// KnownFields(true) makes the decoder echo an unrecognised key's NAME
+		// back verbatim and untruncated, and a policy file is untrusted text by
+		// this package's own rule, so this message is the third forgery surface:
+		// a key name carrying a cursor-up sequence and newlines printed a
+		// fabricated COMPLIANT verdict on the stderr that shares the terminal
+		// with the report.
+		//
+		// Scrub the DECODER'S text, not the composed error. The newline before
+		// the guidance line below is this loader's own, and collapsing the whole
+		// message would cost the author the separate line that tells them what to
+		// do next. Untrusted text loses its newlines; tool-authored text keeps
+		// them.
 		return onto, fmt.Errorf("failed to parse policy YAML: %s\n"+
 			"Run 'tlsanalyzer print-policy modern' to see a valid policy to start from",
-			schemaPathsInErrors.Replace(err.Error()))
+			sanitize.ForReport(schemaPathsInErrors.Replace(err.Error()), sanitize.MaxReportDetail))
 	}
 
 	// Everything after the first `---` was read by nobody.

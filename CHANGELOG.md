@@ -71,6 +71,21 @@ again after its first repair proved inert on macOS and Windows.
   not identify which certificate it rejected. `U+2028` and `U+2029` are collapsed
   along with the other line terminators.
 
+- **A policy file could forge the tool's own error output.** Refusing a policy
+  with an unrecognised key is new in this release, and the YAML decoder echoes
+  the offending key's NAME back verbatim and untruncated. A key name carrying a
+  cursor-up sequence and newlines therefore printed a fabricated
+  `Status: COMPLIANT  Score: 100/100` on stderr, which shares the terminal with
+  the report and is printed after every report a sweep produces. This was the
+  third source of untrusted text reaching a surface the release had already
+  fixed elsewhere, found by the pre-push adversarial review on the one path the
+  release itself introduced. The decoder's message is now scrubbed where it is
+  interpolated, rather than the composed error being scrubbed as a whole: the
+  guidance line naming a valid starting point is this loader's own and stays on
+  its own line, while the untrusted text loses the newlines that let it
+  impersonate the tool. A misspelled key is still named, which is the entire
+  point of refusing unknown keys.
+
 - **An expired intermediate certificate was reported as a healthy chain.** A
   chain built from a valid trusted root, an expired intermediate and a perfectly
   current leaf was reported as not evaluated rather than failed, took the
