@@ -104,13 +104,20 @@ separately, whatever their outcome including when they did not run:
   requested, which is the `--sni` value when one is given and the target
   otherwise. When the two differ, the report says which name was verified.
 - **Chain trust.** The presented chain has to build to a root the scanning
-  machine trusts, for server authentication. The verdict is therefore
-  machine-dependent: a certificate from an internal CA is reported untrusted
-  unless that CA is installed on the machine running the scan, and a scan
-  warning says so.
+  machine trusts, for server authentication. Every certificate in the chain is
+  covered, not just the leaf: an expired intermediate fails the check and the
+  reason names which certificate and which end of its window failed, because
+  every other field in the report describes the leaf and the leaf is usually
+  healthy in that case. The verdict is machine-dependent: a certificate from an
+  internal CA is reported untrusted unless that CA is installed on the machine
+  running the scan, and a scan warning says so.
 
 Either check failing scores the certificate dimension zero, for the same reason
 expiry does: no client will use the certificate.
+
+Revocation is not checked. This scanner does not fetch CRLs or query OCSP, so a
+chain reported as trusted may still have been revoked, and a scan warning says
+so. Check revocation separately.
 
 ### Quantum Readiness
 
@@ -351,14 +358,22 @@ exchange and 20 percent certificate.
 
 | Grade | Quantum score | Description |
 |-------|---------------|-------------|
-| **Q+** | 80-100 | Ready: full PQC (ML-KEM key exchange and ML-DSA certificates) |
+| **Q+** | 80-100 | Ready: a full PQC key exchange, or hybrid plus a PQC certificate |
 | **Q** | 50-79 | Partial: hybrid PQC key exchange in place |
 | **Q-** | 20-49 | Limited post-quantum protection |
 | **QV** | 0-19 | Vulnerable: classical cryptography only |
 
-No publicly trusted CA issues ML-DSA certificates yet, so Q+ is not reachable
-with a public certificate today. A server with hybrid PQC key exchange correctly
-reports Q.
+The weighting decides what reaches Q+. A full PQC key exchange scores the key
+exchange term outright, which is 80 of the 100 on its own, so it reaches Q+ with
+an ordinary classical certificate and no CA involvement at all. Hybrid key
+exchange scores 80 of that term rather than all of it, so hybrid with a classical
+certificate scores 64 and correctly reports Q; reaching Q+ that way needs a
+post-quantum certificate, and no publicly trusted CA issues one yet.
+
+In practice almost every server that has deployed post-quantum key exchange has
+deployed it as hybrid, because a PQC-only key exchange cannot talk to classical
+clients. So Q is the grade a well-configured public server reports today, and it
+is the best posture most operators can reach.
 
 ## CLI Reference
 
