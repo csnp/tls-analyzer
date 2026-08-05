@@ -297,7 +297,7 @@ carries the CNSA 2.0 algorithm status listing, which repeats one line per
 accepted suite, plus the protocol, cipher suite, quantum risk, vulnerability,
 recommendation and scan coverage sections, and every enumerated key exchange
 group and cipher suite. Generated with `tlsanalyzer example.com --no-color` on
-the 0.4.0 build.
+the 0.4.1 build, and re-checked against it line for line at that release.
 
 The score breakdown reconciles: the four dimensions total 66 of 100 points, the
 vulnerability findings deduct 45, and the headline is 66 - 45 = 21. Adding
