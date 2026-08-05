@@ -25,8 +25,21 @@ import (
 // adversary, and every client refuses such a certificate exactly as it refuses
 // an expired one.
 //
-// This file names nothing new, so it compiles against the pre-fix sources and
-// fails there on behaviour rather than on a build error.
+// HOW THIS FILE IS RED-PROVED, corrected in 0.4.1.
+//
+// It used to claim it named nothing new, so it could be built against the
+// sources before the fix and would fail there on behaviour rather than on a
+// build error. Checked rather than believed: copied into a pristine tree at
+// a869357 it does not build (`undefined: issueLeaf`). 0.4.0 landed as one
+// squashed commit, so there is no per-fix parent in this repository to build
+// against instead, and a proof that needs objects only one machine has is not
+// one anyone can repeat.
+//
+// The proof is mechanical and pins the production behaviour: set NotYetValid to
+// false rather than deriving it from now.Before(NotBefore), which is the exact
+// omission described above, and TestANotYetValidCertificateIsNotScoredAsHealthy
+// and TestAShortNotYetValidWindowRaisesOneFindingNotTwo both fail. Run, and they
+// did.
 
 // notYetValidWindow is a validity period that starts a year from now.
 func notYetValidWindow() (time.Time, time.Time) {

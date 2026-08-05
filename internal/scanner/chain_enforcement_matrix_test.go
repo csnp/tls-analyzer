@@ -23,8 +23,23 @@ import (
 //	Roots         -> untrusted root                 (covered here)
 //	Intermediates -> missing intermediate           (covered here)
 //	KeyUsages     -> certificate not for serverAuth (covered here)
-//	                 this one is declared in the options and was never tested,
-//	                 so its enforcement was unproven rather than known-good.
+//
+// One correction to what this header used to say, made in 0.4.1. It claimed the
+// KeyUsages enforcement "was unproven rather than known-good". The enforcement
+// is proven, by TestACertificateNotValidForServerAuthFailsTheChain below. What
+// is not provable is that the EXPLICIT option changes anything: deleting
+// `KeyUsages: []x509.ExtKeyUsage{x509.ExtKeyUsageServerAuth}` from the
+// production call leaves this whole suite green, because crypto/x509 documents
+// an empty KeyUsages as meaning exactly that value. No input distinguishes the
+// two, so no test here can.
+//
+// The option is kept, and the equivalence with Go's default is pinned directly
+// in production_verifier_config_test.go, which fails if that default ever moves.
+//
+// Every case in this file passes an explicit non-nil Roots. A real scan passes
+// nil, which routes to the platform verifier on darwin and windows; that
+// configuration is exercised in production_verifier_config_test.go, because
+// nothing here does.
 
 // chainFixture is a root plus a leaf built to whatever shape a case needs.
 type chainFixture struct {

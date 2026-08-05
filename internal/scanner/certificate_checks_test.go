@@ -18,9 +18,16 @@ import (
 )
 
 // The tests in this file name nothing that did not already exist, so they
-// compile against the pre-fix sources and fail there at runtime, naming the
-// defect. Anything that has to name a new field or config option lives in
+// build against the sources before the fix and fail there at runtime, naming
+// the defect. Anything that has to name a new field or config option lives in
 // certificate_checks_fields_test.go instead.
+//
+// This file is the one of the ten carrying that claim for which it holds:
+// checked in 0.4.1 by copying it alone into a pristine tree at a869357, where it
+// builds. The other nine did not, and are corrected. It is kept as a convention
+// about where assertions live rather than as the red proof, because it depends
+// on a tree that a squash, a rebase or a repository move would take away. See
+// docs/testing/red-proof.md.
 
 // issued is a throwaway certificate plus the CA that signed it, so a test can
 // decide for itself whether that chain is trusted. Nothing here reads the trust
@@ -122,7 +129,7 @@ func startLocalTLSServer(t *testing.T, cert tls.Certificate) (host string, port 
 				return
 			}
 			go func(c net.Conn) {
-				defer c.Close()
+				defer func() { _ = c.Close() }()
 				if tc, ok := c.(*tls.Conn); ok {
 					_ = tc.HandshakeContext(context.Background())
 				}

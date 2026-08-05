@@ -27,9 +27,19 @@ import (
 // later that reads Score without reading Assessed fails here rather than in a
 // release test.
 //
-// The file names nothing that did not already exist, so it compiles against the
-// pre-fix sources and fails there. The acceptance controls, which have to state
-// that an assessment DID run, are in unmeasured_quantum_fields_test.go.
+// HOW THIS FILE IS RED-PROVED, corrected in 0.4.1.
+//
+// It used to claim it could be built against the sources before the fix and
+// would fail there on behaviour. That was measured in 0.4.1 rather than
+// believed, and it is false: copied alone into a pristine tree at a869357 this
+// file does not build. 0.4.0 landed as a single squashed commit, so the helpers,
+// the new types and the production change all arrived together and no test in
+// that release has an earlier tree to be built against. Ten files carried the
+// same claim; nine were wrong. Red proofs name their mutation instead, and
+// docs/testing/red-proof.md carries the method and the worked examples.
+//
+// The acceptance controls, which have to state that an assessment DID run, are
+// in unmeasured_quantum_fields_test.go.
 
 func unassessedResult() *types.ScanResult {
 	return &types.ScanResult{

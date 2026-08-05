@@ -4,7 +4,6 @@ package main
 import (
 	"bufio"
 	"context"
-	"encoding/json"
 	"errors"
 	"fmt"
 	"io"
@@ -130,7 +129,32 @@ func policyOutcome(results []*types.ScanResult) error {
 var rootCmd = &cobra.Command{
 	Use:   "tlsanalyzer [target]",
 	Short: "QRAMM TLS Analyzer - Quantum-ready TLS security assessment",
-	Long: `QRAMM TLS Analyzer performs comprehensive TLS security analysis
+	Long:  longDescription(),
+	Args:  cobra.MaximumNArgs(1),
+	RunE:  runScan,
+
+	// A runtime failure is not a usage mistake. Every error, including an
+	// unreachable host, printed the error and then the whole ~30 line usage
+	// block after it, which buried the one line that mattered. Cobra still
+	// prints "Error: ..." itself; --help remains the way to see usage.
+	SilenceUsage: true,
+}
+
+// longDescription builds the --help body, with every number in it RENDERED from
+// the code that produces it rather than restated beside it.
+//
+// The help used to carry its own copy of what each grade requires and said "Q+
+// ready: hybrid or full PQC key exchange in place", which the grader does not
+// do: hybrid key exchange with a classical certificate scores 64 and grades Q,
+// and Q+ was never observed on a hybrid host. The tests written for that pinned
+// the grader from both sides and read no help text at all, so they guarded the
+// one direction that had not gone wrong, and they passed unchanged against the
+// tree before the fix. A restatement can be false; a rendering cannot.
+func longDescription() string {
+	hybridWithClassicalCert := scanner.QuantumScoreFor(
+		scanner.QuantumHybridKeyExchangeScore, scanner.QuantumClassicalCertificateScore)
+
+	return fmt.Sprintf(`QRAMM TLS Analyzer performs comprehensive TLS security analysis
 with a focus on post-quantum cryptography readiness.
 
 It analyzes:
@@ -142,11 +166,11 @@ It analyzes:
   • Security vulnerabilities and misconfigurations
 
 Quantum Ready grades, from the quantum readiness score:
-  Q+ 80-100   Q 50-79   Q- 20-49   QV below 20
+  %s
 
-  The score weights the key exchange at 80 and the certificate at 20, so a
-  server offering hybrid key exchange with a classical certificate scores 64
-  and grades Q, not Q+. Q+ needs either a full post-quantum key exchange, which
+  The score weights the key exchange at %d and the certificate at %d, so a
+  server offering hybrid key exchange with a classical certificate scores %d
+  and grades %s, not %s. %s needs either a full post-quantum key exchange, which
   is yours to deploy, or hybrid key exchange plus a post-quantum certificate,
   which is not: no publicly trusted CA issues one yet. So a host running hybrid
   key exchange is at the best posture most operators can reach today. The
@@ -155,9 +179,18 @@ Quantum Ready grades, from the quantum readiness score:
   cannot be done.
 
 TLS Security grades:
-  A+ 95-100   A 85-94   B 75-84   C 60-74   D 40-59   F below 40
+  %s
 
-Exit codes:
+Exit codes:`,
+		scanner.DescribeBands(scanner.QuantumGradeBands()),
+		scanner.QuantumKeyExchangeWeight,
+		scanner.QuantumCertificateWeight,
+		hybridWithClassicalCert,
+		scanner.QuantumGradeFor(hybridWithClassicalCert),
+		scanner.QuantumGradeBands()[0].Letter,
+		scanner.QuantumGradeBands()[0].Letter,
+		scanner.DescribeBands(scanner.TLSGradeBands()),
+	) + `
   0  scanned, and any policy applied was fully evaluated and satisfied
   1  the scan could not be completed
   2  a policy was applied and the target did not satisfy it, or the policy
@@ -170,15 +203,7 @@ Examples:
   tlsanalyzer example.com --format html -o report.html
   tlsanalyzer example.com --format cbom -o inventory.json
   tlsanalyzer example.com --policy cnsa-2.0-2027
-  tlsanalyzer --targets hosts.txt --format json`,
-	Args: cobra.MaximumNArgs(1),
-	RunE: runScan,
-
-	// A runtime failure is not a usage mistake. Every error, including an
-	// unreachable host, printed the error and then the whole ~30 line usage
-	// block after it, which buried the one line that mattered. Cobra still
-	// prints "Error: ..." itself; --help remains the way to see usage.
-	SilenceUsage: true,
+  tlsanalyzer --targets hosts.txt --format json`
 }
 
 var versionCmd = &cobra.Command{
@@ -531,11 +556,15 @@ func scanBatchTargets(ctx context.Context, scan scanFunc, cnsa2 *analyzer.CNSA2A
 	// reject it, which broke the documented
 	// "tlsanalyzer --targets hosts.txt --format json" workflow.
 	if outputFormat == "json" {
-		encoder := json.NewEncoder(output)
-		if !jsonCompact {
-			encoder.SetIndent("", "  ")
+		// Through the same writer the single-target path uses, so the control
+		// characters encoding/json leaves raw are escaped here too. A batch sweep
+		// is the shape most likely to be saved and opened later, and this was the
+		// fourth JSON encoder in the tool with its own opinion.
+		indent := "  "
+		if jsonCompact {
+			indent = ""
 		}
-		if err := encoder.Encode(results); err != nil {
+		if err := reporter.WriteJSON(output, results, indent); err != nil {
 			return err
 		}
 		return batchOutcome(results)

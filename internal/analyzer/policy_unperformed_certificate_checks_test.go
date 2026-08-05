@@ -7,8 +7,16 @@ import (
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
-// This file names nothing that did not already exist, so it compiles against the
-// pre-fix sources and fails there on behaviour.
+// HOW THIS FILE IS RED-PROVED, corrected in 0.4.1.
+//
+// It used to claim it could be built against the sources before the fix and
+// would fail there on behaviour. That was measured in 0.4.1 rather than
+// believed, and it is false: copied alone into a pristine tree at a869357 this
+// file does not build. 0.4.0 landed as a single squashed commit, so the helpers,
+// the new types and the production change all arrived together and no test in
+// that release has an earlier tree to be built against. Ten files carried the
+// same claim; nine were wrong. Red proofs name their mutation instead, and
+// docs/testing/red-proof.md carries the method and the worked examples.
 //
 // The defect: evaluateCertificate read certificate.nameMatch and
 // certificate.chainTrust only for CheckFailed. CheckNotPerformed was neither a

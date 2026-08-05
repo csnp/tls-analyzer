@@ -28,12 +28,24 @@ import (
 
 // forgery is the payload written into every string field.
 //
-// It carries the three things that let untrusted text rewrite a finished report:
-// a CSI sequence that erases a line, one that moves the cursor up, and a raw C1
-// introducer, which is the same instruction in one byte and was the escape route
-// left open when only ESC was stripped. The readable words are there so a
-// failure message shows which field carried it.
-const forgery = "\x1b[2K\x1b[1AFORGED  TLS Security:     A+   (100/100)\x9b1BEND\r\n\x00tail\u2028\u2029end"
+// It carries the things that let untrusted text rewrite a finished report: a CSI
+// sequence that erases a line, one that moves the cursor up, a C1 introducer,
+// which is the same instruction in one codepoint and was the escape route left
+// open when only ESC was stripped, and the Unicode line separators that end a
+// line for a consumer splitting on Unicode boundaries rather than on \n. The
+// readable words are there so a failure message shows which field carried it.
+//
+// U+009B is written BOTH ways, and the reason is a correction to what this file
+// used to claim. \x9b alone is a bare byte, which is not valid UTF-8, so
+// `for _, r := range` decodes it to U+FFFD before assertNoCursorControl's C1 arm
+// can look at it: that arm could never fire for this payload, and the file said
+// it covered C1 anyway. The raw byte IS neutralised, by UTF-8 decoding rather
+// than by the sanitiser, and U+FFFD steers nothing. The properly encoded \u009b
+// is what actually reaches the C1 arm, in the sanitiser and in the assertion.
+// (The sanitiser's own C1 handling was covered throughout by sanitize_test.go
+// and c1_controls_test.go; only this file's claim to cover it was untrue.)
+const forgery = "\x1b[2K\x1b[1AFORGED  TLS Security:     A+   (100/100)" +
+	"\u009b1BEND\x9braw\r\n\x00tail\u2028\u2029end"
 
 // TestNoUntrustedFieldCanMoveTheCursorInAnyReport fills every string in the
 // result and asserts no report format emits a byte that steers a terminal.
@@ -192,10 +204,44 @@ func contextAround(s string, i int) string {
 func TestTheSweepReachesEveryStringTheResultCarries(t *testing.T) {
 	result := hostileScanResult(t, shapeScanned)
 
+	// The floor was 50 against 120 real payloads, which does not bind: a walker
+	// that skipped PolicyResult, CNSA2Timeline and Compliance together, 46
+	// strings and three of the most policy-relevant blocks in the report, would
+	// still have passed a test named "reaches every string the result carries".
+	//
+	// Measured at 120. The floor is 110, close enough to bind on the loss of any
+	// one substructure and loose enough to survive a field being removed.
 	filled := countPayloads(reflect.ValueOf(result))
-	if filled < 50 {
-		t.Fatalf("the hostile result carries only %d payload strings, which is too few to "+
-			"be exercising the report; the reflection walker is probably skipping a branch", filled)
+	if filled < 110 {
+		t.Fatalf("the hostile result carries only %d payload strings, measured at 120 when "+
+			"this floor was set; the reflection walker is skipping a branch", filled)
+	}
+
+	// Per-substructure floors, because a total can be met while a whole block is
+	// missing: the top-level scalars and the certificate alone are 34 strings.
+	// Each number is the measured count for that field.
+	for _, sub := range []struct {
+		name  string
+		value any
+		want  int
+	}{
+		{"Certificate", result.Certificate, 15},
+		{"CertChain", result.CertChain, 15},
+		{"PolicyResult", result.PolicyResult, 16},
+		{"CNSA2Timeline", result.CNSA2Timeline, 15},
+		{"Compliance", result.Compliance, 15},
+		{"Vulnerabilities", result.Vulnerabilities, 7},
+		{"CipherSuites", result.CipherSuites, 7},
+		{"KeyExchanges", result.KeyExchanges, 5},
+		{"Grade", result.Grade, 6},
+		{"QuantumRisk", result.QuantumRisk, 6},
+		{"Recommendations", result.Recommendations, 6},
+	} {
+		if got := countPayloads(reflect.ValueOf(sub.value)); got < sub.want {
+			t.Errorf("%s carries %d payload strings, want at least %d; the sweep is not "+
+				"reaching that block and its print sites are unexercised",
+				sub.name, got, sub.want)
+		}
 	}
 
 	// Named spot checks, so a walker that filled many fields but missed the ones
@@ -211,6 +257,55 @@ func TestTheSweepReachesEveryStringTheResultCarries(t *testing.T) {
 	}
 	if len(result.Vulnerabilities) == 0 || !strings.Contains(result.Vulnerabilities[0].Description, "FORGED") {
 		t.Error("Vulnerabilities was not filled")
+	}
+}
+
+// TestTheTwoWalkersAgreeOnWhatTheyCanReach records the one asymmetry between
+// them and why it is not a hole.
+//
+// countPayloads has a reflect.Interface arm and fillHostile does not, so an
+// interface-typed field would be counted and never filled, and the coverage
+// floor above would fall rather than the sweep failing. That asymmetry is real
+// and it is already defended, one file over:
+// TestTheResultTypeGraphContainsNoKindTheScrubberCannotHandle fails on any
+// interface, chan, func or unsafe.Pointer anywhere in the result type graph, and
+// its message names fillHostile explicitly as one of the two things to update.
+//
+// So the arm is unreachable rather than untested, and this says so out loud
+// because the sweep's header claims a field added later is covered the day it is
+// added, which is true only because of that guard.
+func TestTheTwoWalkersAgreeOnWhatTheyCanReach(t *testing.T) {
+	// Kinds fillHostile handles. If countPayloads gains a kind not on this list,
+	// or fillHostile loses one, the two can disagree silently.
+	filled := map[reflect.Kind]bool{
+		reflect.Pointer: true, reflect.Struct: true, reflect.Slice: true,
+		reflect.Array: true, reflect.Map: true, reflect.String: true,
+		reflect.Bool: true, reflect.Int: true, reflect.Int8: true,
+		reflect.Int16: true, reflect.Int32: true, reflect.Int64: true,
+		reflect.Uint: true, reflect.Uint8: true, reflect.Uint16: true,
+		reflect.Uint32: true, reflect.Uint64: true,
+		reflect.Float32: true, reflect.Float64: true,
+	}
+
+	counted := []reflect.Kind{
+		reflect.Pointer, reflect.Interface, reflect.Struct,
+		reflect.Slice, reflect.Array, reflect.Map, reflect.String,
+	}
+
+	for _, k := range counted {
+		if !filled[k] && k != reflect.Interface {
+			t.Errorf("countPayloads counts %s and fillHostile does not fill it, so a field "+
+				"of that kind would lower the coverage floor instead of failing the sweep", k)
+		}
+	}
+
+	// The one exception has to stay guarded elsewhere. If that guard is renamed
+	// or deleted, this comment stops being true, so assert the type graph is
+	// still interface-free here too rather than trusting the note.
+	var problems []string
+	walkType(reflect.TypeOf(types.ScanResult{}), "ScanResult", map[reflect.Type]bool{}, &problems, 0)
+	for _, p := range problems {
+		t.Errorf("the result type graph now contains a kind neither walker handles: %s", p)
 	}
 }
 

@@ -1,7 +1,6 @@
 package reporter
 
 import (
-	"encoding/json"
 	"io"
 
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
@@ -148,9 +147,7 @@ func (r *SARIFReporter) Report(w io.Writer, result *types.ScanResult) error {
 		},
 	}
 
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(report)
+	return WriteJSON(w, report, "  ")
 }
 
 // Format returns the format name.

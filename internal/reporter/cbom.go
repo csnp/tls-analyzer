@@ -1,7 +1,6 @@
 package reporter
 
 import (
-	"encoding/json"
 	"fmt"
 	"io"
 	"strings"
@@ -16,11 +15,7 @@ type CBOMReporter struct{}
 
 // Report writes the scan result as a CycloneDX CBOM.
 func (r *CBOMReporter) Report(w io.Writer, result *types.ScanResult) error {
-	cbom := r.generateCBOM(result)
-
-	encoder := json.NewEncoder(w)
-	encoder.SetIndent("", "  ")
-	return encoder.Encode(cbom)
+	return WriteJSON(w, r.generateCBOM(result), "  ")
 }
 
 // Format returns the format name.

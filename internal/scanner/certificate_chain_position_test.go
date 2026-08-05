@@ -17,9 +17,14 @@ import (
 )
 
 // The tests in this file name nothing that did not already exist, so they
-// compile against the pre-fix sources and fail there at runtime, naming the
-// defect. Anything that has to name a new helper lives in
-// certificate_chain_position_fields_test.go instead.
+// build against the sources before the fix and fail there at runtime.
+//
+// Measured in 0.4.1: that does not hold. Copied alone into a pristine tree at
+// a869357 this file does not build (`undefined: verifyCertificateChain`),
+// because 0.4.0 landed as one squashed commit and the production change arrived
+// with its tests. See docs/testing/red-proof.md for how these are red-proved
+// instead. Anything that has to name a new helper lives in
+// certificate_chain_position_fields_test.go.
 //
 // The defect: verifyCertificateChain stepped aside whenever x509 returned
 // CertificateInvalidError{Reason: Expired}, on the stated grounds that the

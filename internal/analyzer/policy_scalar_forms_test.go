@@ -22,8 +22,20 @@ import (
 // reports a clean verdict against a server that satisfies nothing. One
 // character reopened it.
 //
-// This file names nothing new, so it compiles against the pre-fix sources and
-// fails there on behaviour.
+// HOW THIS FILE IS RED-PROVED, corrected in 0.4.1.
+//
+// It used to claim it named nothing new, so it could be built against the
+// sources before the fix and would fail there on behaviour. Checked rather than
+// believed: copied into a pristine tree at a869357 it does not build
+// (`undefined: writePolicyFile`). 0.4.0 landed as one squashed commit, so there
+// is no per-fix parent in this repository to build against instead.
+//
+// The proof is mechanical and pins the production behaviour rather than a
+// property of one historical tree: make fieldConstrains return true without
+// reading the decoded value, which is exactly the disagreement this file exists
+// for, and TestEverySpellingOfZeroIsRefusedAsANonRule and
+// TestAValueThatDecodesToANoOpIsRefusedHoweverItIsWritten both fail. Run, and
+// they did.
 
 // everySpellingOfZero lists the ways YAML can write the integer 0. Each decodes
 // to the same value, so each must reach the same verdict: a rule set to zero

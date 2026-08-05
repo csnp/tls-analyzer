@@ -5,9 +5,12 @@ import (
 )
 
 // This file names identifiers that did not exist before the fix, so it cannot
-// compile against the pre-fix sources. The behavioural assertions live in
-// policy_rule_values_test.go, which does compile there and fails on behaviour,
-// which is what makes the red proof meaningful.
+// build against the sources before the fix.
+//
+// The second half of that claim, that policy_rule_values_test.go does build
+// there and fails on behaviour, is false: measured in 0.4.1, it does not build
+// there either, because 0.4.0 landed as one squashed commit and every part of it
+// arrived at once. See docs/testing/red-proof.md.
 
 // TestBuiltInPoliciesOnlyDeclareRulesThisScannerCanEvaluate keeps the built-ins
 // honest. They banned SSL 3.0, which this scanner cannot probe, so every

@@ -1,6 +1,9 @@
 package scanner
 
 import (
+	"fmt"
+	"strings"
+
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
@@ -365,34 +368,83 @@ func scoreCertificate(cert *types.Certificate) (int, int) {
 	return score, maxScore
 }
 
-func scoresToLetter(score int) string {
-	switch {
-	case score >= 95:
-		return "A+"
-	case score >= 85:
-		return "A"
-	case score >= 75:
-		return "B"
-	case score >= 60:
-		return "C"
-	case score >= 40:
-		return "D"
-	default:
-		return "F"
+// GradeBand is one band of a letter grade: every score at or above Min, and
+// below the Min of the band above it, gets this letter.
+//
+// The bands are exported and the --help text is RENDERED from them, rather than
+// restated beside them. The help used to carry its own copy of what each grade
+// requires and said "Q+ ready: hybrid or full PQC key exchange in place", which
+// the grader does not do: hybrid key exchange with a classical certificate
+// scores 64 and grades Q, and Q+ was never observed on a hybrid host. The tests
+// written for that pinned the grader from both sides and read no help text at
+// all, so they guarded the one direction that had not gone wrong. A restatement
+// can be false; a rendering cannot.
+type GradeBand struct {
+	Letter string
+	Min    int
+}
+
+// TLSGradeBands returns the TLS security bands, highest first.
+func TLSGradeBands() []GradeBand {
+	return []GradeBand{
+		{"A+", 95}, {"A", 85}, {"B", 75}, {"C", 60}, {"D", 40}, {"F", 0},
 	}
 }
 
-func quantumScoreToLetter(score int) string {
-	switch {
-	case score >= 80:
-		return "Q+" // Quantum ready
-	case score >= 50:
-		return "Q" // Partially quantum ready
-	case score >= 20:
-		return "Q-" // Limited quantum protection
-	default:
-		return "QV" // Quantum vulnerable
+// QuantumGradeBands returns the quantum readiness bands, highest first.
+func QuantumGradeBands() []GradeBand {
+	return []GradeBand{
+		{"Q+", 80}, {"Q", 50}, {"Q-", 20}, {"QV", 0},
 	}
+}
+
+// DescribeBands renders the bands as the one line --help prints, for example
+// "A+ 95-100   A 85-94   B 75-84   C 60-74   D 40-59   F below 40".
+func DescribeBands(bands []GradeBand) string {
+	parts := make([]string, 0, len(bands))
+	for i, b := range bands {
+		if i == len(bands)-1 {
+			parts = append(parts, fmt.Sprintf("%s below %d", b.Letter, bands[i-1].Min))
+			continue
+		}
+		upper := 100
+		if i > 0 {
+			upper = bands[i-1].Min - 1
+		}
+		parts = append(parts, fmt.Sprintf("%s %d-%d", b.Letter, b.Min, upper))
+	}
+	return strings.Join(parts, "   ")
+}
+
+// letterForScore reads the band table, so the table is the only place a band
+// boundary is written down.
+func letterForScore(score int, bands []GradeBand) string {
+	for _, b := range bands {
+		if score >= b.Min {
+			return b.Letter
+		}
+	}
+	return bands[len(bands)-1].Letter
+}
+
+func scoresToLetter(score int) string {
+	return letterForScore(score, TLSGradeBands())
+}
+
+func quantumScoreToLetter(score int) string {
+	return letterForScore(score, QuantumGradeBands())
+}
+
+// QuantumGradeFor and LetterForTLSScore are the exported forms, so the --help
+// text and its tests can state the grade a score reaches by asking the grader
+// rather than by restating its answer.
+func QuantumGradeFor(score int) string {
+	return quantumScoreToLetter(score)
+}
+
+// LetterForTLSScore returns the TLS security letter for a score.
+func LetterForTLSScore(score int) string {
+	return scoresToLetter(score)
 }
 
 func describeProtocolScore(protocols []types.Protocol) string {

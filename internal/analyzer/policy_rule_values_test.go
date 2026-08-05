@@ -16,8 +16,32 @@ import (
 // six declared rule FIELDS had no evaluator at all, so in both cases the rule
 // silently vanished and the report read COMPLIANT 100/100 with exit 0.
 //
-// This file names nothing that did not already exist in the schema, so it
-// compiles against the pre-fix sources and fails there on behaviour.
+// HOW THIS FILE IS RED-PROVED, corrected in 0.4.1.
+//
+// It used to claim it named nothing new, so it could be built against the
+// sources before the fix and would fail there on behaviour. That was checked
+// rather than believed: copied into a pristine tree at a869357, the release
+// base, this file does not build at all (`undefined: types.CheckPassed`). The
+// evidence the comment offered did not exist, which in a file whose whole
+// subject is verdicts that were never measured is the wrong claim to leave
+// standing.
+//
+// It cannot be repaired by pointing at an earlier parent either: 0.4.0 landed as
+// a single squashed commit, so there is no per-fix parent in this repository's
+// history to build against, and a proof that needs objects only one machine has
+// is not a proof anyone can repeat.
+//
+// The proof is mechanical instead, and it is stronger, because it pins the
+// production behaviour rather than a property of one historical tree. Reverting
+// the validation these tests are named for kills them:
+//
+//	validateProtocolVersionValues stops checking its fields ->
+//	  TestUnrecognisedProtocolVersionValuesAreRefused fails
+//	validateAlgorithmValues stops checking its fields ->
+//	  TestAnAlgorithmValueThatNormalizesToNothingIsRefused fails
+//
+// Both were run and both failed. Anyone changing these guards can rerun them by
+// making the same one-line edits.
 
 // scanForRuleValues is a well-formed scan of a host that offers TLS 1.0 through
 // TLS 1.3, one AES-256 suite and one 3DES-SHA suite, a hybrid key exchange, and

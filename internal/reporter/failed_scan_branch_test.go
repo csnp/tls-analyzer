@@ -27,7 +27,11 @@ func TestAnErrorThatScrubsToEmptyIsStillATargetThatWasNeverScanned(t *testing.T)
 		{"control bytes only", "\x01\x02\x03\x07"},
 		{"whitespace only", "   \t  "},
 		{"escape sequences only", "\x1b[2K\x1b[1A"},
-		{"C1 controls only", ""},
+		// Written as escape sequences rather than as raw bytes. The raw form is
+		// invisible in a diff, in a review and in most editors, and it is the
+		// same class this release converted twelve other fixtures away from
+		// before leaving one behind in its own final commit.
+		{"C1 controls only", "\u009b\u0085"},
 	} {
 		t.Run(tc.name, func(t *testing.T) {
 			result := hostileScanResult(t, shapeScanned)

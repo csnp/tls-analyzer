@@ -4,6 +4,32 @@ import (
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
+// The quantum readiness score weights the two dimensions it measures. See
+// assessQuantumRisk for why they are not equal.
+//
+// These are exported, with the arithmetic, so the --help text can COMPUTE the
+// example it quotes. It used to carry a typed 64 beside a typed description of
+// the weighting, which is two restatements of one calculation, either of which
+// could go stale without anything noticing.
+const (
+	// QuantumKeyExchangeWeight is the key exchange's share of the score.
+	QuantumKeyExchangeWeight = 80
+	// QuantumCertificateWeight is the certificate's share.
+	QuantumCertificateWeight = 20
+
+	// QuantumHybridKeyExchangeScore is what a hybrid key exchange scores on its
+	// own dimension, and QuantumClassicalCertificateScore what a classical
+	// certificate scores on its.
+	QuantumHybridKeyExchangeScore    = 80
+	QuantumClassicalCertificateScore = 0
+)
+
+// QuantumScoreFor combines the two dimension scores into the reported score.
+func QuantumScoreFor(keyExchangeScore, certificateScore int) int {
+	return (keyExchangeScore*QuantumKeyExchangeWeight +
+		certificateScore*QuantumCertificateWeight) / 100
+}
+
 // QuantumVulnerableAlgorithms lists algorithms vulnerable to quantum attacks.
 var QuantumVulnerableAlgorithms = map[string]string{
 	"RSA":   "Vulnerable to Shor's algorithm",
@@ -141,7 +167,10 @@ func (s *Scanner) assessQuantumRisk(result *types.ScanResult) types.QuantumRiskA
 	//   well-configured site at a failing score and recommend work that cannot
 	//   be done, which is why the earlier 60/40 split produced a HIGH risk
 	//   verdict for servers already running hybrid PQC.
-	assessment.Score = (keyExchangeScore*80 + certScore*20) / 100
+	//
+	// The weights and the arithmetic are exported so --help can compute the
+	// example it quotes rather than restate a number somebody typed.
+	assessment.Score = QuantumScoreFor(keyExchangeScore, certScore)
 	assessment.HybridPQCReady = hybridPQC
 	assessment.FullPQCReady = fullPQC
 

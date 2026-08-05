@@ -1,7 +1,6 @@
 package reporter
 
 import (
-	"encoding/json"
 	"io"
 
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
@@ -13,12 +12,15 @@ type JSONReporter struct {
 }
 
 // Report writes the scan result as JSON.
+//
+// Through WriteJSON rather than a bare encoder, so the control characters
+// encoding/json leaves raw are escaped. See WriteJSON for which and why.
 func (r *JSONReporter) Report(w io.Writer, result *types.ScanResult) error {
-	encoder := json.NewEncoder(w)
-	if !r.Compact {
-		encoder.SetIndent("", "  ")
+	indent := "  "
+	if r.Compact {
+		indent = ""
 	}
-	return encoder.Encode(result)
+	return WriteJSON(w, result, indent)
 }
 
 // Format returns the format name.

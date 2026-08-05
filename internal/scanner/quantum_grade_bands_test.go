@@ -13,8 +13,20 @@ import (
 // readiness score and hybrid key exchange with a classical certificate scores
 // 64. Every hybrid host tested graded Q; Q+ was never observed.
 //
-// These tests pin the numbers the help text now quotes. If the weighting or the
-// bands change, the help text has to change with them, and this is what says so.
+// These tests pin the numbers the help text quotes. What they do NOT do, and
+// what their failure messages imply they do, is read the help text: every
+// assertion here calls the grader and compares against a number typed into this
+// file. So they guard the grader, which never changed, and not the help, which
+// is what went wrong. They pass unchanged against the tree before the fix.
+//
+// That direction is covered in 0.4.1 by
+// cmd/tlsanalyzer/help_matches_the_grader_test.go, which parses the rendered
+// help and walks both sides of every boundary it prints, and by the help being
+// rendered from scanner.QuantumGradeBands rather than restated beside it.
+//
+// These are kept because they are still the cheaper guard on the scoring model
+// itself: moving a band fails here first, and with a message that names the
+// score. Their failure messages now say what they actually measured.
 
 // TestHybridKeyExchangeWithAClassicalCertificateScores64 pins the number the
 // help text quotes for the common real-world case.
@@ -36,11 +48,13 @@ func TestHybridKeyExchangeWithAClassicalCertificateScores64(t *testing.T) {
 
 	assessment := s.assessQuantumRisk(result)
 	if assessment.Score != 64 {
-		t.Errorf("hybrid key exchange with a classical certificate scored %d, but --help "+
-			"tells the user it scores 64. One of the two is now wrong.", assessment.Score)
+		t.Errorf("hybrid key exchange with a classical certificate scored %d, want 64. "+
+			"--help renders this number from QuantumScoreFor, so moving it moves the "+
+			"documentation too, and the point of pinning it here is that it should not "+
+			"move silently.", assessment.Score)
 	}
 	if got := quantumScoreToLetter(assessment.Score); got != "Q" {
-		t.Errorf("that score graded %q, but --help tells the user it grades Q", got)
+		t.Errorf("that score graded %q, want Q", got)
 	}
 	if !assessment.HybridPQCReady {
 		t.Fatal("the fixture did not register as hybrid, so this test is not measuring " +
@@ -61,8 +75,8 @@ func TestTheQuantumGradeBandsAreWhatHelpSays(t *testing.T) {
 		{0, "QV"},
 	} {
 		if got := quantumScoreToLetter(tc.score); got != tc.want {
-			t.Errorf("score %d graded %q, but --help documents the bands as "+
-				"Q+ 80-100, Q 50-79, Q- 20-49, QV below 20, which makes it %q",
+			t.Errorf("score %d graded %q, want %q. The help text renders these bands, so "+
+				"this is the scoring model changing, not the documentation.",
 				tc.score, got, tc.want)
 		}
 	}
@@ -92,7 +106,6 @@ func TestQPlusIsReachableWithoutAPostQuantumCertificate(t *testing.T) {
 	assessment := s.assessQuantumRisk(result)
 	if got := quantumScoreToLetter(assessment.Score); got != "Q+" {
 		t.Errorf("a full post-quantum key exchange with a classical certificate scored %d "+
-			"and graded %q, but --help tells the user this reaches Q+",
-			assessment.Score, got)
+			"and graded %q, want Q+", assessment.Score, got)
 	}
 }
