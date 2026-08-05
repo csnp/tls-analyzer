@@ -22,12 +22,12 @@ import (
 // the defect. Anything that has to name a new field or config option lives in
 // certificate_checks_fields_test.go instead.
 //
-// This file is the one of the ten carrying that claim for which it holds:
-// checked in 0.4.1 by copying it alone into a pristine tree at a869357, where it
-// builds. The other nine did not, and are corrected. It is kept as a convention
-// about where assertions live rather than as the red proof, because it depends
-// on a tree that a squash, a rebase or a repository move would take away. See
-// docs/testing/red-proof.md.
+// This file is the ONE subject file, of the eleven that carried that claim in
+// 0.4.0, for which it holds: checked in 0.4.1 by copying it alone into a pristine
+// tree at a869357, where it builds. The other ten do not, and are corrected. It
+// is kept as a convention about where assertions live rather than as the red
+// proof, because it depends on a tree that a squash, a rebase or a repository
+// move would take away. See docs/testing/red-proof.md.
 
 // issued is a throwaway certificate plus the CA that signed it, so a test can
 // decide for itself whether that chain is trusted. Nothing here reads the trust

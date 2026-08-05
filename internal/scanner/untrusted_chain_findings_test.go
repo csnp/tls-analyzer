@@ -217,6 +217,27 @@ func TestANotPerformedChainCheckIsNotReportedAsAVerification(t *testing.T) {
 		}
 		got := found[0]
 
+		// Severity, ID and name are pinned because splitting this arm out moved
+		// this input from under the only assertion that covered them. Measured:
+		// with only the text assertions below, mutating this arm's severity to
+		// LOW or to CRITICAL left the whole suite green, and LOW carries a
+		// zero-point penalty, so an expired self-signed certificate would have
+		// silently stopped costing anything on the pure-Go verifier.
+		if got.Severity != types.SeverityMedium {
+			t.Errorf("isCA=%v: severity is %s, want %s. A chain result that was not "+
+				"established is not a measured failure, and it is not nothing either.",
+				isCA, got.Severity, types.SeverityMedium)
+		}
+		if got.ID != "CERT_SELF_SIGNED" {
+			t.Errorf("isCA=%v: finding ID is %q, want CERT_SELF_SIGNED", isCA, got.ID)
+		}
+		if got.Name != "Self-Signed Certificate" {
+			t.Errorf("isCA=%v: finding name is %q", isCA, got.Name)
+		}
+		if got.Remediation == "" {
+			t.Errorf("isCA=%v: the finding carries no remediation, so it is a dead end", isCA)
+		}
+
 		// The specific false claim, and the words that carry it.
 		for _, forbidden := range []string{
 			"verified only because",
@@ -227,16 +248,30 @@ func TestANotPerformedChainCheckIsNotReportedAsAVerification(t *testing.T) {
 					"that did not run: %q", isCA, got.Description)
 			}
 		}
-		if !strings.Contains(got.Description, "did not run") {
-			t.Errorf("isCA=%v: the finding does not say the chain check did not run, so a "+
-				"reader cannot tell an unknown result from a measured one: %q",
-				isCA, got.Description)
+		if !strings.Contains(got.Description, "was not established") {
+			t.Errorf("isCA=%v: the finding does not say the chain result was not "+
+				"established, so a reader cannot tell an unknown result from a measured "+
+				"one: %q", isCA, got.Description)
 		}
 		// Nor may it swing the other way and assert a failure that was not
 		// measured either.
 		if strings.Contains(got.Description, "does not build to a root") {
 			t.Errorf("isCA=%v: the finding asserts a chain failure that was never "+
 				"measured: %q", isCA, got.Description)
+		}
+		// It must carry its OWN reason rather than pointing at another line. The
+		// previous version said "see the line above for why", which is a claim
+		// about the report's layout that is false on four of the five renderers.
+		if !strings.Contains(got.Description, cert.ChainTrustReason) {
+			t.Errorf("isCA=%v: the finding does not carry the reason the chain check "+
+				"gave (%q), so on the surfaces that render no chain-trust line the "+
+				"reader is told nothing: %q", isCA, cert.ChainTrustReason, got.Description)
+		}
+		for _, positional := range []string{"the line above", "above for why", "below"} {
+			if strings.Contains(got.Description, positional) {
+				t.Errorf("isCA=%v: the finding refers to its position in the report, which "+
+					"is not true on every renderer: %q", isCA, got.Description)
+			}
 		}
 	}
 }

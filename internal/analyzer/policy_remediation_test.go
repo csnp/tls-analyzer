@@ -26,9 +26,9 @@ import (
 // believed, and it is false: copied alone into a pristine tree at a869357 this
 // file does not build. 0.4.0 landed as a single squashed commit, so the helpers,
 // the new types and the production change all arrived together and no test in
-// that release has an earlier tree to be built against. Ten files carried the
-// same claim; eleven were wrong. Red proofs name their mutation instead, and
-// docs/testing/red-proof.md carries the method and the worked examples.
+// that release has an earlier tree to be built against. Several files carried
+// the same claim; docs/testing/red-proof.md has the measured table and the
+// command that reproduces it. Red proofs name their mutation instead.
 
 // certScanForRemediation is a scan whose certificate is signed with
 // ECDSA-SHA256, the case `strict` flags.

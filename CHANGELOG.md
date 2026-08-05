@@ -94,11 +94,11 @@ refuses all of these the same way.
 
 ### Notes for anyone reading the tests
 
-Twelve test files claimed they could be built against the sources before the fix
-and would fail there. Eleven of the claims are false, and the cause is
-structural: 0.4.0
-landed as one squashed commit, so nothing in it has an earlier tree to be built
-against. Red proofs now name the mutation that kills them.
+Test files across the 0.4.0 tree claimed they could be built against the sources
+before the fix and would fail there. Almost every one of those claims is false,
+and the cause is structural: 0.4.0 landed as one squashed commit, so nothing in
+it has an earlier tree to be built against. The measured table, and the command
+that reproduces it, are in `docs/testing/red-proof.md`. Red proofs now name the mutation that kills them.
 `docs/testing/red-proof.md` records the method, the measurement and the worked
 examples.
 

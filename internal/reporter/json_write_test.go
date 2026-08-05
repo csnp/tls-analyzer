@@ -23,7 +23,14 @@ func TestWriteJSONChangesTheEncodingAndNeverTheValue(t *testing.T) {
 		// Every control character is written as an escape. The literal form is
 		// invisible in a diff and in a review, which is why staticcheck's ST1018
 		// exists and why this release converted another fixture away from it.
-		"", "plain", "\x1b", "\u009b", "\u0085", "\u00a0", "\x7f", "~",
+		// BOTH boundaries of the block escapeRemainingControls handles, U+0080 and
+		// U+009F, plus the printable characters either side of it. Rewriting the
+		// control characters as escapes for the linter dropped both boundaries
+		// once, and a mutation narrowing the upper bound to 0x9e then survived:
+		// U+009F is APC, a live terminal control, and nothing would have noticed
+		// if the escaper stopped handling it.
+		"", "plain", "\x1b", "\u0080", "\u009f", "\u009b", "\u0085", "\x7f", "~",
+		"\u007f\u0080", "\u009f\u00a0", "\u0080\u009f",
 		// A lone 0xC2, and 0xC2 followed by bytes on both sides of the C1 range.
 		"\xc2", "\xc2\x7f", "\xc2\xa0", "\xc3\x9b", "\xc2\x9b\xc2\x9b",
 		// Invalid UTF-8, a surrogate, and an overlong encoding.
@@ -101,7 +108,7 @@ func TestWriteJSONEscapesOnlyWhatATerminalExecutes(t *testing.T) {
 	}
 
 	// Executable, must be escaped.
-	for _, s := range []string{"\x1b", "\u009b", "\u0085", "\x7f"} {
+	for _, s := range []string{"\u0080", "\u009f", "\u009b", "\u0085", "\x7f"} {
 		var buf bytes.Buffer
 		if err := WriteJSON(&buf, map[string]string{"v": s}, ""); err != nil {
 			t.Fatalf("WriteJSON(%q): %v", s, err)

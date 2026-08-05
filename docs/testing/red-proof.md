@@ -6,29 +6,47 @@ in 0.4.1.
 
 ## The method that does not work
 
-Twelve test files in the 0.4.0 release tree carried a comment of this shape:
+Test files in the 0.4.0 release tree carried a comment of this shape:
 
 > This file names nothing that did not already exist, so it compiles against the
 > pre-fix sources and fails there on behaviour.
 
-Eleven of the twelve are false, and the twelfth is true by luck rather than by
-design. Measured in 0.4.1 by copying each file alone into a pristine tree at
-`a869357`, the commit before the release, and compiling:
+Some made the claim about themselves, some about a companion file. Measured in
+0.4.1 by copying each **subject** file alone into a pristine tree at `a869357`,
+the commit before the release, and compiling it:
 
-| file | claim | actual |
+| subject file | claimed | measured |
 |---|---|---|
-| `internal/scanner/certificate_checks_test.go` | compiles | compiles |
-| `internal/analyzer/policy_multi_document_test.go` | compiles | `undefined: writePolicyFile` |
-| `internal/analyzer/policy_remediation_test.go` | compiles | `undefined: scanForRuleValues` |
-| `internal/analyzer/policy_rule_values_test.go` | compiles | `undefined: types.CheckPassed` |
-| `internal/analyzer/policy_rule_values_fields_test.go` | its companion compiles | its companion does not |
-| `internal/analyzer/policy_scalar_forms_test.go` | compiles | `undefined: writePolicyFile` |
-| `internal/analyzer/policy_skipped_rules_test.go` | compiles | `undefined: types.CheckPassed` |
-| `internal/analyzer/policy_unperformed_certificate_checks_test.go` | compiles | `undefined: types.CheckResult` |
-| `internal/reporter/unmeasured_quantum_test.go` | compiles | `undefined: healthyCert` |
-| `internal/scanner/certificate_chain_position_test.go` | compiles | `undefined: verifyCertificateChain` |
-| `internal/scanner/certificate_validity_window_test.go` | compiles | `undefined: issueLeaf` |
-| `internal/scanner/expiring_last_day_test.go` | compiles | `undefined: types.CheckPassed` |
+| `internal/scanner/certificate_checks_test.go` | builds | **builds** |
+| `internal/analyzer/policy_multi_document_test.go` | builds | `undefined: writePolicyFile` |
+| `internal/analyzer/policy_remediation_test.go` | builds | `undefined: scanForRuleValues` |
+| `internal/analyzer/policy_rule_values_test.go` | builds | `undefined: types.CheckPassed` |
+| `internal/analyzer/policy_scalar_forms_test.go` | builds | `undefined: writePolicyFile` |
+| `internal/analyzer/policy_skipped_rules_test.go` | builds | `undefined: types.CheckPassed` |
+| `internal/analyzer/policy_unperformed_certificate_checks_test.go` | builds | `undefined: types.CheckResult` |
+| `internal/reporter/unmeasured_quantum_test.go` | builds | `undefined: healthyCert` |
+| `internal/scanner/certificate_chain_position_test.go` | builds | `undefined: verifyCertificateChain` |
+| `internal/scanner/certificate_validity_window_test.go` | builds | `undefined: issueLeaf` |
+| `internal/scanner/expiring_last_day_test.go` | builds | `undefined: types.CheckPassed` |
+
+One of the eleven builds. The other ten do not, so their comments offered
+evidence that does not exist.
+
+Reproduce it:
+
+```bash
+git archive a869357 | tar x -C "$BASE"          # the tree before 0.4.0
+git archive 5f05ed8 | tar x -C "$REL"           # the 0.4.0 release tree
+cp -a "$BASE/." "$PROBE/" && cp "$REL/$FILE" "$PROBE/$FILE"
+( cd "$PROBE" && go vet "./$(dirname "$FILE")" )
+```
+
+The claiming files are more numerous than the subject files, because the
+`*_fields_test.go` companions assert the same thing about the file they pair
+with. Counting them instead gives a different number, which is why this records
+the measurement as a table rather than as a total: three separate attempts at
+stating the total in prose produced three different figures, and the first two
+were wrong.
 
 The cause is structural rather than careless. 0.4.0 landed as a single squashed
 commit, so the production change, the new types, the test helpers and the tests

@@ -249,10 +249,9 @@ func (s *Scanner) checkVulnerabilities(result *types.ScanResult) []types.Vulnera
 			})
 
 		case cert.IsSelfSigned:
-			// The chain check did not run at all, which this scanner does when the
-			// certificate is outside its own validity window, and the report says
-			// so on its own line. So this finding must not describe a verification
-			// result: there isn't one.
+			// The chain check did not run, which this scanner does when the
+			// certificate is outside its own validity window. So this finding must
+			// not describe a verification result: there isn't one.
 			//
 			// The first version of this switch had no case for CheckNotPerformed
 			// and fell into the one above, which told the reader the certificate
@@ -261,17 +260,30 @@ func (s *Scanner) checkVulnerabilities(result *types.ScanResult) []types.Vulnera
 			// trust store. A false measurement claim, in a release whose subject
 			// is refusing to describe what was not measured.
 			//
+			// The SECOND version said "see the line above for why", which is a
+			// claim about the report's own layout, and it was false on four of the
+			// five renderers: SARIF and HTML carry no chain-trust line at all, and
+			// in the text report the line above is another finding's remediation.
+			// A finding must carry its own reason, the way the failed-chain arm
+			// does, so the reason is interpolated here and no positional reference
+			// is made. Two rounds of review on one paragraph is the argument for
+			// saying less, not more.
+			//
 			// Reachable and not exotic: an expired self-signed certificate on the
 			// pure-Go verifier, which is what every Linux host runs.
+			reason := cert.ChainTrustReason
+			if reason == "" {
+				reason = "the chain check did not run"
+			}
 			vulns = append(vulns, types.Vulnerability{
 				ID:       "CERT_SELF_SIGNED",
 				Name:     "Self-Signed Certificate",
 				Severity: types.SeverityMedium,
-				Description: "The certificate signed itself. Whether its chain would be " +
-					"trusted was not established, because the chain check did not run for " +
-					"this certificate; see the line above for why. A self-signed " +
-					"certificate is refused by default by any client that does not already " +
-					"have it installed.",
+				Description: fmt.Sprintf(
+					"The certificate signed itself. Whether its chain builds to a trusted "+
+						"root was not established (%s), so this scan says nothing either way "+
+						"about it. A self-signed certificate is refused by default by any "+
+						"client that does not already have it installed.", reason),
 				Remediation: "Resolve the condition that stopped the chain from being " +
 					"checked, then use a certificate from a Certificate Authority the " +
 					"intended clients trust.",

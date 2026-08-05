@@ -10,19 +10,19 @@ import (
 // TestNoTestFileClaimsAnUnrepeatableRedProof stops one specific false claim
 // coming back.
 //
-// Twelve test files in the 0.4.0 release tree asserted, in a comment, that the
-// file builds against the sources before the fix and fails there on behaviour.
-// ELEVEN of the twelve are false, measured by copying each alone into a pristine
-// tree at a869357, the commit before that release. The cause is structural: 0.4.0
-// landed as a single squashed commit, so the production change, the new types,
-// the helpers and the tests all arrived at once, and no test in it has an earlier
-// tree to be built against. A proof that needs objects only one machine ever had
-// is not a proof anyone can repeat.
+// Test files in the 0.4.0 release tree asserted, in a comment, that the file
+// builds against the sources before the fix and fails there on behaviour. Almost
+// all of those claims are false, measured by copying each subject file alone into
+// a pristine tree at a869357, the commit before that release; the table is in
+// docs/testing/red-proof.md with the command that reproduces it. The cause is
+// structural: 0.4.0 landed as a single squashed commit, so the production change,
+// the new types, the helpers and the tests all arrived at once, and no test in it
+// has an earlier tree to be built against. A proof that needs objects only one
+// machine ever had is not a proof anyone can repeat.
 //
-// Nothing in a code review reliably catches a comment, which is why eleven of
-// twelve were wrong and why the review that looked found three of them. So the
-// phrase is banned mechanically. Red proofs name their mutation instead;
-// docs/testing/red-proof.md carries the method and the measured table.
+// Nothing in a code review reliably catches a comment, which is why so many were
+// wrong and why the review that looked found three of them. So the phrase is
+// banned mechanically. Red proofs name their mutation instead.
 //
 // It lives in a test package rather than in CI because a check that only runs in
 // CI is one a contributor meets after pushing.
@@ -80,8 +80,8 @@ func TestNoTestFileClaimsAnUnrepeatableRedProof(t *testing.T) {
 //
 // This bans an idiom, not an idea. Someone determined to assert an unrepeatable
 // red proof can phrase it differently and this will not see it. It is worth
-// having anyway: the eleven false claims were eleven copies of one sentence, and
-// the review that looked found three of them.
+// having anyway: the false claims were copies of one sentence, and the review
+// that looked found three of them.
 func bannedRedProofPhrases() []string {
 	const against = "against the " + "pre-" + "fix"
 	return []string{
