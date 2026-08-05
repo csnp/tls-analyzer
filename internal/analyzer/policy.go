@@ -39,13 +39,33 @@ func NewPolicyEvaluator() *PolicyEvaluator {
 func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 	data, err := os.ReadFile(path)
 	if err != nil {
-		return nil, fmt.Errorf("failed to read policy file: %w", err)
+		// The os error quotes the path back, and a path is untrusted for the same
+		// reason the file's contents are: a repository supplies a file's name as
+		// much as it supplies what is inside it.
+		return nil, fmt.Errorf("failed to read policy file: %w", sanitize.WrapError(err))
 	}
 
 	policy, err := e.decodePolicy(data, types.Policy{})
 	if err != nil {
 		return nil, err
 	}
+
+	// Bound the untrusted text BEFORE anything formats it, not after.
+	//
+	// These two lines used to sit at the end of this function, so every refusal
+	// below quoted the name at whatever length the file chose. %q stops the
+	// steering and does nothing about the volume: a 200 KB `name:` in a policy
+	// that declares no rules produced 200,229 bytes on stderr, which pushes a
+	// real verdict out of any scrollback as effectively as a forged one. The
+	// escaping and the cap are two separate defences and only one of them was
+	// applied where it mattered.
+	//
+	// Sanitising before the empty-name check is also strictly more correct: a
+	// name made only of control characters scrubs to nothing, and it previously
+	// satisfied the check and was then reported as an empty policy name beside a
+	// verdict, which is the exact outcome that check exists to prevent.
+	policy.Name = sanitizeForReport(policy.Name, 120)
+	policy.Description = sanitizeForReport(policy.Description, 120)
 	// The rules as this document alone decodes them, kept before `extends` merges
 	// a base in, so the standalone question is answered from the standalone view.
 	//
@@ -70,9 +90,19 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 	if policy.Extends != "" {
 		base, ok := e.policies[policy.Extends]
 		if !ok {
+			// The lookup is done on the RAW value and only the echo is bounded.
+			// Scrubbing first would decide the lookup on a transformed value, and
+			// ForReport collapses control characters to spaces and trims, so
+			// "modern\x1b" would resolve to the built-in "modern" and inherit rules
+			// the file never named.
+			//
+			// Bounded rather than scrubbed because %q escapes control characters
+			// already: see sanitize.Bound for why scrubbing a %q site costs a
+			// diagnostic instead of adding a defence.
 			return nil, fmt.Errorf(
 				"policy %q extends %q, which is not a built-in policy. Available: %s",
-				policy.Name, policy.Extends, strings.Join(e.ListPolicies(), ", "))
+				policy.Name, sanitize.Bound(policy.Extends, sanitize.MaxReportDetail),
+				strings.Join(e.ListPolicies(), ", "))
 		}
 		policy, err = e.decodePolicy(data, base)
 		if err != nil {
@@ -109,11 +139,6 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 	if err := validatePolicy(&policy, path, declares, data); err != nil {
 		return nil, err
 	}
-
-	// The name and description are rendered into a human-readable verdict, and
-	// this file is untrusted input.
-	policy.Name = sanitizeForReport(policy.Name, 120)
-	policy.Description = sanitizeForReport(policy.Description, 120)
 
 	return &policy, nil
 }
@@ -749,11 +774,24 @@ func validateProtocolVersionValues(rules *types.ProtocolRules) error {
 	for _, field := range fields {
 		for _, value := range field.values {
 			if !known[value] {
+				// Decided on the RAW value, echoed as the bounded one. Judging
+				// membership on a scrubbed value would accept "TLS 1.2\x1b",
+				// because ForReport collapses the control byte to a space and trims
+				// it, so an unrecognised value would pass the very check that exists
+				// to stop one silently matching nothing.
+				//
+				// Bounded rather than scrubbed: %q escapes the control characters,
+				// and scrubbing would trim, which erases the whitespace difference
+				// this message is built to show. The bound is what was missing, for
+				// the same reason the policy name needed one: the file chooses the
+				// length, this message interpolates it three times, and
+				// closestProtocolVersion normalises it once per candidate.
+				shown := sanitize.Bound(value, sanitize.MaxReportDetail)
 				return fmt.Errorf("rules.protocol.%s has the value %q, which is not a protocol "+
 					"version this tool recognises. Accepted values are: %s. Spelling and spacing "+
 					"both matter, so %q is not the same value as %q, and an unrecognised one "+
 					"would silently match nothing and leave the rule out of the verdict",
-					field.name, value, knownProtocolVersions(), value, closestProtocolVersion(value))
+					field.name, shown, knownProtocolVersions(), shown, closestProtocolVersion(shown))
 			}
 		}
 	}
@@ -877,12 +915,14 @@ func validateAlgorithmValues(rules *types.PolicyRules) error {
 	for _, field := range fields {
 		for _, value := range field.values {
 			if normalizeAlgorithmName(value) == "" {
+				// Decided on the raw value, echoed as the bounded one, for the same
+				// reasons as the protocol versions above.
 				return fmt.Errorf("rules.%s contains the value %q, which has no letters or "+
 					"digits. Algorithm names are compared on their letters and digits, so this "+
 					"value cannot identify anything: as a requirement it would be satisfied by "+
 					"any input, and as a ban it would match every input. Write the name as it "+
 					"appears in the report, for example ML-KEM-768 or SHA-256",
-					field.name, value)
+					field.name, sanitize.Bound(value, sanitize.MaxReportDetail))
 			}
 		}
 	}

@@ -65,32 +65,82 @@ func ForReport(s string, maxLen int) string {
 			b.WriteRune(r)
 		}
 	}
-	out := strings.TrimSpace(b.String())
-
 	// Collapsing the newlines stops the layout being forged; a very long single
 	// line would still wrap far enough to push the real verdict out of view, so
-	// cap it. Truncation is on a rune boundary, because cutting mid-sequence
-	// produces invalid UTF-8.
-	if len(out) > maxLen {
-		budget := maxLen - 3
-		if budget < 1 {
-			budget = 1
-		}
-		// Walk the runes once, accumulating the encoded length, rather than
-		// rebuilding the whole string to measure it after dropping each rune.
-		// That loop was O(n^2) in the length of untrusted text: a 300 KB policy
-		// name cost 100 seconds of CPU before any socket was opened.
-		var cut strings.Builder
-		total := 0
-		for _, r := range out {
-			n := utf8.RuneLen(r)
-			if total+n > budget {
-				break
-			}
-			cut.WriteRune(r)
-			total += n
-		}
-		out = cut.String() + "..."
-	}
-	return out
+	// cap it too. The two are separate defences and Bound is the second one.
+	return Bound(strings.TrimSpace(b.String()), maxLen)
 }
+
+// Bound caps a string's length without altering what is inside it.
+//
+// It exists for the print sites that interpolate untrusted text with %q. Go
+// escapes control characters there already, and more of them than ForReport
+// does, so those sites never needed the collapsing half. They did need the
+// length half: escaping stops the steering and does nothing about the volume,
+// and a 200 KB rule value renders at full length through %q.
+//
+// Scrubbing them with ForReport instead would cost a real diagnostic, which is
+// how this function came to exist: ForReport trims, so `minVersion: "TLS 1.2 "`
+// was echoed as "TLS 1.2" and the refusal read `"TLS 1.2" is not the same value
+// as "TLS 1.2"` for the exact trailing-space typo it is there to catch. That is
+// the same message shape a previous release already had to repair once. Bounding
+// without transforming keeps the difference visible.
+//
+// Truncation is on a rune boundary, because cutting mid-sequence produces
+// invalid UTF-8.
+func Bound(s string, maxLen int) string {
+	if len(s) <= maxLen {
+		return s
+	}
+	budget := maxLen - 3
+	if budget < 1 {
+		budget = 1
+	}
+	// Walk the runes once, accumulating the encoded length, rather than
+	// rebuilding the whole string to measure it after dropping each rune. That
+	// loop was O(n^2) in the length of untrusted text: a 300 KB policy name cost
+	// 100 seconds of CPU before any socket was opened.
+	var cut strings.Builder
+	total := 0
+	for _, r := range s {
+		n := utf8.RuneLen(r)
+		if total+n > budget {
+			break
+		}
+		cut.WriteRune(r)
+		total += n
+	}
+	return cut.String() + "..."
+}
+
+// WrapError renders an error's message through ForReport while still unwrapping
+// to the original.
+//
+// Errors reaching stderr carry untrusted text back to the user: the target may
+// come from a --targets file somebody else wrote, an os error quotes the path
+// the invocation supplied, and a policy file arrives from a vendor or a
+// repository. stderr shares the terminal with the report, and a sweep prints it
+// after every report it produced, so it is a forgery surface too.
+//
+// The message cannot simply be rebuilt with %s, because main unwraps with
+// errors.As to tell a policy-gate failure (exit 2) from a scan failure (exit 1),
+// and flattening the chain would silently change the exit code this tool's own
+// CI guidance depends on. So scrub the text and keep the chain.
+//
+// This lives here rather than in one command package because the analyzer needs
+// the same thing, and two copies of a scrubber is the exact shape this package
+// was extracted to remove: the policy path was sanitised and the certificate
+// path was not, and the difference was invisible because both looked correct in
+// isolation.
+func WrapError(err error) error {
+	if err == nil {
+		return nil
+	}
+	return wrappedError{err}
+}
+
+type wrappedError struct{ err error }
+
+func (e wrappedError) Error() string { return ForReport(e.err.Error(), MaxReportDetail) }
+
+func (e wrappedError) Unwrap() error { return e.err }

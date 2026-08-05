@@ -91,12 +91,21 @@ func policyOutcome(results []*types.ScanResult) error {
 		if result == nil || result.PolicyResult == nil {
 			continue
 		}
+		// The target is untrusted text on its way to a terminal, exactly as it is
+		// in batchOutcome below, which scrubs the same field with the same
+		// reasoning. This function did not, and one variable printed raw at one of
+		// two sites is this release's own defect shape. No exploit was
+		// demonstrated, because a hostname carrying control bytes does not
+		// resolve, so a target that reaches a policy verdict has already been
+		// resolved; the asymmetry is closed on the argument that a print site's
+		// safety should not rest on a property of the resolver.
+		target := sanitize.ForReport(result.Target, sanitize.MaxReportDetail)
 		if !result.PolicyResult.Compliant {
-			failed = append(failed, result.Target)
+			failed = append(failed, target)
 		} else if !result.PolicyResult.Complete {
 			// A compliant verdict that skipped rules has not established
 			// compliance with the policy, only with the part of it that ran.
-			incomplete = append(incomplete, result.Target)
+			incomplete = append(incomplete, target)
 		}
 	}
 
@@ -259,8 +268,15 @@ func init() {
 
 	// Suppressing the usage block leaves a flag mistake with no next step, so
 	// point at --help explicitly rather than printing every flag.
+	//
+	// pflag quotes the offending argument back ("unknown flag: --x", `invalid
+	// argument "y" for "-t, --timeout"`), and the invocation is one of the three
+	// enumerated sources of untrusted text, so this message is the same forgery
+	// surface as the report. The wrapper keeps the error chain intact so cobra
+	// still classifies it as a usage error.
 	rootCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
-		return fmt.Errorf("%w\nRun 'tlsanalyzer --help' to see the available flags", err)
+		return fmt.Errorf("%w\nRun 'tlsanalyzer --help' to see the available flags",
+			sanitize.WrapError(err))
 	})
 
 	// Output options
@@ -357,7 +373,9 @@ func runScan(cmd *cobra.Command, args []string) error {
 	if outputFile != "" {
 		f, err := os.Create(outputFile)
 		if err != nil {
-			return fmt.Errorf("failed to create output file: %w", err)
+			// The os error quotes the path back, and the path came from the
+			// invocation, which this tool treats as untrusted text.
+			return fmt.Errorf("failed to create output file: %w", sanitize.WrapError(err))
 		}
 		defer f.Close()
 		output = f
@@ -406,28 +424,10 @@ func runScan(cmd *cobra.Command, args []string) error {
 // network allows.
 type scanFunc func(ctx context.Context, target string) (*types.ScanResult, error)
 
-// scrubbedError renders an error's message with control characters collapsed,
-// while still unwrapping to the original.
-//
-// Errors reaching stderr carry the target back to the user, and the target may
-// come from a --targets file somebody else wrote, so stderr is a forgery surface
-// too: it shares the terminal with the report and a sweep prints it after every
-// report it produced. The message cannot simply be rebuilt with %s, because
-// main unwraps with errors.As to tell a policy-gate failure (exit 2) from a scan
-// failure (exit 1), and flattening the chain would silently change the exit code
-// this tool's own CI guidance depends on. So scrub the text and keep the chain.
-type scrubbedError struct{ err error }
-
-func (e scrubbedError) Error() string {
-	return sanitize.ForReport(e.err.Error(), sanitize.MaxReportDetail)
-}
-
-func (e scrubbedError) Unwrap() error { return e.err }
-
 func scanSingleTarget(ctx context.Context, scan scanFunc, cnsa2 *analyzer.CNSA2Analyzer, policyEval *analyzer.PolicyEvaluator, target string, policy *types.Policy, output io.Writer) error {
 	result, err := scan(ctx, target)
 	if err != nil {
-		return fmt.Errorf("scan failed: %w", scrubbedError{err})
+		return fmt.Errorf("scan failed: %w", sanitize.WrapError(err))
 	}
 
 	// Add CNSA 2.0 analysis
@@ -616,7 +616,8 @@ func collectTargets(args []string) ([]string, error) {
 	if targetsFile != "" {
 		file, err := os.Open(targetsFile)
 		if err != nil {
-			return nil, fmt.Errorf("failed to open targets file: %w", err)
+			// Same reasoning as the output file: the os error carries the path.
+			return nil, fmt.Errorf("failed to open targets file: %w", sanitize.WrapError(err))
 		}
 		defer file.Close()
 
@@ -628,7 +629,8 @@ func collectTargets(args []string) ([]string, error) {
 			}
 		}
 		if err := scanner.Err(); err != nil {
-			return nil, fmt.Errorf("failed to read targets file: %w", err)
+			// bufio quotes the path in its read errors as well.
+			return nil, fmt.Errorf("failed to read targets file: %w", sanitize.WrapError(err))
 		}
 	}
 
@@ -696,8 +698,10 @@ func validateFormat(format string) error {
 			return nil
 		}
 	}
+	// The rejected value came from the invocation and is echoed back, so it is
+	// scrubbed for the same reason --policy and --policy-file are.
 	return fmt.Errorf("unknown format: %s (supported: %s)",
-		format, strings.Join(supportedFormats, ", "))
+		sanitize.ForReport(format, sanitize.MaxReportDetail), strings.Join(supportedFormats, ", "))
 }
 
 func createReporter() reporter.Reporter {
