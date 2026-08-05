@@ -15,20 +15,23 @@ Output:
 Available Security Policies:
 ─────────────────────────────────────────────────────────
 
+  cnsa-2.0-2027
+    CNSA 2.0 compliance target for 2027 - new NSS systems
+    CNSA 2.0 Target: 2027
+
+  cnsa-2.0-2030
+    CNSA 2.0 compliance target for 2030 - TLS 1.3 required
+    CNSA 2.0 Target: 2030
+
+  cnsa-2.0-2035
+    CNSA 2.0 compliance target for 2035 - full PQC
+    CNSA 2.0 Target: 2035
+
   modern
     Modern TLS configuration for 2024+
 
   strict
     Strict TLS configuration with TLS 1.3 required
-
-  cnsa-2.0-2027
-    CNSA 2.0 compliance target for 2027 - new NSS systems
-
-  cnsa-2.0-2030
-    CNSA 2.0 compliance target for 2030 - TLS 1.3 required
-
-  cnsa-2.0-2035
-    CNSA 2.0 compliance target for 2035 - full PQC
 ```
 
 ### Policy Descriptions

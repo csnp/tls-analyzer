@@ -26,7 +26,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.25'
 
       - name: Install TLS Analyzer
         run: go install github.com/csnp/qramm-tls-analyzer/cmd/tlsanalyzer@latest
@@ -63,7 +63,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.25'
 
       - name: Install TLS Analyzer
         run: go install github.com/csnp/qramm-tls-analyzer/cmd/tlsanalyzer@latest
@@ -98,7 +98,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.25'
 
       - name: Install TLS Analyzer
         run: go install github.com/csnp/qramm-tls-analyzer/cmd/tlsanalyzer@latest
@@ -137,7 +137,7 @@ jobs:
       - name: Set up Go
         uses: actions/setup-go@v5
         with:
-          go-version: '1.21'
+          go-version: '1.25'
 
       - name: Install TLS Analyzer
         run: go install github.com/csnp/qramm-tls-analyzer/cmd/tlsanalyzer@latest
@@ -182,7 +182,7 @@ stages:
 
 tls_security_scan:
   stage: security
-  image: golang:1.21
+  image: golang:1.25
   variables:
     TARGET: api.example.com
   script:
@@ -204,7 +204,7 @@ tls_security_scan:
 ```yaml
 tls_compliance_check:
   stage: security
-  image: golang:1.21
+  image: golang:1.25
   variables:
     TARGET: api.example.com
     POLICY: cnsa-2.0-2027
@@ -299,7 +299,7 @@ variables:
 steps:
   - task: GoTool@0
     inputs:
-      version: '1.21'
+      version: '1.25'
 
   - script: |
       go install github.com/csnp/qramm-tls-analyzer/cmd/tlsanalyzer@latest
@@ -326,7 +326,7 @@ version: 2.1
 jobs:
   tls-scan:
     docker:
-      - image: cimg/go:1.21
+      - image: cimg/go:1.25
     steps:
       - checkout
       - run:
@@ -353,7 +353,7 @@ workflows:
 ### Dockerfile for CI
 
 ```dockerfile
-FROM golang:1.21-alpine
+FROM golang:1.25-alpine
 
 RUN go install github.com/csnp/qramm-tls-analyzer/cmd/tlsanalyzer@latest
 

@@ -188,7 +188,7 @@ reached, so check the level below whatever was last tightened.
       `COMPLIANT 100/100` and exit 0.
 - [ ] Acceptance control: `bannedVersions: ["TLS 1.2"]` against the same host is
       a violation and exits 2, and `["SSL 2.0"]` still loads.
-- [ ] Banning `SSL 3.0`, which is what the built-in `modern` policy does, prints
+- [ ] Banning `SSL 3.0` in a HAND-WRITTEN policy prints
       a warning that the rule could not be tested and names another way to check
       it. Go cannot offer SSL 2.0 or SSL 3.0, so silence there is not compliance.
 - [ ] Algorithm names match case-insensitively: `bannedAlgorithms: [sha1]` and

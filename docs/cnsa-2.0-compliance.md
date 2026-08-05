@@ -112,10 +112,14 @@ The CNSA 2.0 Timeline Score (0-100) indicates how well your configuration meets 
 
 Each milestone shows one of these statuses:
 
-- **Compliant** - All requirements met
-- **Partial** - Some requirements met
-- **Non-Compliant** - Requirements not met
-- **Future** - Deadline not yet relevant
+The values below are what the JSON emits, verbatim. They are lowercase and
+hyphenated, and a consumer filtering on them must match these exact strings.
+
+- `compliant` - all requirements met
+- `partial` - some requirements met
+- `non-compliant` - requirements not met
+- `in-progress` - the deadline is ahead and the requirements are partly met
+- `not-applicable` - the deadline is not yet relevant to this system
 
 ## Migration Strategy
 

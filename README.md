@@ -43,7 +43,7 @@ Part of the [QRAMM (Quantum Readiness Assurance Maturity Model)](https://qramm.o
 
 ### Option 1: Build from Source
 
-Requires Go 1.23+ ([install Go](https://go.dev/doc/install))
+Requires Go 1.25+ ([install Go](https://go.dev/doc/install)), which is what `go.mod` declares
 
 Copy and paste this entire block:
 
@@ -136,9 +136,19 @@ so. Check revocation separately.
 | Feature | Description |
 |---------|-------------|
 | **Quantum Risk Scoring** | 0-100 score, weighted toward key exchange because that is the risk that applies retroactively |
-| **Hybrid PQC Detection** | Detects the negotiated key exchange group and separately probes which groups the server supports: `X25519MLKEM768`, `SecP256r1MLKEM768`, `SecP384r1MLKEM1024` |
+| **Hybrid PQC Detection** | Detects the negotiated key exchange group, and separately probes which groups the server supports. `X25519MLKEM768` is probed; the two NIST P-curve hybrids `SecP256r1MLKEM768` and `SecP384r1MLKEM1024` are **not**, because this build's TLS stack cannot offer them (see the note below) |
 | **HNDL Risk Assessment** | Evaluate exposure to harvest-now-decrypt-later attacks |
 | **CNSA 2.0 Timeline** | Track compliance against NSA's post-quantum migration deadlines |
+
+`SecP256r1MLKEM768` and `SecP384r1MLKEM1024` are not probed and are not
+reported, even by a server that offers them. Measured against an OpenSSL 3.6.1
+server offering all three hybrid groups: `openssl s_client` negotiates each of
+the three, and this tool reports only `X25519MLKEM768` and `X25519`. A server
+offering the two P-curve hybrids and nothing else cannot be scanned at all. The
+scan says nothing either way about them and, unlike the other enumeration limits
+this tool discloses, prints no coverage note. Confirm those two groups with
+`openssl s_client -connect host:443 -groups SecP384r1MLKEM1024`. This is
+recorded as a defect rather than a design limit.
 
 Post-quantum certificate signatures (ML-DSA, SLH-DSA) are reported as unavailable
 rather than detected. No publicly trusted CA issues them yet, so a classical
@@ -447,7 +457,10 @@ qramm-tls-analyzer/
 │   │   ├── html.go           # HTML report generation
 │   │   ├── json.go           # JSON output
 │   │   ├── sarif.go          # SARIF output
+│   │   ├── sanitize_result.go # Scrubs untrusted text once, at the renderer door
 │   │   └── text.go           # Terminal output with colors
+│   ├── sanitize/
+│   │   └── sanitize.go       # Control-character scrubbing and length bounding
 │   └── scanner/
 │       ├── scanner.go        # Core TLS scanning logic
 │       ├── quantum.go        # PQC risk assessment
