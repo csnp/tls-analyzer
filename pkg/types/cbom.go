@@ -22,6 +22,18 @@ type CBOMMetadata struct {
 	Component   *CBOMComponent `json:"component,omitempty"`
 	Manufacture *CBOMOrg       `json:"manufacture,omitempty"`
 	Supplier    *CBOMOrg       `json:"supplier,omitempty"`
+	Properties  []CBOMProperty `json:"properties,omitempty"`
+}
+
+// CBOMProperty is a CycloneDX name/value pair.
+//
+// It carries the facts CycloneDX has no dedicated field for. The one this was
+// added for is whether the target was reached at all: an empty component list is
+// otherwise indistinguishable from a host that uses no cryptography, and a CBOM
+// is read as an inventory rather than as a scan report.
+type CBOMProperty struct {
+	Name  string `json:"name"`
+	Value string `json:"value"`
 }
 
 // CBOMTool represents the tool that generated the CBOM.

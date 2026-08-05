@@ -53,6 +53,22 @@ func (r *CBOMReporter) generateCBOM(result *types.ScanResult) types.CryptoBOM {
 		Dependencies: make([]types.CBOMDependency, 0),
 	}
 
+	// A target that produced no measurements gets no inventory.
+	//
+	// This used to emit the full document shape with an empty component list, so
+	// a host nothing had ever connected to was indistinguishable from one that
+	// uses no cryptography, and the service entry asserted an endpoint at
+	// "https://:0" because the host and port were never filled in. A CBOM is
+	// consumed as an inventory, so an empty one is a claim, not an absence.
+	if targetWasNeverReached(result) {
+		cbom.Metadata.Properties = []types.CBOMProperty{
+			{Name: "qramm:targetReached", Value: "false"},
+			{Name: "qramm:scanError", Value: result.Error},
+			{Name: "qramm:inventoryComplete", Value: "false"},
+		}
+		return cbom
+	}
+
 	// Add service
 	cbom.Services = []types.CryptoService{
 		{

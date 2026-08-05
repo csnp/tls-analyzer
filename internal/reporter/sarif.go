@@ -18,8 +18,26 @@ type sarifReport struct {
 }
 
 type sarifRun struct {
-	Tool    sarifTool     `json:"tool"`
-	Results []sarifResult `json:"results"`
+	Tool        sarifTool         `json:"tool"`
+	Invocations []sarifInvocation `json:"invocations,omitempty"`
+	Results     []sarifResult     `json:"results"`
+}
+
+// sarifInvocation carries whether the scan actually ran.
+//
+// SARIF has one field for this and it was never emitted, so a target that was
+// never reached produced a valid run with no results, which is the same document
+// a clean host produces. A CI system reading SARIF cannot tell "nothing is
+// wrong" from "nothing was measured" without it, and this tool's own batch mode
+// is what generates those results for a whole file of hosts.
+type sarifInvocation struct {
+	ExecutionSuccessful        bool                `json:"executionSuccessful"`
+	ToolExecutionNotifications []sarifNotification `json:"toolExecutionNotifications,omitempty"`
+}
+
+type sarifNotification struct {
+	Level   string       `json:"level"`
+	Message sarifMessage `json:"message"`
 }
 
 type sarifTool struct {
@@ -80,6 +98,36 @@ type sarifProperties struct {
 
 // Report writes the scan result in SARIF format.
 func (r *SARIFReporter) Report(w io.Writer, result *types.ScanResult) error {
+	// A target that produced no measurements produces no rules and no results,
+	// and says so in the one field SARIF has for it. Without this the document is
+	// byte-for-byte the shape a clean host produces, so a gate reading SARIF
+	// passed a host it never connected to.
+	unreached := targetWasNeverReached(result)
+
+	// Both always arrays, never null. `"results": null` and `"rules": null` are
+	// not empty lists, they are the absence of a list, and the SARIF 2.1.0 schema
+	// rejects both: validated against the published schema, an unreached host
+	// produced `None is not of type 'array'` at runs[0].tool.driver.rules. The
+	// results half was already emitted as null before this release whenever a
+	// host had no findings at all.
+	rules := []sarifRule{}
+	results := []sarifResult{}
+	invocation := sarifInvocation{ExecutionSuccessful: true}
+
+	if unreached {
+		invocation = sarifInvocation{
+			ExecutionSuccessful: false,
+			ToolExecutionNotifications: []sarifNotification{{
+				Level: "error",
+				Message: sarifMessage{Text: "The target was not scanned, so nothing was " +
+					"measured and no finding here describes it: " + result.Error},
+			}},
+		}
+	} else {
+		rules = append(rules, r.buildRules(result)...)
+		results = append(results, r.buildResults(result)...)
+	}
+
 	report := sarifReport{
 		Schema:  "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
 		Version: "2.1.0",
@@ -91,10 +139,11 @@ func (r *SARIFReporter) Report(w io.Writer, result *types.ScanResult) error {
 						Version:         result.ScannerVersion,
 						SemanticVersion: result.ScannerVersion,
 						InformationURI:  "https://github.com/csnp/qramm-tls-analyzer",
-						Rules:           r.buildRules(result),
+						Rules:           rules,
 					},
 				},
-				Results: r.buildResults(result),
+				Invocations: []sarifInvocation{invocation},
+				Results:     results,
 			},
 		},
 	}
