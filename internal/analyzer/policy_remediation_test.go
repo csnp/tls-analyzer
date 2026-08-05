@@ -27,7 +27,7 @@ import (
 // file does not build. 0.4.0 landed as a single squashed commit, so the helpers,
 // the new types and the production change all arrived together and no test in
 // that release has an earlier tree to be built against. Ten files carried the
-// same claim; nine were wrong. Red proofs name their mutation instead, and
+// same claim; eleven were wrong. Red proofs name their mutation instead, and
 // docs/testing/red-proof.md carries the method and the worked examples.
 
 // certScanForRemediation is a scan whose certificate is signed with

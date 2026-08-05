@@ -80,6 +80,24 @@ func TestARefusalCannotBeMadeArbitrarilyLongByThePolicyFile(t *testing.T) {
 				hugePayload("-") + "\"]\n",
 			mustContain: "has no letters or digits",
 		},
+		// The `extends` cases exist because the first version of this fix was
+		// inert on exactly this path. LoadPolicy decodes a SECOND time to overlay
+		// the document onto the base policy, and that decode reassigned the whole
+		// struct, discarding the bounded name. Every fixture above happens to
+		// return before the overlay runs, so six passing cases proved nothing
+		// about the path the loader's own refusals tell an author to take.
+		{
+			name: "a name on a policy that inherits a built-in",
+			body: "name: " + hugePayload("A") + "\nextends: modern\n" +
+				"rules:\n  protocol:\n    minVersion: \"TLSv1.2\"\n",
+			mustContain: "not a protocol version this tool recognises",
+		},
+		{
+			name: "a name on an inheriting policy with a bad algorithm value",
+			body: "name: " + hugePayload("A") + "\nextends: modern\n" +
+				"rules:\n  cipher:\n    bannedAlgorithms: [\"" + hugePayload("-") + "\"]\n",
+			mustContain: "has no letters or digits",
+		},
 	}
 
 	evaluator := NewPolicyEvaluator()
@@ -186,17 +204,61 @@ func TestAValueIsJudgedOnTheRawTextAndOnlyEchoedScrubbed(t *testing.T) {
 // ordinary printable text: scrubbing left a non-empty name and the case proved
 // the opposite of what its name claims.
 func TestANameOfOnlyControlCharactersIsRefusedAsUnnamed(t *testing.T) {
-	path := writePolicyFile(t,
-		"name: \"\\u001b\\u0007\\u0001\\u009b\"\nrules:\n  cipher:\n    minKeySize: 256\n")
+	// Both decode paths. The inheriting one is here for the same reason as the
+	// `extends` volume fixtures above: it is a second decode that reassigns the
+	// whole struct, and the first version of this fix did not survive it. On that
+	// path this case regressed from "reported as an empty name" to "reported as
+	// three raw control bytes", which is worse than the defect being fixed.
+	for _, tc := range []struct{ name, body string }{
+		{"standalone", "name: \"\\u001b\\u0007\\u0001\\u009b\"\n" +
+			"rules:\n  cipher:\n    minKeySize: 256\n"},
+		{"inheriting", "name: \"\\u001b\\u0007\\u0001\\u009b\"\nextends: modern\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			_, err := NewPolicyEvaluator().LoadPolicy(writePolicyFile(t, tc.body))
+			if err == nil {
+				t.Fatal("a policy whose name is only control characters was accepted " +
+					"and named nothing")
+			}
+			if !strings.Contains(err.Error(), "sets no 'name'") {
+				t.Errorf("the refusal does not say the policy is unnamed: %.300s", err.Error())
+			}
+			if strings.ContainsRune(err.Error(), 0x1b) {
+				t.Errorf("a raw escape byte reached stderr: %q", err.Error())
+			}
+		})
+	}
+}
 
-	_, err := NewPolicyEvaluator().LoadPolicy(path)
-	if err == nil {
-		t.Fatal("a policy whose name is only control characters was accepted and named nothing")
-	}
-	if !strings.Contains(err.Error(), "sets no 'name'") {
-		t.Errorf("the refusal does not say the policy is unnamed: %.300s", err.Error())
-	}
-	if strings.ContainsRune(err.Error(), 0x1b) {
-		t.Errorf("a raw escape byte reached stderr: %q", err.Error())
+// TestAnInheritingPolicyCarriesABoundedNameIntoTheVerdict is the other half of
+// the same regression: not the refusal, but the value that reaches the report
+// when the policy LOADS.
+//
+// policyResult.policyName is rendered into every surface. On the inheriting path
+// it carried the file's chosen length and its control characters verbatim.
+func TestAnInheritingPolicyCarriesABoundedNameIntoTheVerdict(t *testing.T) {
+	for _, tc := range []struct{ name, body string }{
+		{"standalone", "name: \"evil\\u001b[1A" + strings.Repeat("A", 200*1024) + "\"\n" +
+			"rules:\n  cipher:\n    minKeySize: 256\n"},
+		{"inheriting", "name: \"evil\\u001b[1A" + strings.Repeat("A", 200*1024) + "\"\n" +
+			"extends: modern\n"},
+	} {
+		t.Run(tc.name, func(t *testing.T) {
+			policy, err := NewPolicyEvaluator().LoadPolicy(writePolicyFile(t, tc.body))
+			if err != nil {
+				t.Fatalf("the policy was refused, so this case measures nothing: %.200s", err)
+			}
+			if len(policy.Name) > 120 {
+				t.Errorf("the loaded policy name is %d bytes, so the file chose how much "+
+					"of every report it fills", len(policy.Name))
+			}
+			if strings.ContainsRune(policy.Name, 0x1b) {
+				t.Errorf("a raw escape byte reached the loaded policy name: %q",
+					policy.Name[:40])
+			}
+			if !strings.HasPrefix(policy.Name, "evil") {
+				t.Errorf("bounding lost the start of the name: %q", policy.Name[:40])
+			}
+		})
 	}
 }

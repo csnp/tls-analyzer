@@ -6,14 +6,14 @@ in 0.4.1.
 
 ## The method that does not work
 
-Ten test files in 0.4.0 carried a comment of this shape:
+Twelve test files in the 0.4.0 release tree carried a comment of this shape:
 
 > This file names nothing that did not already exist, so it compiles against the
 > pre-fix sources and fails there on behaviour.
 
-Nine of the ten are false, and the tenth is true by luck rather than by design.
-Measured in 0.4.1 by copying each file alone into a pristine tree at `a869357`,
-the commit before the release, and compiling:
+Eleven of the twelve are false, and the twelfth is true by luck rather than by
+design. Measured in 0.4.1 by copying each file alone into a pristine tree at
+`a869357`, the commit before the release, and compiling:
 
 | file | claim | actual |
 |---|---|---|
@@ -28,6 +28,7 @@ the commit before the release, and compiling:
 | `internal/reporter/unmeasured_quantum_test.go` | compiles | `undefined: healthyCert` |
 | `internal/scanner/certificate_chain_position_test.go` | compiles | `undefined: verifyCertificateChain` |
 | `internal/scanner/certificate_validity_window_test.go` | compiles | `undefined: issueLeaf` |
+| `internal/scanner/expiring_last_day_test.go` | compiles | `undefined: types.CheckPassed` |
 
 The cause is structural rather than careless. 0.4.0 landed as a single squashed
 commit, so the production change, the new types, the test helpers and the tests

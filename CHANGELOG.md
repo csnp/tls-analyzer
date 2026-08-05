@@ -51,8 +51,13 @@ refuses all of these the same way.
   scanned" page carrying the reason, SARIF emits
   `invocations[].executionSuccessful: false` with a notification, and CBOM emits
   no components and records `qramm:targetReached: false` in
-  `metadata.properties`. The classification lives in one predicate every renderer
-  consults.
+  `metadata.properties`. The classification lives in one predicate, which the
+  four renderers that have to BRANCH on it consult. JSON does not branch and does
+  not consult it: it carries the reason in a named `error` field, which is what
+  made it the one surface that was already honest and the one the batch fix read
+  to become honest. JSON still emits a zero-valued `grade` block beside that
+  error, unchanged from previous releases, and that is recorded rather than fixed
+  here.
 - **SARIF no longer emits `"results": null` or `"rules": null`.** Neither is an
   empty list, and the SARIF 2.1.0 schema rejects both. The results half affected
   any scanned host with no findings at all.
@@ -89,8 +94,9 @@ refuses all of these the same way.
 
 ### Notes for anyone reading the tests
 
-Ten test files claimed they could be built against the sources before the fix and
-would fail there. Nine of the claims are false, and the cause is structural: 0.4.0
+Twelve test files claimed they could be built against the sources before the fix
+and would fail there. Eleven of the claims are false, and the cause is
+structural: 0.4.0
 landed as one squashed commit, so nothing in it has an earlier tree to be built
 against. Red proofs now name the mutation that kills them.
 `docs/testing/red-proof.md` records the method, the measurement and the worked

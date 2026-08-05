@@ -380,7 +380,14 @@ func TestSARIFEmitsListsRatherThanNulls(t *testing.T) {
 // second instance of a defect already waiting to be fixed.
 func TestTheUnreachedPageIsNotANewForgerySurface(t *testing.T) {
 	result := unreachedResult()
-	result.Error = "cannot resolve \x1b[2K\x1b[1AFORGED TLS Security: A+ (100/100)\x9b1B.invalid"
+	// \u009b, properly encoded, NOT the bare \x9b byte. A bare 0x9B is invalid
+	// UTF-8 and `range` decodes it to U+FFFD before assertNoCursorControl's C1 arm
+	// can look at it, so that arm cannot fire and the payload silently tests
+	// nothing on that axis. This file shipped with the bare form, which is the
+	// same vacuity this release corrected in untrusted_field_sweep_test.go and
+	// failed_scan_branch_test.go. Both forms are carried now.
+	result.Error = "cannot resolve \x1b[2K\x1b[1AFORGED TLS Security: A+ (100/100)" +
+		"\u009b1B\x9braw.invalid"
 	result.Target = "host\x1b[1AFORGED.invalid"
 	result.ScanWarnings = []string{"warning \x1b[1AFORGED"}
 

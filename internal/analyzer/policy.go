@@ -50,22 +50,6 @@ func (e *PolicyEvaluator) LoadPolicy(path string) (*types.Policy, error) {
 		return nil, err
 	}
 
-	// Bound the untrusted text BEFORE anything formats it, not after.
-	//
-	// These two lines used to sit at the end of this function, so every refusal
-	// below quoted the name at whatever length the file chose. %q stops the
-	// steering and does nothing about the volume: a 200 KB `name:` in a policy
-	// that declares no rules produced 200,229 bytes on stderr, which pushes a
-	// real verdict out of any scrollback as effectively as a forged one. The
-	// escaping and the cap are two separate defences and only one of them was
-	// applied where it mattered.
-	//
-	// Sanitising before the empty-name check is also strictly more correct: a
-	// name made only of control characters scrubs to nothing, and it previously
-	// satisfied the check and was then reported as an empty policy name beside a
-	// verdict, which is the exact outcome that check exists to prevent.
-	policy.Name = sanitizeForReport(policy.Name, 120)
-	policy.Description = sanitizeForReport(policy.Description, 120)
 	// The rules as this document alone decodes them, kept before `extends` merges
 	// a base in, so the standalone question is answered from the standalone view.
 	//
@@ -416,6 +400,31 @@ func (e *PolicyEvaluator) decodePolicy(data []byte, onto types.Policy) (types.Po
 				"Put each policy in its own file and apply one with --policy-file",
 			total, otherDocuments(extra, complete))
 	}
+
+	// Bound the untrusted text HERE, where the decode happens, so every caller
+	// gets a bounded name and no caller has to remember.
+	//
+	// %q stops a policy file steering the terminal and does nothing about the
+	// length: a 200 KB `name:` in a policy that declares no rules produced
+	// 205,096 bytes on stderr, because the cap ran at the END of LoadPolicy,
+	// after the refusals had already formatted the raw value into five messages.
+	//
+	// The first attempt at this moved the two calls to just after the FIRST
+	// decode in LoadPolicy, which is one call site rather than the operation.
+	// LoadPolicy decodes a second time when the file uses `extends`, to overlay
+	// it onto the base policy, and that second decode reassigns the whole struct
+	// and threw the sanitised values away. The fix was inert on exactly the path
+	// every refusal in this loader recommends ("use 'extends' to inherit one of
+	// the built-in policies"), and it was worse than inert: an `extends` policy
+	// carried a 204,812-byte name with a live escape sequence into
+	// policyResult.policyName, where the previous release carried 120 scrubbed
+	// bytes. Fixing one call site is not fixing the operation. Again.
+	//
+	// Extends is deliberately NOT bounded here: it is a map key looked up
+	// against the built-in policies, and a decision has to be taken on what the
+	// file actually wrote. It is bounded where it is echoed instead.
+	onto.Name = sanitizeForReport(onto.Name, 120)
+	onto.Description = sanitizeForReport(onto.Description, 120)
 
 	return onto, nil
 }

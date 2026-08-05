@@ -20,12 +20,18 @@ import (
 // outside the C1 range, DEL, and both boundaries of the escaped block.
 func TestWriteJSONChangesTheEncodingAndNeverTheValue(t *testing.T) {
 	fixed := []string{
-		"", "plain", "\x1b", "\x9b", "", " ", "\x7f", "~",
+		// Every control character is written as an escape. The literal form is
+		// invisible in a diff and in a review, which is why staticcheck's ST1018
+		// exists and why this release converted another fixture away from it.
+		"", "plain", "\x1b", "\u009b", "\u0085", "\u00a0", "\x7f", "~",
+		// A lone 0xC2, and 0xC2 followed by bytes on both sides of the C1 range.
 		"\xc2", "\xc2\x7f", "\xc2\xa0", "\xc3\x9b", "\xc2\x9b\xc2\x9b",
-		"\xff\xfe", "a\xc2", "\xc2b", "\x00\x1f\x20", "",
-		"", " ", "emoji \U0001F600",
-		"\xed\xa0\x80", "\xc0\x80", strings.Repeat("", 500), "tail\xc2",
-		"  ", "quote\"back\\slash",
+		// Invalid UTF-8, a surrogate, and an overlong encoding.
+		"\xff\xfe", "a\xc2", "\xc2b", "\xed\xa0\x80", "\xc0\x80",
+		// C0 including NUL, and the boundary either side of the C0 block.
+		"\x00\x1f\x20", "\u2028\u2029",
+		"emoji \U0001F600", "\u00bf\u00c0", strings.Repeat("\u009b", 500),
+		"tail\xc2", "quote\"back\\slash",
 	}
 	r := rand.New(rand.NewSource(1))
 	for i := 0; i < 4000; i++ {
@@ -95,7 +101,7 @@ func TestWriteJSONEscapesOnlyWhatATerminalExecutes(t *testing.T) {
 	}
 
 	// Executable, must be escaped.
-	for _, s := range []string{"", "", "", ""} {
+	for _, s := range []string{"\x1b", "\u009b", "\u0085", "\x7f"} {
 		var buf bytes.Buffer
 		if err := WriteJSON(&buf, map[string]string{"v": s}, ""); err != nil {
 			t.Fatalf("WriteJSON(%q): %v", s, err)

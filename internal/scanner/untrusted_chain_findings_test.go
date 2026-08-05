@@ -185,6 +185,62 @@ func TestAVerifiedSelfSignedCertificateIsStillReported(t *testing.T) {
 	}
 }
 
+// TestANotPerformedChainCheckIsNotReportedAsAVerification covers the third state
+// of ChainTrust, which the first version of this switch had no case for.
+//
+// CheckNotPerformed is set by this scanner's own chain check when the
+// certificate is outside its validity window. Without a case for it, a
+// self-signed certificate in that state fell into the chain-verified arm and was
+// described as having "verified only because this machine's trust store already
+// carries it" — about a certificate that was never verified and that no trust
+// store contains. Reachable with an expired self-signed certificate on the
+// pure-Go verifier, which is what every Linux host runs.
+//
+// "Unknown" is a third state, and a finding must not collapse it into either of
+// the other two.
+func TestANotPerformedChainCheckIsNotReportedAsAVerification(t *testing.T) {
+	s := New(nil)
+
+	for _, isCA := range []bool{true, false} {
+		cert := untrustedCert(true, isCA)
+		cert.ChainTrust = types.CheckNotPerformed
+		cert.ChainTrustReason = "not evaluated because the certificate is outside its " +
+			"validity period"
+
+		found := trustFindings(s.checkVulnerabilities(&types.ScanResult{
+			Target:      "host.invalid",
+			Certificate: cert,
+		}))
+
+		if len(found) != 1 {
+			t.Fatalf("isCA=%v: got %d trust findings, want exactly one", isCA, len(found))
+		}
+		got := found[0]
+
+		// The specific false claim, and the words that carry it.
+		for _, forbidden := range []string{
+			"verified only because",
+			"trust store already carries it",
+		} {
+			if strings.Contains(got.Description, forbidden) {
+				t.Errorf("isCA=%v: the finding claims a verification result for a check "+
+					"that did not run: %q", isCA, got.Description)
+			}
+		}
+		if !strings.Contains(got.Description, "did not run") {
+			t.Errorf("isCA=%v: the finding does not say the chain check did not run, so a "+
+				"reader cannot tell an unknown result from a measured one: %q",
+				isCA, got.Description)
+		}
+		// Nor may it swing the other way and assert a failure that was not
+		// measured either.
+		if strings.Contains(got.Description, "does not build to a root") {
+			t.Errorf("isCA=%v: the finding asserts a chain failure that was never "+
+				"measured: %q", isCA, got.Description)
+		}
+	}
+}
+
 // TestATrustedChainProducesNoTrustFinding is the acceptance control. A guard
 // that fires on everything is a false clean of the opposite kind, and the whole
 // point of this change is that the finding follows the verification result.

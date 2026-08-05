@@ -229,7 +229,7 @@ func (s *Scanner) checkVulnerabilities(result *types.ScanResult) []types.Vulnera
 					"machine running the scan for this check to pass.",
 			})
 
-		case cert.IsSelfSigned:
+		case cert.ChainTrust == types.CheckPassed && cert.IsSelfSigned:
 			// The chain verified and the certificate still signed itself, which
 			// means this machine's trust store carries it. That is a real
 			// configuration and not a failure here, but it does not travel: a
@@ -246,6 +246,35 @@ func (s *Scanner) checkVulnerabilities(result *types.ScanResult) []types.Vulnera
 				Remediation: "Use a certificate from a Certificate Authority the intended " +
 					"clients trust, rather than relying on the certificate being installed " +
 					"on each machine.",
+			})
+
+		case cert.IsSelfSigned:
+			// The chain check did not run at all, which this scanner does when the
+			// certificate is outside its own validity window, and the report says
+			// so on its own line. So this finding must not describe a verification
+			// result: there isn't one.
+			//
+			// The first version of this switch had no case for CheckNotPerformed
+			// and fell into the one above, which told the reader the certificate
+			// "verified only because this machine's trust store already carries
+			// it" about a certificate that was never verified and is in nobody's
+			// trust store. A false measurement claim, in a release whose subject
+			// is refusing to describe what was not measured.
+			//
+			// Reachable and not exotic: an expired self-signed certificate on the
+			// pure-Go verifier, which is what every Linux host runs.
+			vulns = append(vulns, types.Vulnerability{
+				ID:       "CERT_SELF_SIGNED",
+				Name:     "Self-Signed Certificate",
+				Severity: types.SeverityMedium,
+				Description: "The certificate signed itself. Whether its chain would be " +
+					"trusted was not established, because the chain check did not run for " +
+					"this certificate; see the line above for why. A self-signed " +
+					"certificate is refused by default by any client that does not already " +
+					"have it installed.",
+				Remediation: "Resolve the condition that stopped the chain from being " +
+					"checked, then use a certificate from a Certificate Authority the " +
+					"intended clients trust.",
 			})
 		}
 

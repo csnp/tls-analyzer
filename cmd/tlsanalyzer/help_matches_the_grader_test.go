@@ -8,6 +8,7 @@ import (
 	"testing"
 
 	"github.com/csnp/qramm-tls-analyzer/internal/scanner"
+	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
 // The defect these tests exist for was a false claim in --help: it said "Q+
@@ -108,9 +109,32 @@ func TestTheHelpTextGradeBandsAreTheGradersBands(t *testing.T) {
 
 // TestTheHelpTextWeightingIsTheGradersWeighting checks the worked example the
 // help gives, which is the sentence the original false claim lived in.
+//
+// The number comes from running a hybrid host through the GRADER, not from
+// recomputing the expression the help uses. The first version of this test did
+// the latter, which meant it compared `QuantumScoreFor(a, b)` against a help
+// string built from `QuantumScoreFor(a, b)` and agreed with itself: raising the
+// hybrid key exchange score inside assessQuantumRisk moved the grade to 76 and
+// left both sides of this assertion at 64. An oracle has to be independent of
+// the thing it checks.
 func TestTheHelpTextWeightingIsTheGradersWeighting(t *testing.T) {
-	measured := scanner.QuantumScoreFor(
-		scanner.QuantumHybridKeyExchangeScore, scanner.QuantumClassicalCertificateScore)
+	// The posture the help's sentence is about: hybrid key exchange, classical
+	// certificate. Scored by the grader, not by re-running its arithmetic.
+	assessment := scanner.AssessQuantumRisk(&types.ScanResult{
+		Host: "example.com", Port: 443,
+		KeyExchanges: []types.KeyExchange{{
+			Name: "X25519MLKEM768", Type: "hybrid",
+			PQCAlgorithm: "ML-KEM-768", HybridClassical: "X25519", Negotiated: true,
+		}},
+		Certificate: &types.Certificate{
+			PublicKeyAlgorithm: "ECDSA", SignatureAlgorithm: "ECDSA-SHA384",
+		},
+	})
+	if !assessment.HybridPQCReady {
+		t.Fatal("the fixture did not register as hybrid, so this test is not measuring " +
+			"the posture the help text is about")
+	}
+	measured := assessment.Score
 	grade := scanner.QuantumGradeFor(measured)
 
 	want := fmt.Sprintf("scores %d", measured)

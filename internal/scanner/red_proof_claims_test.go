@@ -10,18 +10,19 @@ import (
 // TestNoTestFileClaimsAnUnrepeatableRedProof stops one specific false claim
 // coming back.
 //
-// Ten test files in 0.4.0 asserted, in a comment, that they "compile against the
-// pre-fix sources and fail there on behaviour". Nine were false. The cause is
-// structural: the release landed as a single squashed commit, so the production
-// change, the new types, the test helpers and the tests all arrived at once and
-// there is no pre-fix tree in this repository for any of them to compile
-// against. A proof that needs objects only one machine ever had is not a proof
-// anyone can repeat.
+// Twelve test files in the 0.4.0 release tree asserted, in a comment, that the
+// file builds against the sources before the fix and fails there on behaviour.
+// ELEVEN of the twelve are false, measured by copying each alone into a pristine
+// tree at a869357, the commit before that release. The cause is structural: 0.4.0
+// landed as a single squashed commit, so the production change, the new types,
+// the helpers and the tests all arrived at once, and no test in it has an earlier
+// tree to be built against. A proof that needs objects only one machine ever had
+// is not a proof anyone can repeat.
 //
-// Nothing in a code review reliably catches a comment, which is exactly why this
-// went nine for ten and why the review that found it found three. So the phrase
-// is banned mechanically. Red proofs name their mutation instead;
-// docs/testing/red-proof.md says how.
+// Nothing in a code review reliably catches a comment, which is why eleven of
+// twelve were wrong and why the review that looked found three of them. So the
+// phrase is banned mechanically. Red proofs name their mutation instead;
+// docs/testing/red-proof.md carries the method and the measured table.
 //
 // It lives in a test package rather than in CI because a check that only runs in
 // CI is one a contributor meets after pushing.
@@ -79,8 +80,8 @@ func TestNoTestFileClaimsAnUnrepeatableRedProof(t *testing.T) {
 //
 // This bans an idiom, not an idea. Someone determined to assert an unrepeatable
 // red proof can phrase it differently and this will not see it. It is worth
-// having anyway: the nine false claims were nine copies of one sentence, and the
-// review that looked found three of them.
+// having anyway: the eleven false claims were eleven copies of one sentence, and
+// the review that looked found three of them.
 func bannedRedProofPhrases() []string {
 	const against = "against the " + "pre-" + "fix"
 	return []string{
@@ -115,9 +116,9 @@ func TestTheClaimGuardActuallyReadsTestFiles(t *testing.T) {
 		t.Fatalf("walking the repository failed: %v", err)
 	}
 
-	// Measured at 60 test files when this was written. The floor is well under
-	// that so ordinary churn does not trip it, and well over zero so a walk that
-	// starts in the wrong directory does.
+	// Measured at 68 test files when this was written, against 60 in the previous
+	// release. The floor is well under that so ordinary churn does not trip it,
+	// and well over zero so a walk that starts in the wrong directory does.
 	if seen < 30 {
 		t.Errorf("the walk found %d test files, which is too few to be reaching the "+
 			"repository; the guard above would pass without reading anything", seen)

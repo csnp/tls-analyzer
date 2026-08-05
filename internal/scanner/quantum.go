@@ -20,6 +20,12 @@ const (
 	// QuantumHybridKeyExchangeScore is what a hybrid key exchange scores on its
 	// own dimension, and QuantumClassicalCertificateScore what a classical
 	// certificate scores on its.
+	//
+	// assessQuantumRisk READS these, rather than restating the same literals
+	// beside them. It did restate them at first, which made --help's worked
+	// example a restatement one level removed: raising the hybrid score to 95 in
+	// the grader left the help still saying 64, and the test that checked the
+	// help recomputed the same expression the help did, so it agreed with itself.
 	QuantumHybridKeyExchangeScore    = 80
 	QuantumClassicalCertificateScore = 0
 )
@@ -28,6 +34,20 @@ const (
 func QuantumScoreFor(keyExchangeScore, certificateScore int) int {
 	return (keyExchangeScore*QuantumKeyExchangeWeight +
 		certificateScore*QuantumCertificateWeight) / 100
+}
+
+// AssessQuantumRisk runs the quantum readiness assessment over an already
+// collected result, without a network.
+//
+// It exists so a caller outside this package can ask the GRADER what a given
+// posture scores, instead of recomputing the arithmetic and comparing that to
+// itself. The --help text quotes one such number, and the test that checks the
+// help originally recomputed `QuantumScoreFor(hybrid, classical)` — the same
+// expression the help is built from — so it agreed with itself and stayed green
+// while the grader returned something else entirely.
+func AssessQuantumRisk(result *types.ScanResult) types.QuantumRiskAssessment {
+	s := &Scanner{config: &Config{CheckQuantum: true}}
+	return s.assessQuantumRisk(result)
 }
 
 // QuantumVulnerableAlgorithms lists algorithms vulnerable to quantum attacks.
@@ -89,7 +109,7 @@ func (s *Scanner) assessQuantumRisk(result *types.ScanResult) types.QuantumRiskA
 			assessment.Details = append(assessment.Details,
 				"Key exchange uses full post-quantum cryptography: "+ke.PQCAlgorithm)
 		case "hybrid":
-			keyExchangeScore = max(keyExchangeScore, 80)
+			keyExchangeScore = max(keyExchangeScore, QuantumHybridKeyExchangeScore)
 			hybridPQC = true
 			assessment.Details = append(assessment.Details,
 				"Key exchange uses hybrid PQC: "+ke.Name+" ("+ke.HybridClassical+" + "+ke.PQCAlgorithm+")")
@@ -124,11 +144,11 @@ func (s *Scanner) assessQuantumRisk(result *types.ScanResult) types.QuantumRiskA
 
 		switch cert.PublicKeyAlgorithm {
 		case "RSA":
-			certScore = 0
+			certScore = QuantumClassicalCertificateScore
 			assessment.Details = append(assessment.Details,
 				"Certificate uses RSA, vulnerable to Shor's algorithm")
 		case "ECDSA", "Ed25519":
-			certScore = 0
+			certScore = QuantumClassicalCertificateScore
 			assessment.Details = append(assessment.Details,
 				"Certificate uses elliptic curve cryptography, vulnerable to Shor's algorithm")
 		case "ML-DSA", "CRYSTALS-Dilithium":
