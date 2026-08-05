@@ -5,6 +5,100 @@ All notable changes to QRAMM TLS Analyzer are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [0.4.1] - 2026-08-05
+
+**A patch, and it is safe to take unattended, with one exception noted below.**
+0.4.0 closed a class of defects at the print sites it had itself created and left
+the pre-existing sites of the same class open. This finishes that sweep, fixes
+the two findings 0.4.0 recorded rather than repaired, and corrects six tests that
+claimed evidence they did not have. Correcting one of those tests found a defect
+in three output formats.
+
+### The one thing that can change a grade
+
+A certificate whose chain does not build to a trusted root now produces exactly
+one HIGH finding, whatever shape the certificate has. Before, the untrusted-chain
+finding stepped aside for a self-signed certificate and the self-signed finding
+stepped aside for a CA, so a **self-signed CA certificate produced no finding at
+all**, and `openssl req -x509` emits `CA:TRUE` by default. Measured on a local
+listener, reading the numbers out of `--format json`:
+
+| certificate | 0.4.0 | 0.4.1 |
+|---|---|---|
+| self-signed, `CA:TRUE` | penalty 5, no finding, C 61 | penalty 20, HIGH, D 46 |
+| self-signed, `CA:FALSE` | penalty 10, MEDIUM, D 56 | penalty 20, HIGH, D 46 |
+| untrusted CA-issued | penalty 20, HIGH, D 46 | penalty 20, HIGH, D 46 |
+| untrusted CA-issued, `CA:TRUE` | penalty 20, HIGH, D 46 | penalty 20, HIGH, D 46 |
+
+Five points of each penalty is a `CERT_EXPIRING` medium the 30-day fixtures
+carry, so the trust findings themselves contributed 0, 5, 15 and 15 and now
+contribute 15 throughout. **A self-signed host will grade lower than it did**,
+and a scan of an internal service using a self-signed certificate may move from C
+to D. The severity no longer depends on `isSelfSigned`, which is a
+subject-equals-issuer string comparison the server controls both sides of; it
+selects the wording of the diagnosis and nothing else. A client that verifies
+refuses all of these the same way.
+
+### Fixed
+
+- **Every surface now says when a host was never reached.** 0.4.0's entry said
+  batch mode no longer grades hosts it never reached; that was true of the text
+  renderer alone. HTML rendered an empty grade letter, `0/100`, a full breakdown
+  of zeros and a red `grade-f` class. SARIF emitted a valid run with no results,
+  byte-for-byte the document a clean host produces, so a gate reading it passed a
+  host nothing had connected to. CBOM emitted an inventory listing no
+  cryptography, with a service asserted at `https://:0`. HTML now renders a "not
+  scanned" page carrying the reason, SARIF emits
+  `invocations[].executionSuccessful: false` with a notification, and CBOM emits
+  no components and records `qramm:targetReached: false` in
+  `metadata.properties`. The classification lives in one predicate every renderer
+  consults.
+- **SARIF no longer emits `"results": null` or `"rules": null`.** Neither is an
+  empty list, and the SARIF 2.1.0 schema rejects both. The results half affected
+  any scanned host with no findings at all.
+- **The machine-readable formats escape the control characters Go's JSON encoder
+  leaves raw.** `encoding/json` escapes C0 and does not escape DEL or
+  `U+0080`-`U+009F`. `U+009B` is CSI, the single-codepoint form of the `ESC [`
+  0.4.0's headline fix exists to stop, it is valid UTF-8, and a certificate
+  subject can carry it. Serving a certificate whose subject carries it, the 0.4.0
+  binary wrote 4 raw CSI codepoints into `--format json` and 6 into
+  `--format cbom`, so a saved report could steer a terminal when it was opened
+  with `cat`, `less` or `grep`. They are escaped as `\uXXXX` now: a decoder
+  yields the identical string, so nothing is lost to a consumer.
+- **The remaining stderr forgery sites are scrubbed.** `--output` path,
+  `--targets` open and read, `--format`, `--policy-file` read and an unknown flag
+  each emitted 2 raw escape bytes and now emit none. The policy gate's message
+  interpolated the target raw while its sibling scrubbed the same field.
+- **A policy file can no longer choose how much of the terminal a refusal
+  fills.** `%q` escapes control characters and does nothing about length, and the
+  policy name was capped only after the refusals had already formatted it. A
+  200 KB `name:` in a policy that declares no rules produced 205,096 bytes on
+  stderr; it produces 416 now. The rule values quoted back by the protocol and
+  algorithm refusals are bounded where they are echoed, without being
+  transformed, so a trailing-space typo is still visible in the message written
+  to show it.
+- **A policy whose name is only control characters is refused as unnamed**
+  rather than accepted and then reported as an empty policy name beside a
+  verdict.
+
+### Changed
+
+- `--help` renders its grade bands and quantum weighting from the code that
+  produces them rather than restating them. The output is byte-identical to
+  0.4.0; what changed is that it can no longer drift.
+
+### Notes for anyone reading the tests
+
+Ten test files claimed they could be built against the sources before the fix and
+would fail there. Nine of the claims are false, and the cause is structural: 0.4.0
+landed as one squashed commit, so nothing in it has an earlier tree to be built
+against. Red proofs now name the mutation that kills them.
+`docs/testing/red-proof.md` records the method, the measurement and the worked
+examples.
+
+`golangci-lint` reports 15 issues, against 16 at the 0.4.0 base and 17 in the
+0.4.0 release.
+
 ## [0.4.0] - 2026-08-04
 
 **A minor version rather than a patch, because three things a user can depend on
@@ -748,5 +842,6 @@ reproducing it. Reported in [#1](https://github.com/csnp/tls-analyzer/issues/1).
 - Go 1.25 or later is now required, for `tls.ConnectionState.CurveID`. CI and
   release builds moved from Go 1.21 to Go 1.25.
 
+[0.4.1]: https://github.com/csnp/tls-analyzer/releases/tag/v0.4.1
 [0.4.0]: https://github.com/csnp/tls-analyzer/releases/tag/v0.4.0
 [0.3.0]: https://github.com/csnp/tls-analyzer/releases/tag/v0.3.0
