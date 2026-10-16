@@ -44,6 +44,12 @@ Available Security Policies:
 | `cnsa-2.0-2030` | Systems targeting 2030 compliance deadline |
 | `cnsa-2.0-2035` | Full post-quantum transition planning |
 
+Custom policies are YAML. `tlsanalyzer print-policy <name>` prints any built-in
+policy in exactly the shape `--policy-file` accepts, which is the recommended
+starting point: keys the schema does not define are refused rather than ignored.
+`extends` inherits a built-in policy, and every key the file sets overrides the
+inherited one. See [Custom Policies](#custom-policies) below for the full schema.
+
 ## Using Built-in Policies
 
 ```bash

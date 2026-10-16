@@ -57,6 +57,27 @@ CNSA 2.0 is the NSA's guidance for transitioning to quantum-resistant cryptograp
 | SHA-256 | Transitional | Phase out by 2030 |
 | SHA-1 | **Prohibited** | Never use |
 
+## CNSA 2.0 Timeline
+
+The tool tracks compliance against NSA's Commercial National Security Algorithm Suite 2.0 timeline:
+
+| Milestone | Deadline | Requirements |
+|-----------|----------|--------------|
+| **Preparation Phase** | Dec 2025 | Begin PQC integration planning, inventory cryptographic assets |
+| **New NSS Systems** | Jan 2027 | ML-KEM for key exchange, ML-DSA/SLH-DSA for signatures, AES-256, SHA-384+ |
+| **TLS 1.3 Required** | Jan 2030 | TLS 1.3 mandatory, hybrid PQC required, RSA/ECDH no longer acceptable |
+| **Legacy System Update** | Jan 2033 | Complete migration of all existing systems, PQC certificates deployed |
+| **Full PQC Transition** | Jan 2035 | Pure PQC (no hybrid required), classical algorithms fully retired |
+
+### Algorithm Classification
+
+| Status | Description | Examples |
+|--------|-------------|----------|
+| **Approved** | CNSA 2.0 approved | ML-KEM-768, ML-KEM-1024, ML-DSA-65, ML-DSA-87, SLH-DSA, AES-256, SHA-384, SHA-512 |
+| **Transitional** | Allowed until deadline | RSA-3072, RSA-4096, ECDSA-P384, ECDH-P384, X25519 (hybrid only), SHA-256 |
+| **Deprecated** | Phase out immediately | RSA-2048, ECDSA-P256, ECDH-P256 |
+| **Prohibited** | Never use | 3DES, RC4, SHA-1, MD5 |
+
 ## Using TLS Analyzer for CNSA 2.0
 
 ### Evaluate Against 2027 Requirements
