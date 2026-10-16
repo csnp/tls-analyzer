@@ -201,8 +201,9 @@ func TestQuantumScoreFixQuotesAHostileServerName(t *testing.T) {
 
 // TestQuantumScoreFixKeepsTheVerifyWithinTheReportCap: the report caps a Fix
 // at sanitize.MaxReportDetail bytes by cutting the end, which is where the
-// Verify is, so a long host name must cost the optional note and not the
-// command.
+// Verify is, so for this hybrid server under cnsa-2.0-2030 a 75-character host
+// name must cost the optional note and not the command. A longer host name, or
+// a Fix with more to say, can still lose the end of the Verify to the cap.
 func TestQuantumScoreFixKeepsTheVerifyWithinTheReportCap(t *testing.T) {
 	scan := quantumPostureScan([]types.KeyExchange{hybridKeyExchange}, "ECDSA")
 	host := strings.Repeat("a", 63) + ".example.com"

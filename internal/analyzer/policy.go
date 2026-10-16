@@ -1681,8 +1681,10 @@ var (
 //
 // The report caps a Fix at sanitize.MaxReportDetail bytes and cuts from the
 // end, where the Verify is. So the note on certificate availability, which the
-// report's Recommended Action line also carries, is the part left out when a
-// long host name would otherwise push the Verify past the cap.
+// report's Recommended Action line also carries once the key exchange is hybrid
+// or pure ML-KEM, is left out when it would push the Fix past the cap. Nothing
+// else is shortened: a host name long enough to push the Fix past the cap
+// without the note still has the end of the Verify cut.
 func (e *PolicyEvaluator) quantumScoreRemediation(result *types.ScanResult, minimum int) string {
 	hasHybrid, hasPure := false, false
 	for _, ke := range result.KeyExchanges {
