@@ -82,13 +82,16 @@ field out.
   for 70, such a server scores 64. The Fix now says which part is short and what
   each remaining step would bring the score to, with every figure taken from
   the scoring code: a server with classical key exchange is pointed at hybrid
-  ML-KEM key exchange first, and a hybrid server is told that its key exchange
-  is in place, that pure ML-KEM key exchange or a post-quantum certificate would
-  pass, and that publicly trusted CAs do not issue post-quantum certificates
-  yet. It ends with an `openssl s_client` command that checks the server, using
-  the same server name the scan asked for with `--sni`. The report limits a Fix
-  to 500 bytes, cutting a longer one at the end and marking the cut with `...`,
-  so with a long host name or `--sni` name the end of that command is cut.
+  ML-KEM key exchange first, and under `cnsa-2.0-2030` a hybrid server is told
+  that its key exchange is in place, that pure ML-KEM key exchange or a
+  post-quantum certificate would pass, and, when there is room, that publicly
+  trusted CAs do not issue post-quantum certificates yet. It ends with an
+  `openssl s_client` command that checks the server, using the same server name
+  the scan asked for with `--sni`. The report limits a Fix to 500 bytes. The
+  sentence about CAs is left out whenever it would take the Fix past that
+  limit, and when a long host name or `--sni` name makes the Fix longer than
+  500 bytes even without it, the end of that command is cut and marked with
+  `...`.
 - `docs/policies.md` now says what `cnsa-2.0-2030` asks for, and that its score
   rule cannot be met with hybrid key exchange and a classical certificate,
   which is the best a publicly trusted setup reaches today.
