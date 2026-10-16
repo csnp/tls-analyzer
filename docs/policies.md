@@ -41,7 +41,7 @@ Available Security Policies:
 | `modern` | General-purpose secure configuration for web applications |
 | `strict` | High-security environments requiring TLS 1.3 only |
 | `cnsa-2.0-2027` | Government/defense systems needing CNSA 2.0 by 2027 |
-| `cnsa-2.0-2030` | Systems targeting 2030 compliance deadline |
+| `cnsa-2.0-2030` | TLS 1.3 only, ML-KEM key exchange and a quantum readiness score of at least 70, which no publicly trusted setup reaches today (see below) |
 | `cnsa-2.0-2035` | Full post-quantum transition planning |
 
 Custom policies are YAML. `tlsanalyzer print-policy <name>` prints any built-in
@@ -49,6 +49,35 @@ policy in exactly the shape `--policy-file` accepts, which is the recommended
 starting point: keys the schema does not define are refused rather than ignored.
 `extends` inherits a built-in policy, and every key the file sets overrides the
 inherited one. See [Custom Policies](#custom-policies) below for the full schema.
+
+### What `cnsa-2.0-2030` asks for
+
+`tlsanalyzer print-policy cnsa-2.0-2030` prints the whole preset. In short, it
+asks for:
+
+- TLS 1.3 only. TLS 1.0, 1.1 and 1.2 are banned.
+- Cipher suites with keys of at least 256 bits and forward secrecy.
+- Hybrid ML-KEM key exchange: the group `X25519MLKEM768` or
+  `SecP384r1MLKEM1024`, with ML-KEM-768 or ML-KEM-1024 as its post-quantum part.
+- A certificate with an RSA key of at least 3072 bits or an ECC key of at least
+  384 bits, and at least 30 days left before it expires.
+- A quantum readiness score of at least 70.
+
+The score rule cannot be met with hybrid ML-KEM key exchange and a classical
+(RSA or ECDSA) certificate, which is the best a publicly trusted setup reaches
+today. That combination scores 64; `tlsanalyzer --help` shows how the score is
+made up. Two further steps each pass 70: pure ML-KEM key exchange scores 80,
+and a post-quantum (ML-DSA or SLH-DSA) certificate scores 84, but publicly
+trusted certificate authorities do not issue those certificates yet. So a
+server that already has hybrid key exchange fails this preset on the score
+rule. The Fix for that violation says the key exchange is already in place,
+quotes what each remaining step scores, and ends with an `openssl s_client`
+command that checks whether the server accepts pure ML-KEM key exchange.
+
+Measured on version 0.4.1: the scanner could not complete a handshake with a
+server that offered only `MLKEM1024` key exchange, or with one that presented
+an ML-DSA-65 certificate, so a server set up in either of the two ways that
+score 70 or more could not be scanned with that version.
 
 ## Using Built-in Policies
 

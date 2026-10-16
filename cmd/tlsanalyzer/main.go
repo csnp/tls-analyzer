@@ -429,6 +429,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	s := scanner.New(cfg)
 	cnsa2Analyzer := analyzer.NewCNSA2Analyzer()
 	policyEvaluator := analyzer.NewPolicyEvaluator()
+	policyEvaluator.ServerName = sni
 
 	// Determine if batch mode
 	if len(targets) == 1 {

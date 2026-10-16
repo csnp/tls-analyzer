@@ -266,6 +266,13 @@ func describeHNDLRisk(result *types.ScanResult) string {
 	return "CRITICAL - No forward secrecy; all recorded traffic decryptable when quantum computers arrive"
 }
 
+// QuantumCertificateAvailability is the assessment's statement of why the
+// certificate dimension cannot be raised today. recommendTimeToAction ends with
+// it, and the quantum.minQuantumScore policy Fix quotes it, so the report makes
+// that claim in one set of words rather than two that can drift apart.
+const QuantumCertificateAvailability = "post-quantum certificates are not yet available " +
+	"from publicly trusted CAs, so track CA readiness and keep crypto-agility in place"
+
 // recommendTimeToAction returns the next step an operator can actually take.
 // It is driven by the two dimensions separately rather than by the combined
 // score, so that a server already running hybrid key exchange is never told to
@@ -278,9 +285,7 @@ func recommendTimeToAction(keyExchangeScore, certScore int) string {
 		// Key exchange, the retroactive risk, is already handled. Certificates
 		// cannot be migrated until publicly trusted CAs issue ML-DSA, so the
 		// remaining work is readiness, not deployment.
-		return "MONITORING - Hybrid key exchange deployed; post-quantum certificates " +
-			"are not yet available from publicly trusted CAs, so track CA readiness " +
-			"and keep crypto-agility in place"
+		return "MONITORING - Hybrid key exchange deployed; " + QuantumCertificateAvailability
 	case keyExchangeScore > 0:
 		return "12-24 MONTHS - Complete the move to hybrid or full PQC key exchange"
 	default:
