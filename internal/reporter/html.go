@@ -28,6 +28,17 @@ func (r *HTMLReporter) Report(w io.Writer, result *types.ScanResult) error {
 		return r.reportUnreached(w, result)
 	}
 
+	// Scrubbed at the door, whole result, exactly as reportUnreached does it,
+	// and decided after the unreached check above, which reads the raw result.
+	//
+	// html/template escapes markup and does NOT escape control characters, so a
+	// saved HTML report could carry a raw cursor sequence that steers a terminal
+	// the moment somebody cats, greps or pages the file. Nothing reached that gap
+	// only because this page drew no subject, issuer or SAN, which are the
+	// server's own choice of text. It draws them now, so the scrub comes first,
+	// and a field added to the page later is covered without anyone remembering.
+	result = sanitizedForText(result)
+
 	tmpl, err := template.New("report").Funcs(template.FuncMap{
 		"gradeClass":    gradeClass,
 		"severityClass": severityClass,
@@ -43,6 +54,21 @@ func (r *HTMLReporter) Report(w io.Writer, result *types.ScanResult) error {
 		// Shared with the text reporter so the two cannot describe the same
 		// deduction differently.
 		"describePenalties": describePenalties,
+		// The verdict words below are shared the same way. See verdict_marks.go.
+		"toneClass":                    toneClass,
+		"formatDate":                   formatDate,
+		"certificateHeadline":          certificateHeadline,
+		"nameCheck":                    nameCheck,
+		"chainCheck":                   chainCheck,
+		"certificateQuantum":           certificateQuantum,
+		"selfSignedMark":               func() mark { return selfSignedMark },
+		"negotiatedLabel":              func() string { return negotiatedLabel },
+		"policyStatus":                 policyStatus,
+		"policyIncompleteNote":         policyIncompleteNote,
+		"milestoneMark":                milestoneMark,
+		"milestoneStatuses":            func() []milestoneStatus { return milestoneStatuses },
+		"cnsa2FindingTone":             cnsa2FindingTone,
+		"cnsa2FindingNeedsReplacement": cnsa2FindingNeedsReplacement,
 	}).Parse(htmlTemplate)
 	if err != nil {
 		return fmt.Errorf("failed to parse template: %w", err)
@@ -59,18 +85,16 @@ func (r *HTMLReporter) Report(w io.Writer, result *types.ScanResult) error {
 // inside the main template would have to be repeated at each of those sections
 // and would silently stop covering a section added later.
 func (r *HTMLReporter) reportUnreached(w io.Writer, result *types.ScanResult) error {
-	// Scrubbed at the door, whole result, the same way the text renderer does it.
+	// Scrubbed at the door, whole result, the same way the text renderer and the
+	// graded page do it.
 	//
 	// html/template escapes markup and does NOT escape control characters, so a
 	// saved HTML report can carry a raw cursor-up sequence that steers a terminal
-	// the moment somebody cats, greps or pages the file. That is a recorded
-	// pre-existing gap in the GRADED page and it is deferred, deliberately, to
-	// the next release. It is closed here because this page is new: a surface
-	// added today should not ship as a second instance of a defect already
-	// waiting to be fixed. sanitizedForText is named for the renderer it was
-	// written for and is not text-specific; it walks the type rather than a list
-	// of fields, so this page needs no per-field decisions and a field added to
-	// it later is covered without anyone remembering.
+	// the moment somebody cats, greps or pages the file. sanitizedForText is
+	// named for the renderer it was written for and is not text-specific; it
+	// walks the type rather than a list of fields, so this page needs no
+	// per-field decisions and a field added to it later is covered without anyone
+	// remembering.
 	result = sanitizedForText(result)
 
 	tmpl, err := template.New("unreached").Funcs(template.FuncMap{
@@ -138,6 +162,28 @@ func riskClass(level types.RiskLevel) string {
 
 func formatTime(t time.Time) string {
 	return t.Format("2006-01-02 15:04:05 MST")
+}
+
+func formatDate(t time.Time) string {
+	return t.Format("2006-01-02")
+}
+
+// toneClass is the stylesheet class for a verdict's tone. An unknown tone gets
+// a neutral class of its own, never the class for a good outcome.
+func toneClass(t tone) string {
+	switch t {
+	case toneGood:
+		return "status-good"
+	case toneWarn:
+		return "status-warn"
+	case toneBad:
+		return "status-bad"
+	case toneInfo:
+		return "status-info"
+	case toneDim:
+		return "status-dim"
+	}
+	return "status-unknown"
 }
 
 func progressBar(score, max int) template.HTML {
@@ -439,6 +485,69 @@ const htmlTemplate = `<!DOCTYPE html>
         .pqc-ready { background: rgba(72, 187, 120, 0.1); border: 1px solid var(--color-good); }
         .pqc-not-ready { background: rgba(245, 101, 101, 0.1); border: 1px solid var(--color-bad); }
 
+        h3 { font-size: 1rem; margin: 1.25rem 0 0.5rem; }
+
+        .status-info { color: var(--color-accent); }
+        .status-dim { color: var(--color-text-dim); }
+        .status-unknown { color: var(--color-text); }
+        .verdict { font-weight: bold; }
+
+        .facts th {
+            width: 12rem;
+            vertical-align: top;
+            text-transform: none;
+            font-size: 0.85rem;
+        }
+        .facts td { word-break: break-word; }
+
+        .note { color: var(--color-text-dim); font-size: 0.9rem; margin-top: 0.75rem; }
+
+        .plain-list { list-style: none; }
+        .plain-list > li { padding: 0.35rem 0; }
+        .plain-list ul { margin: 0.25rem 0 0 1.75rem; color: var(--color-text-dim); }
+
+        .finding-item {
+            padding: 1rem;
+            border-left: 4px solid var(--color-border);
+            margin-bottom: 1rem;
+            background: rgba(0,0,0,0.2);
+            border-radius: 0 8px 8px 0;
+            overflow-wrap: anywhere;
+        }
+        .finding-severity-critical, .finding-severity-high { border-color: var(--color-bad); }
+        .finding-severity-medium { border-color: var(--color-warn); }
+        .finding-severity-low, .finding-severity-info { border-color: var(--color-accent); }
+        .finding-detail { color: var(--color-text-dim); font-size: 0.9rem; margin-top: 0.25rem; }
+
+        .tag {
+            display: inline-block;
+            padding: 0.1rem 0.4rem;
+            margin: 0.1rem 0.25rem 0.1rem 0;
+            border-radius: 4px;
+            font-size: 0.75rem;
+            background: var(--color-border);
+        }
+
+        code {
+            font-family: ui-monospace, SFMono-Regular, Menlo, monospace;
+            font-size: 0.85rem;
+            overflow-wrap: anywhere;
+        }
+
+        @media (max-width: 600px) {
+            body { padding: 1rem; }
+            .grades { flex-direction: column; gap: 1rem; }
+            .facts th { width: auto; }
+            .facts th, .facts td, .stack-table td { display: block; border-bottom: none; padding: 0.25rem 0; }
+            .facts tr, .stack-table tr { display: block; border-bottom: 1px solid var(--color-border); padding: 0.5rem 0; }
+            .stack-table thead { display: none; }
+            .stack-table td::before {
+                content: attr(data-label) ": ";
+                color: var(--color-text-dim);
+                font-size: 0.8rem;
+            }
+        }
+
         footer {
             text-align: center;
             padding: 2rem;
@@ -533,6 +642,86 @@ const htmlTemplate = `<!DOCTYPE html>
             </table>
         </section>
 
+        {{with .PolicyResult}}
+        <section id="policy">
+            <h2>Policy evaluation</h2>
+            <table class="facts">
+                <tbody>
+                    <tr><th scope="row">Policy</th><td>{{.PolicyName}}</td></tr>
+                    <tr><th scope="row">Status</th><td>{{template "mark" (policyStatus .)}}</td></tr>
+                    <tr><th scope="row">Score</th><td>{{.Score}}/100{{if not .Complete}} <span class="status-warn">(not comparable with a full evaluation)</span>{{end}}</td></tr>
+                    {{if .Scope}}<tr><th scope="row">Scope</th><td>{{.Scope}}</td></tr>{{end}}
+                </tbody>
+            </table>
+            {{with policyIncompleteNote .}}<p class="note status-warn">{{.}}</p>{{end}}
+
+            {{if .Violations}}
+            <h3>Violations ({{len .Violations}})</h3>
+            {{range .Violations}}
+            <div class="finding-item finding-{{severityClass .Severity}}">
+                <div class="vuln-title"><span class="badge {{severityClass .Severity}}">{{.Severity}}</span> {{.Description}}</div>
+                <div class="finding-detail">Rule: <code>{{.Rule}}</code></div>
+                <div class="finding-detail">Expected: {{.Expected}} | Actual: {{.Actual}}</div>
+                {{if .Remediation}}<div class="vuln-remedy"><strong>Fix:</strong> {{.Remediation}}</div>{{end}}
+            </div>
+            {{end}}
+            {{end}}
+
+            {{if .Warnings}}
+            <h3>Warnings ({{len .Warnings}})</h3>
+            {{range .Warnings}}
+            <div class="finding-item finding-{{severityClass .Severity}}">
+                <div class="vuln-title"><span class="badge {{severityClass .Severity}}">{{.Severity}}</span> {{.Description}}</div>
+                <div class="finding-detail">Rule: <code>{{.Rule}}</code></div>
+                {{if .Remediation}}<div class="vuln-remedy"><strong>Fix:</strong> {{.Remediation}}</div>{{end}}
+            </div>
+            {{end}}
+            {{end}}
+
+            {{if .SkippedRules}}
+            <h3>Not evaluated ({{len .SkippedRules}})</h3>
+            <p class="note">These rules were neither passed nor failed, because this scan did not measure what they read.</p>
+            <ul class="plain-list">
+                {{range .SkippedRules}}<li><code>{{.Rule}}</code>: {{.Reason}}</li>{{end}}
+            </ul>
+            {{end}}
+        </section>
+        {{end}}
+
+        {{with .CNSA2Timeline}}
+        <section id="cnsa2-timeline">
+            <h2 class="quantum">CNSA 2.0 compliance timeline</h2>
+            <table class="facts">
+                <tbody>
+                    <tr><th scope="row">Current phase</th><td>{{.CurrentPhase}}</td></tr>
+                    <tr><th scope="row">Timeline score</th><td>{{.TimelineScore}}/100</td></tr>
+                    <tr><th scope="row">Days to next deadline</th><td>{{.DaysToNextDeadline}}</td></tr>
+                    <tr><th scope="row">Next action</th><td>{{.NextAction}}</td></tr>
+                    {{if .Scope}}<tr><th scope="row">Scope</th><td>{{.Scope}}</td></tr>{{end}}
+                </tbody>
+            </table>
+
+            <h3>Milestones</h3>
+            <p class="note">Legend: {{range $i, $s := milestoneStatuses}}{{if $i}}, {{end}}{{template "mark" $s.Mark}}{{end}}</p>
+            <ul class="plain-list">
+                {{range .Milestones}}
+                <li>{{template "mark" (milestoneMark .Status)}}: {{.Name}} ({{formatDate .Deadline}}){{if .Gap}}
+                    <ul>{{range .Gap}}<li>{{.}}</li>{{end}}</ul>{{end}}
+                </li>
+                {{end}}
+            </ul>
+
+            {{if .Findings}}
+            <h3>Algorithm status</h3>
+            <ul class="plain-list">
+                {{range .Findings}}
+                <li><span class="verdict {{toneClass (cnsa2FindingTone .Status)}}">{{.Status}}</span>: {{.Category}}, {{.Algorithm}}{{if cnsa2FindingNeedsReplacement .}}. Replace with {{.Replacement}}{{end}}</li>
+                {{end}}
+            </ul>
+            {{end}}
+        </section>
+        {{end}}
+
         <section>
             <h2>Protocol Support</h2>
             <table>
@@ -559,6 +748,81 @@ const htmlTemplate = `<!DOCTYPE html>
                 </tbody>
             </table>
         </section>
+
+        <section id="cipher-suites">
+            <h2>Cipher suites and key exchange</h2>
+            {{if .CipherSuites}}
+            <table class="stack-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Status</th>
+                        <th scope="col">Cipher suite</th>
+                        <th scope="col">Protocol</th>
+                        <th scope="col">Key size</th>
+                        <th scope="col">Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .CipherSuites}}
+                    <tr>
+                        <td data-label="Status">{{if .Deprecated}}<span class="status-icon status-bad" aria-hidden="true">✗</span> deprecated{{else}}<span class="status-icon status-good" aria-hidden="true">✓</span> accepted{{end}}</td>
+                        <td data-label="Cipher suite"><code>{{.Name}}</code>{{if .Deprecated}}<div class="finding-detail">{{.DeprecatedReason}}</div>{{end}}</td>
+                        <td data-label="Protocol">{{.Protocol}}</td>
+                        <td data-label="Key size">{{.Bits}}-bit</td>
+                        <td data-label="Notes">{{if or .ForwardSecrecy .QuantumSafe .Negotiated}}{{if .ForwardSecrecy}}<span class="tag">forward secrecy</span>{{end}}{{if .QuantumSafe}}<span class="tag">post-quantum</span>{{end}}{{if .Negotiated}}<span class="tag">{{negotiatedLabel}}</span>{{end}}{{else}}none{{end}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{else}}
+            <p>No cipher information available.</p>
+            {{end}}
+
+            {{if .KeyExchanges}}
+            <h3>Key exchange groups</h3>
+            <table class="stack-table">
+                <thead>
+                    <tr>
+                        <th scope="col">Group</th>
+                        <th scope="col">Type</th>
+                        <th scope="col">Post-quantum part</th>
+                        <th scope="col">Notes</th>
+                    </tr>
+                </thead>
+                <tbody>
+                    {{range .KeyExchanges}}
+                    <tr>
+                        <td data-label="Group"><code>{{.Name}}</code></td>
+                        <td data-label="Type">{{.Type}}</td>
+                        <td data-label="Post-quantum part">{{if .PQCAlgorithm}}{{.PQCAlgorithm}}{{if .HybridClassical}} with {{.HybridClassical}}{{end}}{{else}}none{{end}}</td>
+                        <td data-label="Notes">{{if or .QuantumSafe .Negotiated}}{{if .QuantumSafe}}<span class="tag">post-quantum</span>{{end}}{{if .Negotiated}}<span class="tag">{{negotiatedLabel}}</span>{{end}}{{else}}none{{end}}</td>
+                    </tr>
+                    {{end}}
+                </tbody>
+            </table>
+            {{end}}
+        </section>
+
+        {{with .Certificate}}
+        <section id="certificate">
+            <h2>Certificate</h2>
+            <table class="facts">
+                <tbody>
+                    <tr><th scope="row">Status</th><td>{{template "mark" (certificateHeadline .)}}</td></tr>
+                    <tr><th scope="row">Subject</th><td>{{.Subject}}</td></tr>
+                    <tr><th scope="row">Issuer</th><td>{{.Issuer}}</td></tr>
+                    <tr><th scope="row">Valid</th><td>{{formatDate .NotBefore}} to {{formatDate .NotAfter}}</td></tr>
+                    <tr><th scope="row">Key</th><td>{{.PublicKeyAlgorithm}} {{.PublicKeyBits}}-bit</td></tr>
+                    <tr><th scope="row">Signature</th><td>{{.SignatureAlgorithm}}</td></tr>
+                    {{if .SANs}}<tr><th scope="row">Names (SANs)</th><td><ul class="plain-list">{{range .SANs}}<li><code>{{.}}</code></li>{{end}}</ul></td></tr>{{end}}
+                    <tr><th scope="row">Name check</th><td>{{template "mark" (nameCheck .)}}</td></tr>
+                    <tr><th scope="row">Chain trust</th><td>{{template "mark" (chainCheck .)}}</td></tr>
+                    {{if .IsSelfSigned}}<tr><th scope="row">Self-signed</th><td>{{template "mark" selfSignedMark}}</td></tr>{{end}}
+                    <tr><th scope="row">Quantum</th><td>{{template "mark" (certificateQuantum .)}}</td></tr>
+                </tbody>
+            </table>
+        </section>
+        {{end}}
 
         {{if .QuantumRisk.Assessed}}
         <section>
@@ -642,13 +906,25 @@ const htmlTemplate = `<!DOCTYPE html>
         </section>
         {{end}}
 
+        {{if .ScanWarnings}}
+        <section id="scan-coverage">
+            <h2>Scan coverage</h2>
+            <p class="note">The limits on what this scan could observe. Anything outside them is not measured here, so it is not reported as passed.</p>
+            <ul class="plain-list">
+                {{range .ScanWarnings}}<li>{{.}}</li>{{end}}
+            </ul>
+        </section>
+        {{end}}
+
         <footer>
             Generated by <a href="https://qramm.org">QRAMM TLS Analyzer</a> v{{.ScannerVersion}}<br>
             Part of the <a href="https://csnp.org">CSNP</a> Quantum Readiness Toolkit
         </footer>
     </div>
 </body>
-</html>`
+</html>
+{{- define "mark"}}<span class="verdict {{toneClass .Tone}}">{{if .Glyph}}<span aria-hidden="true">{{.Glyph}}</span> {{end}}{{.Label}}</span>{{end -}}
+`
 
 // htmlUnreachedTemplate is the page for a target that produced no measurements.
 //

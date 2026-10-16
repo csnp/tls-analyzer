@@ -441,7 +441,7 @@ func (r *TextReporter) printCipherSuites(w io.Writer, ciphers []types.CipherSuit
 		// the server having picked it.
 		negotiated := ""
 		if cs.Negotiated {
-			negotiated = r.color(colorCyan, " [negotiated by this scan]")
+			negotiated = r.color(colorCyan, " ["+negotiatedLabel+"]")
 		}
 
 		fmt.Fprintf(w, "    %s %-50s %d-bit%s%s%s\n",
@@ -461,19 +461,8 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 
 	// Status. A certificate a client would refuse must not be headed "Valid":
 	// the name and chain checks are part of that verdict, not a footnote to it.
-	status := r.color(colorGreen, "✓ Valid")
-	switch {
-	case cert.Expired:
-		status = r.color(colorRed, "✗ EXPIRED")
-	case cert.NotYetValid:
-		status = r.color(colorRed, "✗ NOT YET VALID")
-	case cert.NameMatch == types.CheckFailed:
-		status = r.color(colorRed, "✗ NOT VALID FOR THIS NAME")
-	case cert.ChainTrust == types.CheckFailed:
-		status = r.color(colorRed, "✗ NOT TRUSTED")
-	case cert.DaysUntilExpiry < 30:
-		status = r.color(colorYellow, fmt.Sprintf("⚠ Expiring in %d days", cert.DaysUntilExpiry))
-	}
+	// Worded in certificateHeadline, which the HTML page shares.
+	status := r.paint(certificateHeadline(cert))
 
 	// Almost every string below is chosen by the scanned server: the subject and
 	// issuer directly, and the check reasons by way of the verifier's error text.
@@ -510,43 +499,39 @@ func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
 	// Both checks are printed whatever their outcome, including when they did
 	// not run. A check whose result is absent from the report is a check the
 	// reader assumes passed.
-	fmt.Fprintf(w, "    Name check:  %s\n", r.certCheckLine(
-		cert.NameMatch,
-		"valid for "+cert.RequestedName,
-		cert.NameMismatchReason,
-		"not checked against any name"))
-	fmt.Fprintf(w, "    Chain trust: %s\n", r.certCheckLine(
-		cert.ChainTrust,
-		"chains to a root this host trusts",
-		cert.ChainTrustReason,
-		"not verified"))
+	fmt.Fprintf(w, "    Name check:  %s\n", r.certCheckLine(nameCheck(cert)))
+	fmt.Fprintf(w, "    Chain trust: %s\n", r.certCheckLine(chainCheck(cert)))
 
 	if cert.IsSelfSigned {
-		fmt.Fprintf(w, "    %s\n", r.color(colorYellow, "    ⚠ Self-signed certificate"))
+		fmt.Fprintf(w, "        %s\n", r.paint(selfSignedMark))
 	}
 
 	// Quantum safety
-	quantumStatus := r.color(colorRed, "✗ Quantum Vulnerable")
-	if cert.QuantumSafe {
-		quantumStatus = r.color(colorGreen, "✓ Quantum Safe")
-	}
-	fmt.Fprintf(w, "    Quantum:     %s\n\n", quantumStatus)
+	fmt.Fprintf(w, "    Quantum:     %s\n\n", r.paint(certificateQuantum(cert)))
 }
 
 // certCheckLine renders one certificate check in its own right, so that
 // "passed", "failed" and "did not run" are three visibly different answers.
-func (r *TextReporter) certCheckLine(result types.CheckResult, passed, failReason, notRun string) string {
-	switch result {
-	case types.CheckPassed:
-		return r.color(colorGreen, "✓ "+passed)
-	case types.CheckFailed:
-		if failReason == "" {
-			failReason = "failed"
-		}
-		return r.color(colorRed, "✗ "+failReason)
-	default:
-		return r.color(colorYellow, "? "+notRun)
+// The words are certificateCheck's, which the HTML page shares.
+func (r *TextReporter) certCheckLine(check mark) string {
+	return r.paint(check)
+}
+
+// paint renders a shared verdict mark in this renderer's colours.
+func (r *TextReporter) paint(m mark) string {
+	switch m.Tone {
+	case toneGood:
+		return r.color(colorGreen, m.String())
+	case toneWarn:
+		return r.color(colorYellow, m.String())
+	case toneBad:
+		return r.color(colorRed, m.String())
+	case toneInfo:
+		return r.color(colorBlue, m.String())
+	case toneDim:
+		return r.color(colorDim, m.String())
 	}
+	return m.String()
 }
 
 func (r *TextReporter) printQuantumRisk(w io.Writer, qr types.QuantumRiskAssessment) {
