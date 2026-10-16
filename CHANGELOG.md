@@ -5,6 +5,42 @@ All notable changes to QRAMM TLS Analyzer are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
+## [Unreleased]
+
+### The CBOM security levels hold security strength, not key size
+
+In `--format cbom` output, `classicalSecurityLevel` now holds the classical
+security strength in bits, which is what CycloneDX 1.6 defines the field as. It
+held the key size before, so every certificate claimed far more security than
+its key provides, and a schema validator could not catch it because the
+document stayed valid. The values come from NIST SP 800-57 Part 1 Rev. 5,
+Table 2, and a key between two rows of that table takes the lower row, so
+RSA-4096 is 128.
+
+| certificate key | before | after |
+|---|---|---|
+| ECDSA P-256 (example.com) | 256 | 128 |
+| RSA-2048 | 2048 | 112 |
+| RSA-1024 | 1024 | 80 |
+
+An Ed25519 key takes 128 from NIST SP 800-186. A key that no NIST table covers,
+such as RSA below 1024 bits, now has no `classicalSecurityLevel` instead of its
+key size. The public key component still carries the key size, in `size`.
+
+For cipher suites, 3DES now carries 112 instead of its 168-bit key size, and RC4
+carries no `classicalSecurityLevel`, because no security strength is published
+for it. AES-128, AES-256 and ChaCha20 are unchanged.
+
+`nistQuantumSecurityLevel` is now read from the post-quantum parameter set
+instead of assumed. For key exchange, ML-KEM-512, ML-KEM-768 and ML-KEM-1024 are
+categories 1, 3 and 5 (FIPS 203), and a hybrid group takes its ML-KEM part, so
+`SecP384r1MLKEM1024` now reports 5 instead of 3. `X25519MLKEM768` stays at 3.
+For certificates, ML-DSA-44, ML-DSA-65 and ML-DSA-87 are categories 2, 3 and 5
+(FIPS 204), where every quantum-safe certificate used to report 2. The scanner
+does not yet mark any certificate as quantum-safe, so that value has not
+appeared in a real scan. A parameter set the tool does not know now leaves the
+field out.
+
 ## [0.4.1] - 2026-08-05
 
 **A patch, and it is safe to take unattended, with one exception noted below.**
