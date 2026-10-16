@@ -30,7 +30,10 @@ FLAGS:
       --skip-cnsa2         Skip CNSA 2.0 compliance analysis
       --policy string      Apply a security policy
       --policy-file string Path to custom policy YAML file
-      --targets string     File containing list of targets
+      --targets string     File with one host name, IP address or host:port
+                           per line. Lines starting with # are skipped. Every
+                           line is checked before anything is looked up, and
+                           a file with any other line is refused
   -c, --concurrency int    Concurrent scans for batch mode (default 10)
   -h, --help              Help for tlsanalyzer
 
