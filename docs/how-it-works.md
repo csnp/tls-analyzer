@@ -68,9 +68,23 @@ offering the two P-curve hybrids and nothing else cannot be scanned at all: the
 scan exits 1 with an error that says the TLS handshake failed and names the two
 groups as ones this scanner does not offer. A scan that does complete says
 nothing either way about them and, unlike the other enumeration limits
-this tool discloses, prints no coverage note. Confirm those two groups with
-`openssl s_client -connect host:443 -groups SecP384r1MLKEM1024`. This is
-recorded as a defect rather than a design limit.
+this tool discloses, prints no coverage note. This is recorded as a defect
+rather than a design limit.
+
+Confirm those two groups with one command per group, using OpenSSL 3.5 or later.
+`-groups` makes `openssl s_client` offer only the groups it names, so a command
+naming one group says nothing about the other:
+
+```sh
+echo | openssl s_client -connect host:443 -groups SecP256r1MLKEM768 | grep 'Negotiated TLS1.3 group'
+echo | openssl s_client -connect host:443 -groups SecP384r1MLKEM1024 | grep 'Negotiated TLS1.3 group'
+```
+
+A server that accepts the group prints it, for example
+`Negotiated TLS1.3 group: SecP256r1MLKEM768`. Measured with OpenSSL 3.6.3 on
+both ends, a server that does not accept it ends the handshake with
+`ssl/tls alert handshake failure` (alert number 40), and the line reads
+`Negotiated TLS1.3 group: <NULL>`.
 
 Post-quantum certificate signatures (ML-DSA, SLH-DSA) are reported as unavailable
 rather than detected. No publicly trusted CA issues them yet, so a classical
