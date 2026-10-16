@@ -130,7 +130,7 @@ var rootCmd = &cobra.Command{
 	Use:   "tlsanalyzer [target]",
 	Short: "QRAMM TLS Analyzer - Quantum-ready TLS security assessment",
 	Long:  longDescription(),
-	Args:  cobra.MaximumNArgs(1),
+	Args:  atMostOneTarget,
 	RunE:  runScan,
 
 	// A runtime failure is not a usage mistake. Every error, including an
@@ -338,14 +338,18 @@ func init() {
 
 	// Batch scanning options
 	rootCmd.Flags().StringVar(&targetsFile, "targets", "",
-		"File containing list of targets (one per line)")
+		"File with one host name, IP address or host:port per\n"+
+			"line. Lines starting with # are skipped. Every line is\n"+
+			"checked before anything is looked up, and a file with\n"+
+			"any other line is refused")
 	rootCmd.Flags().IntVarP(&concurrency, "concurrency", "c", 10,
 		"Number of concurrent scans for batch mode")
 }
 
 func runScan(cmd *cobra.Command, args []string) error {
-	// Collect targets
-	targets, err := collectTargets(args)
+	// Collect and check every target. Nothing is looked up until all of them
+	// have passed.
+	listed, err := collectTargets(args)
 	if err != nil {
 		return err
 	}
@@ -358,7 +362,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 		return err
 	}
 
-	if len(targets) == 0 {
+	if len(listed) == 0 {
 		return fmt.Errorf("no targets specified. Use 'tlsanalyzer example.com' or '--targets file.txt'")
 	}
 
@@ -367,9 +371,16 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// rewrites them. A port written into the target itself is checked by the
 	// scanner when it parses the target, which is the one place both routes meet.
 	if cmd.Flags().Changed("port") {
-		for i, target := range targets {
-			targets[i] = applyPortOverride(target, port)
+		for i := range listed {
+			listed[i].target = applyPortOverride(listed[i].target, port)
 		}
+	}
+
+	// After the override, so two lines that differ only in the port --port
+	// replaced are one target.
+	targets, notes := dedupeTargets(listed)
+	for _, note := range notes {
+		fmt.Fprintln(os.Stderr, note)
 	}
 
 	// Handle signals for graceful shutdown
@@ -634,12 +645,41 @@ func applyPortOverride(target string, portOverride int) string {
 	return net.JoinHostPort(host, strconv.Itoa(portOverride))
 }
 
-func collectTargets(args []string) ([]string, error) {
-	var targets []string
+// listedTarget is one checked target and where it was given.
+type listedTarget struct {
+	target string
+	line   int // line number in the targets file, 0 for the command line
+}
+
+// refusedLine is a line of the targets file that is not a target. It holds the
+// line number and the reason, and never the line.
+type refusedLine struct {
+	line   int
+	reason string
+}
+
+// maxRefusedLinesShown is how many refused lines a refusal lists by number.
+const maxRefusedLinesShown = 5
+
+// collectTargets reads every target and checks all of them before anything is
+// looked up.
+//
+// Up to 0.4.1 every line that was not blank or a comment was a target: it was
+// printed in the report and in the closing error, and looked up. Pointed at the
+// wrong file, one holding passwords or tokens, the tool printed them and handed
+// some of them to the name lookup. Now one line that is not a target stops the
+// run before the first lookup, and the message gives line numbers and reasons,
+// never the line.
+func collectTargets(args []string) ([]listedTarget, error) {
+	var targets []listedTarget
 
 	// From command line
 	if len(args) > 0 {
-		targets = append(targets, args[0])
+		if _, _, err := scanner.CheckTarget(args[0]); err != nil {
+			return nil, fmt.Errorf("cannot scan the target on the command line: %w. "+
+				"Give one host name, IP address or host:port, for example: tlsanalyzer example.com:443", err)
+		}
+		targets = append(targets, listedTarget{target: args[0]})
 	}
 
 	// From file
@@ -651,20 +691,129 @@ func collectTargets(args []string) ([]string, error) {
 		}
 		defer file.Close()
 
-		scanner := bufio.NewScanner(file)
-		for scanner.Scan() {
-			line := strings.TrimSpace(scanner.Text())
-			if line != "" && !strings.HasPrefix(line, "#") {
-				targets = append(targets, line)
+		var refused []refusedLine
+		fromFile := 0
+		lines := bufio.NewScanner(file)
+		for number := 1; lines.Scan(); number++ {
+			line := strings.TrimSpace(lines.Text())
+			if line == "" || strings.HasPrefix(line, "#") {
+				continue
 			}
+			if _, _, err := scanner.CheckTarget(line); err != nil {
+				refused = append(refused, refusedLine{line: number, reason: err.Error()})
+				continue
+			}
+			targets = append(targets, listedTarget{target: line, line: number})
+			fromFile++
 		}
-		if err := scanner.Err(); err != nil {
+		if err := lines.Err(); err != nil {
 			// bufio quotes the path in its read errors as well.
 			return nil, fmt.Errorf("failed to read targets file: %w", sanitize.WrapError(err))
+		}
+
+		if len(refused) > 0 {
+			return nil, refusedLinesError(targetsFile, refused)
+		}
+		if fromFile == 0 {
+			return nil, fmt.Errorf("the targets file has no targets: %s holds only comments and "+
+				"blank lines. Put one host name, IP address or host:port on each line",
+				sanitize.ForReport(targetsFile, sanitize.MaxReportDetail))
 		}
 	}
 
 	return targets, nil
+}
+
+// refusedLinesError names the targets file the way the open and read errors do,
+// counts the refused lines and lists the first few by number and reason.
+func refusedLinesError(path string, refused []refusedLine) error {
+	var b strings.Builder
+	what := "lines that are not targets"
+	if len(refused) == 1 {
+		what = "line that is not a target"
+	}
+	fmt.Fprintf(&b, "the targets file %s has %d %s, so nothing was looked up or scanned:",
+		sanitize.ForReport(path, sanitize.MaxReportDetail), len(refused), what)
+	for i, r := range refused {
+		if i == maxRefusedLinesShown {
+			fmt.Fprintf(&b, "\n  and %d more", len(refused)-maxRefusedLinesShown)
+			break
+		}
+		fmt.Fprintf(&b, "\n  line %d: %s", r.line, r.reason)
+	}
+	b.WriteString("\nEach line holds one host name, IP address or host:port, and lines starting " +
+		"with # are skipped. Correct or remove the lines listed, or put # in front of them.")
+	return errors.New(b.String())
+}
+
+// dedupeTargets keeps the first of any target listed more than once, and
+// returns a note for each one dropped.
+//
+// Two entries are the same target when their hosts match ignoring case and they
+// name the same port, with 443 where none is written. A repeated host was
+// scanned once per listing, so a sweep did the same work twice and reported it
+// twice. The note may name the target, because it passed the check.
+func dedupeTargets(listed []listedTarget) ([]string, []string) {
+	var targets []string
+	var places [][]int
+	index := make(map[string]int)
+
+	for _, l := range listed {
+		key := l.target
+		if host, port, err := scanner.CheckTarget(l.target); err == nil {
+			key = net.JoinHostPort(strings.ToLower(host), strconv.Itoa(port))
+		}
+		if i, ok := index[key]; ok {
+			places[i] = append(places[i], l.line)
+			continue
+		}
+		index[key] = len(targets)
+		targets = append(targets, l.target)
+		places = append(places, []int{l.line})
+	}
+
+	var notes []string
+	for i, where := range places {
+		if len(where) > 1 {
+			notes = append(notes, fmt.Sprintf("Note: %s is listed %s. It is scanned once.",
+				sanitize.ForReport(targets[i], sanitize.MaxReportDetail), describePlaces(where)))
+		}
+	}
+	return targets, notes
+}
+
+// describePlaces says where a target was listed: "on lines 1 and 3 of the
+// targets file", or "on the command line and on line 3 of the targets file".
+func describePlaces(where []int) string {
+	var parts, numbers []string
+	for _, line := range where {
+		if line == 0 {
+			parts = append(parts, "on the command line")
+			continue
+		}
+		numbers = append(numbers, strconv.Itoa(line))
+	}
+	switch len(numbers) {
+	case 0:
+	case 1:
+		parts = append(parts, "on line "+numbers[0]+" of the targets file")
+	default:
+		parts = append(parts, "on lines "+strings.Join(numbers[:len(numbers)-1], ", ")+
+			" and "+numbers[len(numbers)-1]+" of the targets file")
+	}
+	return strings.Join(parts, " and ")
+}
+
+// atMostOneTarget takes at most one target from the command line. cobra's own
+// message, "accepts at most 1 arg(s), received 2", gave no way forward for the
+// usual reason to pass two, which is wanting to scan both.
+func atMostOneTarget(cmd *cobra.Command, args []string) error {
+	if len(args) > 1 {
+		return fmt.Errorf("tlsanalyzer takes one target on the command line, and was given %d. "+
+			"To scan several, put one per line in a file and pass it with --targets, "+
+			"for example: tlsanalyzer --targets hosts.txt", len(args))
+	}
+	return nil
 }
 
 // validateFlags rejects every flag value the tool cannot act on, before any

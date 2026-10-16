@@ -16,6 +16,7 @@ import (
 	"errors"
 	"fmt"
 	"net"
+	"net/netip"
 	"sort"
 	"strconv"
 	"strings"
@@ -30,6 +31,12 @@ import (
 // override the value recorded in reports with their own release version,
 // injected at build time.
 const Version = "0.4.1"
+
+// LookupIP is the name lookup Scan performs before any connection. It is a
+// variable so a test can count the lookups a run makes: the guarantee that a
+// refused target is never looked up can only be shown by a resolver that
+// records being asked.
+var LookupIP = net.LookupIP
 
 // Scanner performs TLS analysis on targets.
 type Scanner struct {
@@ -96,7 +103,7 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 
 	// Resolve IP. A name that does not resolve was never measured, and must not
 	// be presented as a scan result.
-	ips, err := net.LookupIP(host)
+	ips, err := LookupIP(host)
 	if err != nil || len(ips) == 0 {
 		return nil, fmt.Errorf("cannot resolve %s: %w", host, err)
 	}
@@ -1326,31 +1333,168 @@ func tlsVersionName(v uint16) string {
 	}
 }
 
-func parseTarget(target string) (string, int, error) {
-	// Add default port if not specified
-	if !strings.Contains(target, ":") {
-		target = target + ":443"
+// The reasons a target can be refused. A refusal gives exactly one of these and
+// nothing else: a targets file can hold anything, including a password on the
+// wrong line, and the reason is printed to a terminal and kept in CI logs, so it
+// never quotes, truncates or summarises the target.
+const (
+	ReasonNotATarget = "not a host name, IP address or host:port"
+	ReasonURL        = "looks like a URL: use the host name, or host:port"
+	ReasonPort       = "the port is not a number from 1 to 65535"
+	ReasonEmpty      = "the target is empty"
+)
+
+// TargetError says why a target was refused. Its message is the reason alone.
+type TargetError struct {
+	Reason string
+}
+
+func (e *TargetError) Error() string { return e.Reason }
+
+// CheckTarget is the one rule every target meets before anything is looked up,
+// and returns the host and port it names.
+//
+// Up to 0.4.1 a target was whatever text it was given. A line that was not a
+// target was printed in the report and in the closing error, and a line without
+// a colon was handed to the operating system's name lookup, so a targets file
+// holding KEY=VALUE pairs printed its values and sent some of them towards a DNS
+// server. The command checks every target with this before the first lookup,
+// and parseTarget applies it too, so no path reaches the resolver with an
+// unchecked name.
+//
+// Accepted: a host name by the rule Go's resolver applies before it sends a
+// query, an IPv4 literal, or a bracketed IPv6 literal, each optionally followed
+// by :port with the port a decimal number from 1 to 65535. Without a port, 443.
+// Everything else is refused.
+func CheckTarget(target string) (string, int, error) {
+	notATarget := &TargetError{ReasonNotATarget}
+
+	if strings.TrimSpace(target) == "" {
+		return "", 0, &TargetError{ReasonEmpty}
+	}
+	if strings.Contains(target, "://") {
+		return "", 0, &TargetError{ReasonURL}
 	}
 
-	host, portStr, err := net.SplitHostPort(target)
-	if err != nil {
-		return "", 0, err
+	host, portText, hasPort := target, "", false
+	if strings.HasPrefix(target, "[") {
+		end := strings.IndexByte(target, ']')
+		if end < 0 {
+			return "", 0, notATarget
+		}
+		host = target[1:end]
+		switch rest := target[end+1:]; {
+		case rest == "":
+		case rest[0] == ':':
+			portText, hasPort = rest[1:], true
+		default:
+			return "", 0, notATarget
+		}
+		// A zone is free text after the address, so it is refused rather than
+		// carried into the report.
+		addr, err := netip.ParseAddr(host)
+		if err != nil || !addr.Is6() || addr.Zone() != "" {
+			return "", 0, notATarget
+		}
+	} else {
+		if i := strings.IndexByte(target, ':'); i >= 0 {
+			// More than one colon is an unbracketed IPv6 literal or not a
+			// target at all, and either way there is no telling where the
+			// port begins.
+			if strings.IndexByte(target[i+1:], ':') >= 0 {
+				return "", 0, notATarget
+			}
+			host, portText, hasPort = target[:i], target[i+1:], true
+		}
+		if !isIPv4Literal(host) && !isHostName(host) {
+			return "", 0, notATarget
+		}
 	}
 
-	// A port that is not a number silently fell back to 443, so
-	// "example.com:abc" reported Target example.com:abc and Port 443 and scanned
-	// a port the user never named. The same class as the --format fallback fixed
-	// in 0.3.0: an unusable argument must be refused, not reinterpreted.
-	port, convErr := strconv.Atoi(portStr)
-	if convErr != nil {
-		return "", 0, fmt.Errorf(
-			"invalid port %q: must be a number between 1 and 65535", portStr)
+	port := 443
+	if hasPort {
+		var ok bool
+		if port, ok = parsePort(portText); !ok {
+			return "", 0, &TargetError{ReasonPort}
+		}
 	}
-	if err := ValidatePort(port); err != nil {
-		return "", 0, err
-	}
-
 	return host, port, nil
+}
+
+func isIPv4Literal(s string) bool {
+	addr, err := netip.ParseAddr(s)
+	return err == nil && addr.Is4()
+}
+
+// isHostName applies the rule Go's resolver applies to a name before it sends a
+// query (isDomainName in package net): letters, digits, '-' and '_' in
+// dot-separated labels of 1 to 63 bytes, no label starting or ending with '-',
+// not all digits, and at most 253 bytes plus an optional trailing dot. The root
+// name "." alone is refused, since it names no host.
+func isHostName(s string) bool {
+	l := len(s)
+	if l == 0 || s == "." || l > 254 || l == 254 && s[l-1] != '.' {
+		return false
+	}
+
+	last := byte('.')
+	nonNumeric := false
+	labelLen := 0
+	for i := 0; i < l; i++ {
+		c := s[i]
+		switch {
+		case 'a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || c == '_':
+			nonNumeric = true
+			labelLen++
+		case '0' <= c && c <= '9':
+			labelLen++
+		case c == '-':
+			if last == '.' {
+				return false
+			}
+			nonNumeric = true
+			labelLen++
+		case c == '.':
+			if last == '.' || last == '-' || labelLen > 63 {
+				return false
+			}
+			labelLen = 0
+		default:
+			return false
+		}
+		last = c
+	}
+	return last != '-' && labelLen <= 63 && nonNumeric
+}
+
+// parsePort accepts only a decimal port from 1 to 65535. strconv.Atoi alone
+// would also take a sign.
+func parsePort(s string) (int, bool) {
+	if len(s) == 0 || len(s) > 5 {
+		return 0, false
+	}
+	for i := 0; i < len(s); i++ {
+		if s[i] < '0' || s[i] > '9' {
+			return 0, false
+		}
+	}
+	port, err := strconv.Atoi(s)
+	if err != nil || ValidatePort(port) != nil {
+		return 0, false
+	}
+	return port, true
+}
+
+// parseTarget is CheckTarget, so the scanner cannot accept a target the command
+// refuses.
+//
+// It once let a port that was not a number fall back to 443, so
+// "example.com:abc" reported Target example.com:abc and Port 443 and scanned a
+// port the user never named, and it then quoted the port text back in its
+// error, which carried the value of a "key: value" line into the output. Both
+// are refused now with a reason that names nothing from the target.
+func parseTarget(target string) (string, int, error) {
+	return CheckTarget(target)
 }
 
 // ValidatePort rejects a port outside the TCP range.

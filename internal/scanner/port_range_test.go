@@ -41,12 +41,17 @@ func TestParseTargetRejectsANonNumericPort(t *testing.T) {
 			continue
 		}
 
-		// The message has to quote what was rejected. Falling through to the
-		// range check instead would report "invalid port 0", which names a value
-		// the user never typed.
+		// The message gives the reason and nothing from the target. It used to
+		// quote the rejected port, and on a "key: value" line in a targets file
+		// that port text is the value, so quoting it printed the value. Falling
+		// through to the range check instead would report "invalid port 0", which
+		// names a value the user never typed, so the message is pinned exactly.
 		offending := target[strings.LastIndex(target, ":")+1:]
-		if !strings.Contains(err.Error(), offending) {
-			t.Errorf("parseTarget(%q) failed with %q, which does not name the rejected port %q",
+		if err.Error() != ReasonPort {
+			t.Errorf("parseTarget(%q) failed with %q; want exactly %q", target, err, ReasonPort)
+		}
+		if strings.Contains(err.Error(), offending) {
+			t.Errorf("parseTarget(%q) failed with %q, which quotes the rejected port %q",
 				target, err, offending)
 		}
 	}

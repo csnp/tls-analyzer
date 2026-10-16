@@ -229,6 +229,12 @@ missing `name`, and a policy with no rules are all errors. See
 
 ### Batch Scanning
 
+Put one host name, IP address or host:port on each line of the targets file.
+Lines starting with `#` are skipped. Every line is checked before anything is
+looked up, and a file with any other line is refused: the message gives the
+line numbers and the reason, and never prints the lines themselves. A target
+listed twice is scanned once.
+
 ```bash
 # Create targets file
 echo "api.yourdomain.com

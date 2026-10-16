@@ -95,6 +95,39 @@ field out.
 - `docs/policies.md` now says what `cnsa-2.0-2030` asks for, and that its score
   rule cannot be met with hybrid key exchange and a classical certificate,
   which is the best a publicly trusted setup reaches today.
+- **`--targets` now checks every line before looking anything up.** A line that
+  is not a host name, an IP address or host:port stops the run, and the message
+  gives its line number and the reason without printing the line. Up to 0.4.1,
+  every line of the file was treated as a target: it was printed in the text
+  report, in the JSON `target` and `error` fields and in the closing error
+  message, and each line without a colon was handed to the operating system's
+  name lookup. If you ever pointed `--targets` at a file that holds passwords,
+  tokens or keys, please treat those values as exposed wherever that output went
+  (terminal scrollback, CI logs, saved reports), and replace them with new ones.
+  On Linux, measured with a local DNS server that logged every query it
+  received, a line holding a single word, such as a token on a line by itself,
+  reached the DNS server, and `KEY=VALUE` lines did not, with Go's own resolver
+  and with the system resolver alike. On macOS, every line without a colon,
+  `KEY=VALUE` lines included, was handed to the system's name lookup, and whether
+  those lookups then reached a DNS server was not measured. On Windows this was
+  not measured.
+- **A target on the command line is checked by the same rule**, before any
+  lookup, and a refusal gives the reason without repeating the argument. An
+  empty target says "the target is empty". A URL is refused with a pointer to
+  use the host name, or host:port, so a user name, password or path in it is
+  never recorded.
+- **Clearer messages for the usual mistakes.** Two targets on the command line
+  now point to `--targets` instead of "accepts at most 1 arg(s), received 2", and
+  a targets file holding only comments and blank lines says "the targets file
+  has no targets" instead of asking for a targets file.
+- **A target listed twice is scanned once.** Two lines name the same target when
+  their hosts match ignoring case and they give the same port, with 443 where
+  none is written. A note on stderr names the lines it was listed on.
+- **A port that is not a number from 1 to 65535 is refused without quoting it.**
+  The error used to repeat the text after the colon, which on a `key: value` line
+  is the value.
+- **A bracketed IPv6 address without a port, such as `[2001:db8::1]`, is now
+  accepted** and scanned on 443. It was refused with "missing port in address".
 
 ## [0.4.1] - 2026-08-05
 
