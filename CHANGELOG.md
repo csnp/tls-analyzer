@@ -86,7 +86,9 @@ field out.
   is in place, that pure ML-KEM key exchange or a post-quantum certificate would
   pass, and that publicly trusted CAs do not issue post-quantum certificates
   yet. It ends with an `openssl s_client` command that checks the server, using
-  the same server name the scan asked for with `--sni`.
+  the same server name the scan asked for with `--sni`. The report limits a Fix
+  to 500 bytes, cutting a longer one at the end and marking the cut with `...`,
+  so with a long host name or `--sni` name the end of that command is cut.
 - `docs/policies.md` now says what `cnsa-2.0-2030` asks for, and that its score
   rule cannot be met with hybrid key exchange and a classical certificate,
   which is the best a publicly trusted setup reaches today.
