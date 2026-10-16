@@ -7,12 +7,20 @@ import (
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
 
-// The verdicts below are worded once and rendered by every format that shows
-// them, the same way describePenalties is. Two renderers that each carry their
-// own copy of a verdict drift apart, and the reader of one format is then told
-// something the other format does not say. The HTML page carried none of these
-// until it was given the sections the text report has, so each one was written
-// down here rather than copied into the template.
+// The certificate verdicts below, and negotiatedLabel, are worded once and
+// rendered by both the text report and the HTML page, the same way
+// describePenalties is. Two renderers that each carry their own copy of a
+// verdict drift apart, and the reader of one format is then told something the
+// other format does not say. The HTML page carried none of these until it was
+// given the sections the text report has, so each one was written down here
+// rather than copied into the template.
+//
+// The policy status, the milestone legend and the CNSA 2.0 algorithm tones
+// below are rendered by the HTML page alone, and the policy status words by
+// SARIF and CBOM. The text report still words its own policy status, in
+// printPolicyResult, and its own milestone legend and marks, in
+// printCNSA2Timeline and milestoneLegend, so for those the text report can
+// differ from the page.
 
 // tone is what a verdict means, not what colour it is. Each renderer maps it to
 // its own palette.
@@ -124,13 +132,15 @@ const (
 	policyStatusNotEstablished = "compliance not established"
 )
 
-// policyStatus is the headline verdict of a policy evaluation.
+// policyStatus is the headline verdict of a policy evaluation as the HTML page
+// shows it. The text report heads its policy section in printPolicyResult and
+// does not call this.
 //
 // An evaluation that skipped rules and found no violation has not established
-// compliance, only that the part of the policy that ran was satisfied. It is
-// never headed COMPLIANT and never carries a pass mark. A violation found before
-// a rule was skipped is still a violation, so that case is NON-COMPLIANT and
-// policyIncompleteNote says the rest was not established.
+// compliance, only that the part of the policy that ran was satisfied, so
+// policyStatus never heads it COMPLIANT and never gives it a pass mark. A
+// violation found before a rule was skipped is still a violation, so that case
+// is NON-COMPLIANT and policyIncompleteNote says the rest was not established.
 func policyStatus(pr *types.PolicyResult) mark {
 	switch {
 	case !pr.Compliant:
