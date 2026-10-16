@@ -72,7 +72,10 @@ trusted certificate authorities do not issue those certificates yet. So a
 server that already has hybrid key exchange fails this preset on the score
 rule. The Fix for that violation says the key exchange is already in place,
 quotes what each remaining step scores, and ends with an `openssl s_client`
-command that checks whether the server accepts pure ML-KEM key exchange.
+command that checks whether the server accepts pure ML-KEM key exchange. The
+report limits a Fix to 500 bytes, cutting a longer one at the end and marking
+the cut with `...`, so with a long host name or `--sni` name the end of that
+command is cut.
 
 Measured on version 0.4.1: the scanner could not complete a handshake with a
 server that offered only `MLKEM1024` key exchange, or with one that presented
