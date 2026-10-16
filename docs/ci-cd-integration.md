@@ -78,6 +78,8 @@ jobs:
           category: tls-security
 ```
 
+When the scan runs with `--policy` or `--policy-file`, each policy violation appears as a result whose rule id starts with `POLICY.` (for example `POLICY.quantum.requireHybridKeyExchange`), policy warnings appear the same way at note level, and the verdict, including any rules that were not evaluated, is in the run's `properties.policy`.
+
 ### Policy Compliance Gate
 
 ```yaml

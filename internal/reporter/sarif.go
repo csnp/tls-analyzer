@@ -1,7 +1,9 @@
 package reporter
 
 import (
+	"fmt"
 	"io"
+	"strings"
 
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
@@ -17,9 +19,29 @@ type sarifReport struct {
 }
 
 type sarifRun struct {
-	Tool        sarifTool         `json:"tool"`
-	Invocations []sarifInvocation `json:"invocations,omitempty"`
-	Results     []sarifResult     `json:"results"`
+	Tool        sarifTool           `json:"tool"`
+	Invocations []sarifInvocation   `json:"invocations,omitempty"`
+	Results     []sarifResult       `json:"results"`
+	Properties  *sarifRunProperties `json:"properties,omitempty"`
+}
+
+// sarifRunProperties is the run's property bag. It carries the policy verdict,
+// which is a statement about the whole run rather than about one result: a
+// policy whose only rule was skipped has no result to attach it to, and was
+// indistinguishable from a pass.
+type sarifRunProperties struct {
+	Policy *sarifPolicyVerdict `json:"policy,omitempty"`
+}
+
+type sarifPolicyVerdict struct {
+	Name      string `json:"name"`
+	Status    string `json:"status"`
+	Compliant bool   `json:"compliant"`
+	Complete  bool   `json:"complete"`
+	Score     int    `json:"score"`
+	// Always a list, so a consumer reading it never meets null.
+	SkippedRules []string `json:"skippedRules"`
+	Scope        string   `json:"scope,omitempty"`
 }
 
 // sarifInvocation carries whether the scan actually ran.
@@ -112,6 +134,7 @@ func (r *SARIFReporter) Report(w io.Writer, result *types.ScanResult) error {
 	rules := []sarifRule{}
 	results := []sarifResult{}
 	invocation := sarifInvocation{ExecutionSuccessful: true}
+	var properties *sarifRunProperties
 
 	if unreached {
 		invocation = sarifInvocation{
@@ -125,6 +148,33 @@ func (r *SARIFReporter) Report(w io.Writer, result *types.ScanResult) error {
 	} else {
 		rules = append(rules, r.buildRules(result)...)
 		results = append(results, r.buildResults(result)...)
+
+		// The policy verdict. The exit code already carried it, and the
+		// document a CI system uploads beside that exit code did not: no result
+		// named the violation and nothing named the policy.
+		if pr := result.PolicyResult; pr != nil {
+			rules = append(rules, policyRules(pr)...)
+			results = append(results, policyResults(pr, result.Target)...)
+			properties = &sarifRunProperties{Policy: &sarifPolicyVerdict{
+				Name:         pr.PolicyName,
+				Status:       policyStatusWord(pr),
+				Compliant:    pr.Compliant,
+				Complete:     pr.Complete,
+				Score:        pr.Score,
+				SkippedRules: skippedRuleNames(pr),
+				Scope:        pr.Scope,
+			}}
+
+			// A skipped rule produces no result, so an evaluation whose only
+			// rule was skipped would otherwise be the document a pass produces.
+			if !pr.Complete {
+				invocation.ToolExecutionNotifications = append(invocation.ToolExecutionNotifications,
+					sarifNotification{
+						Level:   "warning",
+						Message: sarifMessage{Text: policyNotEstablishedText(pr)},
+					})
+			}
+		}
 	}
 
 	report := sarifReport{
@@ -143,6 +193,7 @@ func (r *SARIFReporter) Report(w io.Writer, result *types.ScanResult) error {
 				},
 				Invocations: []sarifInvocation{invocation},
 				Results:     results,
+				Properties:  properties,
 			},
 		},
 	}
@@ -253,6 +304,119 @@ func (r *SARIFReporter) buildResults(result *types.ScanResult) []sarifResult {
 	}
 
 	return results
+}
+
+// policyRuleID is the SARIF rule id of a policy rule. The prefix keeps policy
+// rules apart from the scanner's own finding ids, so a consumer can select or
+// suppress them as a group.
+func policyRuleID(rule string) string {
+	return "POLICY." + rule
+}
+
+// policyFinding is one policy finding as SARIF reports it.
+type policyFinding struct {
+	violation types.PolicyViolation
+	level     string
+	kind      string
+}
+
+// policyFindings lists every policy finding with the level it is reported at.
+//
+// A violation is reported at its own severity. A warning is reported as a note
+// whatever its severity: the analyzer makes a rule a warning precisely so that
+// it cannot fail anything, such as a PQC certificate no public CA issues yet,
+// and an error level would let a code-scanning gate fail on it anyway.
+func policyFindings(pr *types.PolicyResult) []policyFinding {
+	findings := make([]policyFinding, 0, len(pr.Violations)+len(pr.Warnings))
+	for _, v := range pr.Violations {
+		findings = append(findings, policyFinding{v, severityToSARIF(v.Severity), "violation"})
+	}
+	for _, v := range pr.Warnings {
+		findings = append(findings, policyFinding{v, "note", "warning"})
+	}
+	return findings
+}
+
+// policyRules declares one rule per policy rule that produced a finding, with
+// the finding's fix as the rule's help.
+func policyRules(pr *types.PolicyResult) []sarifRule {
+	var rules []sarifRule
+	seen := make(map[string]bool)
+	for _, f := range policyFindings(pr) {
+		id := policyRuleID(f.violation.Rule)
+		if seen[id] {
+			continue
+		}
+		seen[id] = true
+
+		rules = append(rules, sarifRule{
+			ID:               id,
+			Name:             f.violation.Rule,
+			ShortDescription: sarifMessage{Text: f.violation.Description},
+			FullDescription: sarifMessage{Text: "Policy rule " + f.violation.Rule +
+				", from the policy applied to this scan."},
+			Help: sarifMessage{Text: f.violation.Remediation},
+			DefaultConfig: sarifRuleConfig{
+				Level: f.level,
+			},
+			Properties: sarifProperties{
+				Tags: []string{"security", "tls", "policy"},
+			},
+		})
+	}
+	return rules
+}
+
+// policyResults reports each policy finding as a result.
+func policyResults(pr *types.PolicyResult, target string) []sarifResult {
+	var results []sarifResult
+	for _, f := range policyFindings(pr) {
+		results = append(results, sarifResult{
+			RuleID:  policyRuleID(f.violation.Rule),
+			Level:   f.level,
+			Message: sarifMessage{Text: policyFindingText(pr, f)},
+			Locations: []sarifLocation{
+				{
+					PhysicalLocation: sarifPhysicalLocation{
+						ArtifactLocation: sarifArtifactLocation{
+							URI: target,
+						},
+					},
+				},
+			},
+		})
+	}
+	return results
+}
+
+// policyFindingText is the result message: what was found, what the policy
+// asked for, what the scan saw, and the fix, as the text report prints them.
+func policyFindingText(pr *types.PolicyResult, f policyFinding) string {
+	v := f.violation
+	var b strings.Builder
+	b.WriteString(v.Description)
+	fmt.Fprintf(&b, "\nPolicy: %s (rule %s, %s %s)", pr.PolicyName, v.Rule, v.Severity, f.kind)
+	if v.Expected != "" {
+		b.WriteString("\nExpected: " + v.Expected)
+	}
+	if v.Actual != "" {
+		b.WriteString("\nActual: " + v.Actual)
+	}
+	if v.Remediation != "" {
+		b.WriteString("\nFix: " + v.Remediation)
+	}
+	return b.String()
+}
+
+// policyNotEstablishedText is the notification an incomplete evaluation adds
+// to the invocation, naming each rule that was not evaluated and why.
+func policyNotEstablishedText(pr *types.PolicyResult) string {
+	text := "The policy " + pr.PolicyName + " was not fully evaluated against this " +
+		"target, so compliance with it is not established."
+	if skipped := describeSkippedRules(pr); skipped != "" {
+		return text + " Rules not evaluated: " + skipped
+	}
+	return text + " The evaluation is not marked complete."
 }
 
 func severityToSARIF(sev types.Severity) string {

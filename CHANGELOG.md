@@ -41,6 +41,41 @@ does not yet mark any certificate as quantum-safe, so that value has not
 appeared in a real scan. A parameter set the tool does not know now leaves the
 field out.
 
+### Fixed
+
+- The policy result now appears in every output format, not only in text and
+  JSON. A scan with `--policy` or `--policy-file` exited 2 with "policy not
+  satisfied", and the SARIF, HTML or CBOM file it wrote did not name the
+  violation or the policy.
+- SARIF reports each policy violation as a result whose rule id starts with
+  `POLICY.`, at the level its severity sets, with the expected value, the actual
+  value and the fix in the message and the fix as the rule's help. Policy
+  warnings appear the same way at note level, so they cannot fail a gate. The
+  run's `properties.policy` carries the policy name, status, compliant,
+  complete, score and the rules that were not evaluated. If you upload SARIF to
+  code scanning with a policy applied, expect new alerts for policy violations.
+- When rules were not evaluated, SARIF adds a warning notification to the
+  invocation saying compliance was not established and naming each rule with
+  its reason. Before, a policy whose only rule was skipped produced the same
+  document as a pass.
+- CBOM metadata carries the verdict as `qramm:policyName`,
+  `qramm:policyStatus`, `qramm:policyCompliant`, `qramm:policyComplete`,
+  `qramm:policyScore` and `qramm:policyViolations`, plus
+  `qramm:policySkippedRules` when rules were not evaluated.
+- The HTML report gains the sections the text report already had: the policy
+  evaluation with each violation's expected value, actual value and fix and
+  each skipped rule's reason, the CNSA 2.0 timeline with a milestone legend, the
+  certificate with its name and chain checks (including when a check did not
+  run), the cipher suites and key exchange groups, and the scan coverage notes.
+- In SARIF, HTML and CBOM, an evaluation that skipped rules reads "compliance
+  not established" and never shows a pass mark or COMPLIANT on its own. In the
+  HTML report, a milestone or algorithm status the report does not recognise is
+  shown as its plain word, never as met.
+- The HTML report now removes control characters from everything it prints, as
+  the text report and the not-scanned page already did. A certificate subject,
+  issuer or name carrying a terminal escape sequence can no longer steer a
+  terminal that displays the saved file.
+
 ## [0.4.1] - 2026-08-05
 
 **A patch, and it is safe to take unattended, with one exception noted below.**

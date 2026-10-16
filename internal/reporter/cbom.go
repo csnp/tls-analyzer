@@ -3,6 +3,7 @@ package reporter
 import (
 	"fmt"
 	"io"
+	"strconv"
 	"strings"
 	"time"
 
@@ -98,7 +99,45 @@ func (r *CBOMReporter) generateCBOM(result *types.ScanResult) types.CryptoBOM {
 			r.publicKeyComponent(result.Certificate, result.Target))
 	}
 
+	// The policy verdict, beside the inventory it was reached from. A scan run
+	// with --policy exits 2 on a violation, and the CBOM it wrote said nothing
+	// about any policy, so the file kept as the record of that run could not
+	// show why it failed.
+	if pr := result.PolicyResult; pr != nil {
+		cbom.Metadata.Properties = append(cbom.Metadata.Properties, policyProperties(pr)...)
+	}
+
 	return cbom
+}
+
+// policyProperties records a policy verdict as CycloneDX metadata properties.
+//
+// The status is carried in words as well as in the two flags, because an
+// evaluation that skipped rules has compliant true and complete false, and only
+// the pair together says that compliance was not established.
+func policyProperties(pr *types.PolicyResult) []types.CBOMProperty {
+	violations := make([]string, 0, len(pr.Violations))
+	for _, v := range pr.Violations {
+		violations = append(violations, fmt.Sprintf("%s: %s (expected %s, actual %s)",
+			v.Rule, v.Description, v.Expected, v.Actual))
+	}
+	described := strings.Join(violations, "; ")
+	if described == "" {
+		described = "none"
+	}
+
+	props := []types.CBOMProperty{
+		{Name: "qramm:policyName", Value: pr.PolicyName},
+		{Name: "qramm:policyStatus", Value: policyStatusWord(pr)},
+		{Name: "qramm:policyCompliant", Value: strconv.FormatBool(pr.Compliant)},
+		{Name: "qramm:policyComplete", Value: strconv.FormatBool(pr.Complete)},
+		{Name: "qramm:policyScore", Value: strconv.Itoa(pr.Score)},
+		{Name: "qramm:policyViolations", Value: described},
+	}
+	if skipped := describeSkippedRules(pr); skipped != "" {
+		props = append(props, types.CBOMProperty{Name: "qramm:policySkippedRules", Value: skipped})
+	}
+	return props
 }
 
 func (r *CBOMReporter) protocolComponent(p types.Protocol, target string) types.CryptoComponent {
