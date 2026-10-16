@@ -64,8 +64,10 @@ so. Check revocation separately.
 reported, even by a server that offers them. Measured against an OpenSSL 3.6.1
 server offering all three hybrid groups: `openssl s_client` negotiates each of
 the three, and this tool reports only `X25519MLKEM768` and `X25519`. A server
-offering the two P-curve hybrids and nothing else cannot be scanned at all. The
-scan says nothing either way about them and, unlike the other enumeration limits
+offering the two P-curve hybrids and nothing else cannot be scanned at all: the
+scan exits 1 with an error that says the TLS handshake failed and names the two
+groups as ones this scanner does not offer. A scan that does complete says
+nothing either way about them and, unlike the other enumeration limits
 this tool discloses, prints no coverage note. Confirm those two groups with
 `openssl s_client -connect host:443 -groups SecP384r1MLKEM1024`. This is
 recorded as a defect rather than a design limit.
