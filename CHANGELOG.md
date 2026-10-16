@@ -75,6 +75,21 @@ field out.
   the text report and the not-scanned page already did. A certificate subject,
   issuer or name carrying a terminal escape sequence can no longer steer a
   terminal that displays the saved file.
+- The Fix for the quantum readiness score rule (`quantum.minQuantumScore`) used
+  to say "Enable PQC key exchange to improve quantum readiness" whatever the
+  score was made of, so a server already using hybrid ML-KEM key exchange was
+  told to take a step it had already taken. Under `cnsa-2.0-2030`, which asks
+  for 70, such a server scores 64. The Fix now says which part is short and what
+  each remaining step would bring the score to, with every figure taken from
+  the scoring code: a server with classical key exchange is pointed at hybrid
+  ML-KEM key exchange first, and a hybrid server is told that its key exchange
+  is in place, that pure ML-KEM key exchange or a post-quantum certificate would
+  pass, and that publicly trusted CAs do not issue post-quantum certificates
+  yet. It ends with an `openssl s_client` command that checks the server, using
+  the same server name the scan asked for with `--sni`.
+- `docs/policies.md` now says what `cnsa-2.0-2030` asks for, and that its score
+  rule cannot be met with hybrid key exchange and a classical certificate,
+  which is the best a publicly trusted setup reaches today.
 
 ## [0.4.1] - 2026-08-05
 

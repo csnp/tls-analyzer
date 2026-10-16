@@ -5,12 +5,15 @@ import (
 	"errors"
 	"fmt"
 	"io"
+	"net"
 	"os"
 	"reflect"
 	"sort"
+	"strconv"
 	"strings"
 
 	"github.com/csnp/qramm-tls-analyzer/internal/sanitize"
+	"github.com/csnp/qramm-tls-analyzer/internal/scanner"
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 	"gopkg.in/yaml.v3"
 )
@@ -18,6 +21,12 @@ import (
 // PolicyEvaluator evaluates scan results against policies.
 type PolicyEvaluator struct {
 	policies map[string]types.Policy
+
+	// ServerName is the name the scan asked the server for with --sni. Empty
+	// means the target host, which is what the scanner sends then. A Verify
+	// command has to ask for the same name the scan did, and the scan result
+	// does not record it.
+	ServerName string
 }
 
 // NewPolicyEvaluator creates a new policy evaluator with built-in policies.
@@ -1590,7 +1599,7 @@ func (e *PolicyEvaluator) evaluateQuantum(result *types.ScanResult, rules *types
 				Description: "Quantum readiness score below minimum",
 				Expected:    fmt.Sprintf(">= %d", rules.MinQuantumScore),
 				Actual:      fmt.Sprintf("%d", result.QuantumRisk.Score),
-				Remediation: "Enable PQC key exchange to improve quantum readiness",
+				Remediation: e.quantumScoreRemediation(result, rules.MinQuantumScore),
 			})
 		}
 	}
@@ -1645,6 +1654,178 @@ func (e *PolicyEvaluator) evaluateQuantum(result *types.ScanResult, rules *types
 			})
 		}
 	}
+}
+
+// The postures quantumScoreRemediation asks the grader about. The grader
+// classifies a key exchange by Type and a certificate by PublicKeyAlgorithm.
+var (
+	hybridMLKEMKeyExchange = types.KeyExchange{
+		Name: "X25519MLKEM768", Type: "hybrid", HybridClassical: "X25519", PQCAlgorithm: "ML-KEM-768",
+	}
+	pureMLKEMKeyExchange = types.KeyExchange{Name: "MLKEM1024", Type: "pqc", PQCAlgorithm: "ML-KEM-1024"}
+)
+
+// quantumScoreRemediation names the part of the quantum score that is short,
+// what each remaining step is worth, and a command that checks the server.
+//
+// It used to be one fixed sentence, "Enable PQC key exchange to improve quantum
+// readiness", whatever the score was made of. cnsa-2.0-2030 asks for 70 and
+// hybrid ML-KEM key exchange with a classical certificate scores 64, so a server
+// that had already taken that step was sent back to take it again and never told
+// that the steps left were pure ML-KEM key exchange and a post-quantum
+// certificate.
+//
+// Every score quoted here is the grader's answer for a posture, through
+// scanner.AssessQuantumRisk, so a change to the weights or the dimension scores
+// in quantum.go changes this text with it.
+//
+// The report caps a Fix at sanitize.MaxReportDetail bytes and cuts from the
+// end, where the Verify is. So the note on certificate availability, which the
+// report's Recommended Action line also carries, is the part left out when a
+// long host name would otherwise push the Verify past the cap.
+func (e *PolicyEvaluator) quantumScoreRemediation(result *types.ScanResult, minimum int) string {
+	hasHybrid, hasPure := false, false
+	for _, ke := range result.KeyExchanges {
+		switch ke.Type {
+		case "hybrid":
+			hasHybrid = true
+		case "pqc":
+			hasPure = true
+		}
+	}
+	current := result.QuantumRisk.Score
+	certificateDone := postureScore(result, nil, true) <= postureScore(result, nil, false)
+
+	var head, verify string
+	from := result // the posture the remaining steps are counted from
+	switch {
+	case !hasHybrid && !hasPure:
+		withHybrid := postureScore(result, &hybridMLKEMKeyExchange, false)
+		head = fmt.Sprintf("Enable hybrid ML-KEM key exchange first (for example %s); with this "+
+			"certificate that raises the score from %d to %d.", hybridMLKEMKeyExchange.Name, current, withHybrid)
+		verify = "Verify hybrid ML-KEM support: " + e.opensslGroupCheck(result, hybridMLKEMKeyExchange.Name)
+		if withHybrid >= minimum {
+			return head + " " + verify
+		}
+		head += fmt.Sprintf(" That is still below the minimum of %d. From there,", minimum)
+		from = &types.ScanResult{
+			KeyExchanges: append(append([]types.KeyExchange(nil), result.KeyExchanges...), hybridMLKEMKeyExchange),
+			Certificate:  result.Certificate,
+		}
+	default:
+		kind := "Hybrid"
+		if hasPure {
+			kind = "Pure"
+		}
+		switch {
+		case certificateDone:
+			head = fmt.Sprintf("%s ML-KEM key exchange and a post-quantum certificate are already in "+
+				"place; the score is %d.", kind, current)
+		case result.Certificate == nil:
+			head = fmt.Sprintf("%s ML-KEM key exchange is already in place; with no certificate "+
+				"recorded it scores %d.", kind, current)
+		default:
+			head = fmt.Sprintf("%s ML-KEM key exchange is already in place; with a classical "+
+				"certificate it scores %d.", kind, current)
+		}
+		verify = "Verify pure ML-KEM support: " + e.opensslGroupCheck(result, "MLKEM1024")
+	}
+
+	// What each step not yet taken would bring the score to.
+	var steps []string
+	reachesMinimum := false
+	if !hasPure {
+		score := postureScore(from, &pureMLKEMKeyExchange, false)
+		reachesMinimum = reachesMinimum || score >= minimum
+		steps = append(steps, fmt.Sprintf("pure ML-KEM key exchange would reach %d", score))
+	}
+	if !certificateDone {
+		score := postureScore(from, nil, true)
+		reachesMinimum = reachesMinimum || score >= minimum
+		steps = append(steps, fmt.Sprintf("a post-quantum certificate would reach %d", score))
+	}
+	text := head
+	if len(steps) > 0 {
+		sentence := strings.Join(steps, ", and ") + "."
+		if from == result {
+			sentence = strings.ToUpper(sentence[:1]) + sentence[1:]
+		}
+		text += " " + sentence
+	}
+	if len(steps) == 2 && !reachesMinimum {
+		text += fmt.Sprintf(" Only both together meet the minimum of %d, reaching %d.",
+			minimum, postureScore(from, &pureMLKEMKeyExchange, true))
+	}
+	// The certificate step cannot be taken at will. The assessment already says
+	// why, so quote its words rather than make a second claim about CAs.
+	if !certificateDone {
+		note := strings.ToUpper(scanner.QuantumCertificateAvailability[:1]) +
+			scanner.QuantumCertificateAvailability[1:] + "."
+		if len(text)+len(note)+len(verify)+2 <= sanitize.MaxReportDetail {
+			text += " " + note
+		}
+	}
+	return text + " " + verify
+}
+
+// postureScore asks the grader what the scanned posture scores with one key
+// exchange added and, when postQuantumCertificate is set, with an ML-DSA
+// certificate in place of the one served.
+func postureScore(result *types.ScanResult, add *types.KeyExchange, postQuantumCertificate bool) int {
+	posture := types.ScanResult{
+		KeyExchanges: append([]types.KeyExchange(nil), result.KeyExchanges...),
+		Certificate:  result.Certificate,
+	}
+	if add != nil {
+		posture.KeyExchanges = append(posture.KeyExchanges, *add)
+	}
+	if postQuantumCertificate {
+		var cert types.Certificate
+		if result.Certificate != nil {
+			cert = *result.Certificate
+		}
+		cert.PublicKeyAlgorithm = "ML-DSA"
+		posture.Certificate = &cert
+	}
+	return scanner.AssessQuantumRisk(&posture).Score
+}
+
+// opensslGroupCheck renders an s_client command that completes a handshake only
+// if the server accepts the named group, asking for the same name the scan did.
+//
+// The scanner sends no SNI for an IP address, and s_client sends none for an IP
+// address given to -connect, so -servername is left out in that case rather
+// than sending one the scan never did.
+func (e *PolicyEvaluator) opensslGroupCheck(result *types.ScanResult, group string) string {
+	name := e.ServerName
+	if name == "" {
+		name = result.Host
+	}
+	cmd := "openssl s_client -connect " + shellWord(net.JoinHostPort(result.Host, strconv.Itoa(result.Port)))
+	if net.ParseIP(strings.Trim(name, "[]")) == nil {
+		cmd += " -servername " + shellWord(name)
+	}
+	return cmd + " -groups " + group + " </dev/null"
+}
+
+// shellWord renders invocation text as a single shell word. The target and the
+// --sni value are untrusted (see package sanitize), and the report offers this
+// command to be pasted, so anything beyond a plain host name is single-quoted.
+// That includes the brackets of an IPv6 address, which zsh reads as a glob.
+func shellWord(s string) string {
+	s = sanitize.ForReport(s, sanitize.MaxReportDetail)
+	plain := s != ""
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '.' || r == '-' || r == '_' || r == ':') {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func (e *PolicyEvaluator) calculateScore(pr *types.PolicyResult, policy *types.Policy) int {
