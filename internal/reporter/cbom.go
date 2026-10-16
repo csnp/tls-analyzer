@@ -145,7 +145,7 @@ func (r *CBOMReporter) cipherComponent(cs types.CipherSuite, target string) type
 			AlgorithmProperties: &types.AlgorithmProps{
 				Primitive:              cipherPrimitive(cs),
 				Mode:                   cipherMode(cs),
-				ClassicalSecurityLevel: cs.Bits,
+				ClassicalSecurityLevel: cipherStrength(cs),
 				QuantumSecurityLevel:   quantumLevel,
 				CryptoFunctions:        []string{"encrypt", "decrypt"},
 			},
@@ -177,11 +177,12 @@ func (r *CBOMReporter) keyExchangeComponent(ke types.KeyExchange, target string)
 		primitive = "combiner"
 	}
 
+	// The category is read from the ML-KEM parameter set, which for a hybrid
+	// group is its post-quantum part. It was 3 for every such group, so
+	// SecP384r1MLKEM1024, which uses ML-KEM-1024, was reported a category low.
 	quantumLevel := 0
-	if ke.QuantumSafe || ke.Type == "pqc" {
-		quantumLevel = 3 // ML-KEM-768 is Level 3
-	} else if ke.Type == "hybrid" {
-		quantumLevel = 3 // Hybrid provides PQC protection
+	if ke.Type == "pqc" || ke.Type == "hybrid" {
+		quantumLevel = nistQuantumCategory(ke.PQCAlgorithm)
 	}
 
 	comp := types.CryptoComponent{
@@ -238,9 +239,13 @@ func publicKeyRef(target string) string { return fmt.Sprintf("cert-key-%s", targ
 func (r *CBOMReporter) certificateComponent(cert *types.Certificate, target string) types.CryptoComponent {
 	ref := fmt.Sprintf("cert-%s", target)
 
+	// Only a certificate the scanner judged quantum-safe carries a category, and
+	// it is read from the parameter set of the subject key, the same key the
+	// classical level describes. It was 2 for every such certificate, under an
+	// assumption of ML-DSA-65, which is in category 3.
 	quantumLevel := 0
 	if cert.QuantumSafe {
-		quantumLevel = 2 // Assuming ML-DSA-65
+		quantumLevel = nistQuantumCategory(cert.PublicKeyAlgorithm)
 	}
 
 	return types.CryptoComponent{
@@ -260,7 +265,7 @@ func (r *CBOMReporter) certificateComponent(cert *types.Certificate, target stri
 			},
 			AlgorithmProperties: &types.AlgorithmProps{
 				Primitive:              "signature",
-				ClassicalSecurityLevel: cert.PublicKeyBits,
+				ClassicalSecurityLevel: certificateKeyStrength(cert),
 				QuantumSecurityLevel:   quantumLevel,
 				CryptoFunctions:        []string{"sign", "verify"},
 			},
