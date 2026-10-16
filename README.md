@@ -188,7 +188,7 @@ scope. Both print a scope note saying which question they answer.
 - Chain trust is judged by the scanning machine: an internal CA's certificate shows as untrusted unless that CA is installed there.
 - Post-quantum certificate signatures (ML-DSA, SLH-DSA) are reported as unavailable rather than detected.
 
-Each check in full, and how to confirm the two hybrid groups yourself: [docs/how-it-works.md](docs/how-it-works.md).
+More on each of these limits, and how to confirm the two hybrid groups yourself: [docs/how-it-works.md](docs/how-it-works.md).
 
 ## Usage
 
@@ -252,7 +252,7 @@ auth.yourdomain.com" > targets.txt
 ## Documentation
 
 - [docs/commands.md](docs/commands.md): the flags for a scan, the `policies`, `print-policy` and `version` commands, the exit codes, and the output formats.
-- [docs/how-it-works.md](docs/how-it-works.md): each check in detail, how both grades are scored, and how the code is laid out.
+- [docs/how-it-works.md](docs/how-it-works.md): how the name check and chain trust work, more on what the scan does not check, how both grades are scored, and how the code is laid out.
 - [docs/policies.md](docs/policies.md): the built-in policies and the full schema for writing your own.
 - [docs/cnsa-2.0-compliance.md](docs/cnsa-2.0-compliance.md): the CNSA 2.0 timeline, algorithm classes, and a migration plan.
 - [docs/ci-cd-integration.md](docs/ci-cd-integration.md): GitHub Actions, GitLab CI, Jenkins, and Azure DevOps examples.
