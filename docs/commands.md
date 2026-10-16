@@ -1,7 +1,8 @@
 # Commands and flags
 
-Every command and flag the tool accepts, and its exit codes. Run
-`tlsanalyzer --help` for the list your own build prints.
+The flags for a scan, the `policies`, `print-policy` and `version` commands,
+and the exit codes. Run `tlsanalyzer --help` for the list your own build
+prints.
 
 ## CLI Reference
 

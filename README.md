@@ -251,7 +251,7 @@ auth.yourdomain.com" > targets.txt
 
 ## Documentation
 
-- [docs/commands.md](docs/commands.md): every command and flag, the exit codes, and the output formats.
+- [docs/commands.md](docs/commands.md): the flags for a scan, the `policies`, `print-policy` and `version` commands, the exit codes, and the output formats.
 - [docs/how-it-works.md](docs/how-it-works.md): each check in detail, how both grades are scored, and how the code is laid out.
 - [docs/policies.md](docs/policies.md): the built-in policies and the full schema for writing your own.
 - [docs/cnsa-2.0-compliance.md](docs/cnsa-2.0-compliance.md): the CNSA 2.0 timeline, algorithm classes, and a migration plan.
