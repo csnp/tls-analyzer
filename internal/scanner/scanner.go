@@ -17,6 +17,7 @@ import (
 	"fmt"
 	"net"
 	"net/netip"
+	"slices"
 	"sort"
 	"strconv"
 	"strings"
@@ -173,9 +174,7 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 	// --targets sweep every typo produced a confident failing row.
 	if !anyProtocolSupported(result.Protocols) && result.Certificate == nil &&
 		len(negotiated) == 0 && len(offered) == 0 {
-		return nil, fmt.Errorf(
-			"no TLS connection could be established to %s:%d (host unreachable, "+
-				"port closed, or not speaking TLS)", host, port)
+		return nil, s.noHandshakeError(ctx, host, port)
 	}
 
 	result.KeyExchanges = mergeKeyExchanges(negotiated, offered)
@@ -330,6 +329,132 @@ func anyProtocolSupported(protocols []types.Protocol) bool {
 		}
 	}
 	return false
+}
+
+// noHandshakeError says why a scan that completed no handshake measured
+// nothing. A port that refused the connection and a TLS server that rejected
+// every handshake this scanner attempted used to share one message blaming the
+// network, so a server whose only key exchange group is SecP256r1MLKEM768 was
+// reported as possibly down. One more connection, made only on this failure
+// path, tells the two apart.
+func (s *Scanner) noHandshakeError(ctx context.Context, host string, port int) error {
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	conn, err := (&net.Dialer{Timeout: s.config.ConnectTimeout}).DialContext(ctx, "tcp", addr)
+	if err != nil {
+		return fmt.Errorf(
+			"no TLS connection could be established to %s:%d (host unreachable, "+
+				"port closed, or not speaking TLS)", host, port)
+	}
+	defer func() { _ = conn.Close() }()
+
+	// Repeat the default handshake on this connection for its error, which
+	// separates a service that does not speak TLS from one that does and shares
+	// nothing with this client.
+	_ = conn.SetDeadline(time.Now().Add(s.config.ConnectTimeout))
+	hsErr := tls.Client(conn, &tls.Config{
+		InsecureSkipVerify: true,
+		ServerName:         s.getSNI(host),
+	}).HandshakeContext(ctx)
+	if hsErr == nil {
+		return fmt.Errorf(
+			"no TLS handshake with %s completed during the scan, but one completed "+
+				"afterwards, so the server may have changed while it was scanned. "+
+				"Scan it again", addr)
+	}
+
+	// The CLI truncates a scan error to sanitize.MaxReportDetail bytes and the
+	// address appears twice, so the wording leaves room for a long host name.
+	msg := fmt.Sprintf("TLS handshake with %s failed (%v).", addr, hsErr)
+
+	var notTLS tls.RecordHeaderError
+	var opErr *net.OpError
+	switch {
+	case errors.As(hsErr, &notTLS):
+		return fmt.Errorf("%s The host accepted a TCP connection, but its reply was not "+
+			"TLS, so the service on this port does not appear to speak TLS", msg)
+	case errors.As(hsErr, &opErr) && opErr.Op == "remote error":
+		// crypto/tls reports a TLS alert from the peer this way, and only a peer
+		// that speaks TLS sends one.
+		msg += " The server answered in TLS, so it is reachable, but it rejected the " +
+			"handshakes this scanner tried."
+	default:
+		msg += " The host accepted a TCP connection, so it is reachable, but it may not " +
+			"speak TLS or may accept nothing this scanner offers."
+	}
+
+	if groups := hybridGroupsNotOffered(); len(groups) > 0 {
+		msg += fmt.Sprintf(
+			" This scanner does not offer the key exchange groups %s. Check for them "+
+				"with: openssl s_client -connect %s -groups %s",
+			strings.Join(groups, " and "), addr, strings.Join(groups, ":"))
+	}
+	return errors.New(msg)
+}
+
+// hybridGroupsNotOffered names the hybrid post-quantum groups this build's TLS
+// client leaves out of its ClientHello even when they are requested. A group is
+// left out when the Go toolchain predates it, and also when the toolchain
+// implements it but keeps it disabled for this module's declared Go version
+// (GODEBUG tlssecpmlkem). The name a CurveID renders as shows only the first
+// case, so this has crypto/tls write a ClientHello and reads the groups in it.
+//
+// It returns nil when every hybrid group is offered and when no ClientHello
+// could be read, so a caller never names a group it did not observe missing.
+var hybridGroupsNotOffered = sync.OnceValue(func() []string {
+	hybrids := []tls.CurveID{groupX25519MLKEM768, groupSecP256r1MLKEM768, groupSecP384r1MLKEM1024}
+
+	// X25519 keeps the preference list non-empty after crypto/tls drops the
+	// groups it will not offer, so a ClientHello is always written.
+	offered, ok := clientHelloGroups(append(slices.Clone(hybrids), tls.X25519))
+	if !ok {
+		return nil
+	}
+
+	var missing []string
+	for _, id := range hybrids {
+		if !slices.Contains(offered, id) {
+			missing = append(missing, tlsGroups[id].name)
+		}
+	}
+	return missing
+})
+
+// clientHelloGroups returns the supported_groups a client configured with
+// prefs sends, read by an in-memory server that stops the handshake as soon as
+// the ClientHello arrives. ok is false when no ClientHello was read.
+func clientHelloGroups(prefs []tls.CurveID) (groups []tls.CurveID, ok bool) {
+	clientSide, serverSide := net.Pipe()
+	defer func() { _ = clientSide.Close() }()
+	defer func() { _ = serverSide.Close() }()
+
+	deadline := time.Now().Add(5 * time.Second)
+	_ = clientSide.SetDeadline(deadline)
+	_ = serverSide.SetDeadline(deadline)
+
+	errCaptured := errors.New("client hello captured")
+	server := tls.Server(serverSide, &tls.Config{
+		GetConfigForClient: func(hello *tls.ClientHelloInfo) (*tls.Config, error) {
+			groups = slices.Clone(hello.SupportedCurves)
+			ok = true
+			return nil, errCaptured
+		},
+	})
+	client := tls.Client(clientSide, &tls.Config{
+		InsecureSkipVerify: true,
+		MinVersion:         tls.VersionTLS13,
+		CurvePreferences:   prefs,
+	})
+
+	done := make(chan struct{})
+	go func() {
+		defer close(done)
+		_ = client.Handshake()
+	}()
+	_ = server.Handshake()
+	_ = serverSide.Close()
+	<-done
+
+	return groups, ok
 }
 
 // probeProtocols checks which TLS versions are supported.
