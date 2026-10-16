@@ -1,7 +1,8 @@
 # How the scan works
 
-This page holds the detail behind the README: what each check does and where
-it stops, how the two grades are worked out, and how the code is laid out.
+This page holds detail the README leaves out: how the name check and chain
+trust work, more on each limit the README lists under what it does not check,
+how the two grades are worked out, and how the code is laid out.
 
 ## What the scan checks
 
