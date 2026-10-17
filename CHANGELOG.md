@@ -275,6 +275,9 @@ field out.
   `net/url` refuses the form with a bare `%`, `https://[fe80::1%lo0]:9`, with
   `invalid URL escape "%lo"`. A host name or an IPv4 address is written as
   before, for example `https://localhost:8443` and `https://127.0.0.1:8443`.
+- **The README header no longer shows the Go Report Card badge.** goreportcard.com
+  has retired its service, and the badge rendered "go report: retired" instead
+  of a grade. The CI, Go Reference and License badges remain.
 
 ## [0.4.1] - 2026-08-05
 
