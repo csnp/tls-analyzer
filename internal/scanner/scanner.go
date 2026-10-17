@@ -369,25 +369,38 @@ func (s *Scanner) noHandshakeError(ctx context.Context, host string, port int) e
 				"Scan it again", addr)
 	}
 
-	// The CLI truncates a scan error to sanitize.MaxReportDetail bytes and the
-	// address appears once here and once in each openssl command, so the
-	// wording is kept short to leave room for a host name.
+	return errors.New(handshakeFailureMessage(addr, hsErr, hybridGroupsNotOffered()))
+}
+
+// handshakeFailureMessage describes a TLS handshake with addr that failed with
+// hsErr, made by a client that does not offer the key exchange groups named in
+// notOffered.
+//
+// The CLI prints at most sanitize.MaxReportDetail bytes of a scan error and
+// cuts the rest. The address appears in the headline and again in each openssl
+// command, so the wording is kept short to leave room for a host name, and a
+// command is given whole or left out.
+func handshakeFailureMessage(addr string, hsErr error, notOffered []string) string {
 	msg := fmt.Sprintf("TLS handshake with %s failed (%v).", addr, hsErr)
 
 	var notTLS tls.RecordHeaderError
 	var opErr *net.OpError
+	var reached string
 	switch {
 	case errors.As(hsErr, &notTLS):
-		return fmt.Errorf("%s The host accepted a TCP connection, but its reply was not "+
-			"TLS, so the service on this port does not appear to speak TLS", msg)
+		return msg + " The host accepted a TCP connection, but its reply was not " +
+			"TLS, so the service on this port does not appear to speak TLS"
 	case errors.As(hsErr, &opErr) && opErr.Op == "remote error":
 		// crypto/tls reports a TLS alert from the peer this way, and only a peer
 		// that speaks TLS sends one.
-		msg += " The server answered in TLS, so it is reachable, but it rejected the " +
+		reached = " The server answered in TLS, so it is reachable, but it rejected the " +
 			"handshakes this scanner tried."
 	default:
-		msg += " The host accepted a TCP connection, so it is reachable, but it may not " +
+		reached = " The host accepted a TCP connection, so it is reachable, but it may not " +
 			"speak TLS or may accept nothing this scanner offers."
+	}
+	if len(notOffered) == 0 {
+		return msg + reached
 	}
 
 	// One command per group. s_client negotiates one of the groups named after
@@ -395,16 +408,40 @@ func (s *Scanner) noHandshakeError(ctx context.Context, host string, port int) e
 	// pick, which is why docs/how-it-works.md gives each group its own command.
 	// An IPv6 address is quoted, since zsh reads its brackets as a glob and
 	// refuses the command.
-	if groups := hybridGroupsNotOffered(); len(groups) > 0 {
-		connect := sanitize.ShellWord(addr)
-		commands := make([]string, len(groups))
-		for i, group := range groups {
-			commands[i] = fmt.Sprintf("openssl s_client -connect %s -groups %s", connect, group)
-		}
-		msg += " Check the key exchange groups this scanner does not offer, one command each: " +
-			strings.Join(commands, " and ")
+	connect := sanitize.ShellWord(addr)
+	commands := make([]string, len(notOffered))
+	for i, group := range notOffered {
+		commands[i] = fmt.Sprintf("openssl s_client -connect %s -groups %s", connect, group)
 	}
-	return errors.New(msg)
+	full := msg + reached + " Check the key exchange groups this scanner does not offer, " +
+		"one command each: " + strings.Join(commands, " and ")
+	if len(full) <= sanitize.MaxReportDetail {
+		return full
+	}
+
+	// Not every command fits. The groups were named only in the commands, so
+	// the cut took a group's name with its command: under
+	// GODEBUG=fips140=on,tlsmlkem=0, where this scanner offers none of the three
+	// hybrid groups, a 38-character host and port lost the third. The groups are
+	// named straight after the headline instead, where they fit for the longest
+	// address the scanner accepts, a 254-byte host name and a five-digit port,
+	// after any TLS alert, and only the commands that fit whole follow.
+	names := notOffered[len(notOffered)-1]
+	noun := "group"
+	if n := len(notOffered); n > 1 {
+		names = strings.Join(notOffered[:n-1], ", ") + " and " + names
+		noun = "groups"
+	}
+	msg += fmt.Sprintf(" This scanner does not offer the key exchange %s %s.", noun, names) + reached
+	sep := " Check each group with its own command, for example: "
+	for _, cmd := range commands {
+		if len(msg)+len(sep)+len(cmd) > sanitize.MaxReportDetail {
+			break
+		}
+		msg += sep + cmd
+		sep = " and "
+	}
+	return msg
 }
 
 // hybridGroupsNotOffered names the hybrid post-quantum groups this build's TLS

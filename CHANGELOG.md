@@ -213,6 +213,25 @@ field out.
   a host name or an IPv4 address is printed as before. The quotes add 4 bytes:
   against that server the message for a five-digit port is 390 bytes, so an
   IPv6 address and port of up to 47 characters fit.
+- **When the `openssl s_client` commands in that error do not all fit, it still
+  names each key exchange group this scanner does not offer.** Each command
+  repeats the address, and the CLI prints up to 500 bytes of a scan error, so a
+  long address pushed the last command past that limit, and its group was named
+  nowhere else. Measured with Go 1.26.3 against a local server on `::1`: run
+  with `GODEBUG=fips140=on,tlsmlkem=0`, where the scanner offers none of the
+  three hybrid groups, the error for `scanner-target-example.localhost` on a
+  five-digit port ended in `-groups SecP256r1MLKEM768 and openssl s_client
+  -connect sca...`, and without that setting the error for a 51-character host
+  name on a five-digit port lost `SecP384r1MLKEM1024` the same way. Such an
+  error now names the groups straight after its first sentence and gives only
+  the commands that fit whole, which for both of those host names is the
+  command for the first group. An error whose commands fit is unchanged:
+  against `127.0.0.1` and `::1` on a five-digit port it is byte for byte the
+  same as before, 398 and 390 bytes, and so is the 467-byte error against
+  `127.0.0.1` with the setting above. A test builds the error for every host
+  name length the scanner accepts, at ports 443 and 65535, and for the longest
+  name after each of the 256 TLS alert values, and finds each group named
+  within the 500 bytes.
 - **A port that is not a number from 1 to 65535 is refused without quoting it.**
   The error used to repeat the text after the colon, which on a `key: value` line
   is the value.
