@@ -93,8 +93,8 @@ field out.
   is kept whole. The command names the host twice, so scanned without `--sni`
   a host name of more than 195 to 200 characters, depending on the key exchange
   and the port, made it longer than 500 bytes on its own, and its end was still
-  cut. Such a command now connects to the IP address the scan resolved the host
-  name to and names the host once, after `-servername`.
+  cut. Such a command now connects to the IP address the scan reached and names
+  the host once, after `-servername`.
 - The same Fix no longer quotes pure ML-KEM key exchange as a way to raise the
   score without saying that this version cannot detect it. The scanner never
   offers a pure ML-KEM group, because Go's TLS stack defines none, so a server
@@ -103,6 +103,21 @@ field out.
   Fix now says, for example, "pure ML-KEM key exchange would reach 80, but this
   version cannot detect it and would still report 64", and `docs/policies.md`
   says the same.
+- The `ip` field of a report, and the quantum score Fix's `openssl s_client`
+  command when it connects by address, name the address the scan's connections
+  reached, not the first address the host name resolved to. A name can resolve
+  to several addresses and a connection moves on to the next when one refuses
+  it, so the two differed: a TLS 1.3 server listening on 127.0.0.1 only,
+  scanned under `cnsa-2.0-2030` as a 213-character `.localhost` name that
+  resolves to `::1` and then `127.0.0.1`, was measured over 127.0.0.1,
+  reported `"ip": "::1"`, and its Fix ended with `-connect '[::1]:52144'`, an
+  address the server was not listening on. The same scan now reports
+  `"ip": "127.0.0.1"`, the text report's IP line says the same, and the
+  498-byte Fix ends with `-connect 127.0.0.1:50983 -servername <the name>
+  -groups X25519MLKEM768 </dev/null`; run as printed, that command reached
+  the server and received its handshake failure alert for the group it does
+  not offer. When the connections of one scan reached more than one address,
+  a scan coverage note names them and `ip` is the one reached first.
 - The text report now heads a policy evaluation with the same verdict as the
   HTML report, SARIF and CBOM. An evaluation that skipped a rule and found no
   violation was printed as `✓ COMPLIANT` in the text report while the other

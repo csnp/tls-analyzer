@@ -47,7 +47,7 @@ type fixCase struct {
 	port        int
 	host        string
 	serverName  string // empty: the scan sent the host itself
-	ip          string // the address the scan resolved the host to; empty: none recorded
+	ip          string // the address the scan reached; empty: none recorded
 }
 
 // fixFor evaluates the case and returns its quantum.minQuantumScore Fix, or ok

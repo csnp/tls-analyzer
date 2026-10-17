@@ -17,7 +17,7 @@ import (
 // classical server and 201 for a hybrid one. Scanned end to end as a
 // 213-character name resolving to ::1, a classical server's Fix was 500 bytes
 // ending "aaaa.local...". Such a Verify now connects to the address the scan
-// resolved the host to and names the host once, as the -servername.
+// reached, the result's IP, and names the host once, as the -servername.
 
 // longestIPv6Text is the longest text an IPv6 address prints as. In -connect it
 // also takes brackets and, for the brackets, quotes.

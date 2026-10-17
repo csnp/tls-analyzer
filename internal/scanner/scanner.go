@@ -39,6 +39,64 @@ const Version = "0.4.1"
 // records being asked.
 var LookupIP = net.LookupIP
 
+// reachedAddresses records the address of each connection in one scan that
+// completed a TLS handshake, in the order the handshakes completed and without
+// repeats. One belongs to each call of Scan, not to the Scanner, which a
+// --targets sweep shares between scans running at once.
+//
+// A host name can resolve to several addresses, and a dial moves on to the
+// next when one refuses the connection, so the address a scan reached is not
+// always the first one the name resolved to. The result's IP field used to be
+// that first address: a name resolving to ::1 and then 127.0.0.1, served on
+// 127.0.0.1 only, was measured over 127.0.0.1 and reported as ::1, and the
+// quantum score Fix's openssl command, built from the field when the host name
+// is too long to be written twice, connected to an address with nothing
+// listening on it.
+type reachedAddresses struct {
+	mu    sync.Mutex
+	addrs []string
+}
+
+// record notes the address of a completed connection, from its RemoteAddr.
+func (r *reachedAddresses) record(addr net.Addr) {
+	tcp, ok := addr.(*net.TCPAddr)
+	if !ok {
+		return
+	}
+	ip := tcp.IP.String()
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	if !slices.Contains(r.addrs, ip) {
+		r.addrs = append(r.addrs, ip)
+	}
+}
+
+// list returns the recorded addresses in the order they were first reached.
+func (r *reachedAddresses) list() []string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return slices.Clone(r.addrs)
+}
+
+// recordReached names in result the address its connections reached. When they
+// reached more than one, the result combines the answers of more than one
+// address, and a warning says so and names them, so that the result is not
+// read as the measurement of the one address it names.
+func recordReached(result *types.ScanResult, addrs []string) {
+	if len(addrs) == 0 {
+		return
+	}
+	result.IP = addrs[0]
+	if len(addrs) == 1 {
+		return
+	}
+	named := strings.Join(addrs[:len(addrs)-1], ", ") + " and " + addrs[len(addrs)-1]
+	result.ScanWarnings = append(result.ScanWarnings, fmt.Sprintf(
+		"the scan's connections reached %d addresses, %s, so this result combines "+
+			"the answers of more than one; ip names the one reached first",
+		len(addrs), named))
+}
+
 // Scanner performs TLS analysis on targets.
 type Scanner struct {
 	config *Config
@@ -108,7 +166,10 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 	if err != nil || len(ips) == 0 {
 		return nil, fmt.Errorf("cannot resolve %s: %w", host, err)
 	}
-	result.IP = ips[0].String()
+
+	// The address the result names is the one its connections reached, which
+	// is known once a handshake has completed, not the first one resolved.
+	reached := &reachedAddresses{}
 
 	// Run probes concurrently
 	var wg sync.WaitGroup
@@ -118,7 +179,7 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		protocols := s.probeProtocols(ctx, host, port)
+		protocols := s.probeProtocols(ctx, host, port, reached)
 		mu.Lock()
 		result.Protocols = protocols
 		mu.Unlock()
@@ -129,7 +190,7 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		cert, chain, ciphers, keyExchanges := s.probeConnection(ctx, host, port)
+		cert, chain, ciphers, keyExchanges := s.probeConnection(ctx, host, port, reached)
 		mu.Lock()
 		result.Certificate = cert
 		result.CertChain = chain
@@ -145,7 +206,7 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		groups, unavailable := s.probeKeyExchangeGroups(ctx, host, port)
+		groups, unavailable := s.probeKeyExchangeGroups(ctx, host, port, reached)
 		mu.Lock()
 		offered = groups
 		skipped = unavailable
@@ -158,7 +219,7 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 	wg.Add(1)
 	go func() {
 		defer wg.Done()
-		ciphers, _ := s.probeCipherSuites(ctx, host, port)
+		ciphers, _ := s.probeCipherSuites(ctx, host, port, reached)
 		mu.Lock()
 		offeredCiphers = ciphers
 		mu.Unlock()
@@ -176,6 +237,10 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 		len(negotiated) == 0 && len(offered) == 0 {
 		return nil, s.noHandshakeError(ctx, host, port)
 	}
+
+	// Each probe that completed a handshake recorded the address it reached,
+	// and the check above passed because one of them did.
+	recordReached(result, reached.list())
 
 	result.KeyExchanges = mergeKeyExchanges(negotiated, offered)
 	if len(skipped) > 0 {
@@ -538,7 +603,8 @@ func (w *writeObserver) Write(p []byte) (int, error) {
 }
 
 // probeProtocols checks which TLS versions are supported.
-func (s *Scanner) probeProtocols(ctx context.Context, host string, port int) []types.Protocol {
+func (s *Scanner) probeProtocols(ctx context.Context, host string, port int,
+	reached *reachedAddresses) []types.Protocol {
 	versions := []struct {
 		version uint16
 		name    string
@@ -570,7 +636,7 @@ func (s *Scanner) probeProtocols(ctx context.Context, host string, port int) []t
 
 			protocols[idx] = types.Protocol{
 				Version:   name,
-				Supported: s.tryConnect(ctx, host, port, cfg),
+				Supported: s.tryConnect(ctx, host, port, cfg, reached),
 			}
 		}(i, v.version, v.name)
 	}
@@ -663,8 +729,8 @@ func buildOffersGroup(id tls.CurveID) bool {
 // Groups this Go build cannot offer are skipped rather than reported
 // unsupported; skipped groups are returned so callers can be explicit about
 // coverage instead of implying a negative result.
-func (s *Scanner) probeKeyExchangeGroups(ctx context.Context, host string, port int) (
-	supported []types.KeyExchange, skipped []string) {
+func (s *Scanner) probeKeyExchangeGroups(ctx context.Context, host string, port int,
+	reached *reachedAddresses) (supported []types.KeyExchange, skipped []string) {
 
 	candidates := []tls.CurveID{
 		groupX25519MLKEM768,
@@ -712,6 +778,7 @@ func (s *Scanner) probeKeyExchangeGroups(ctx context.Context, host string, port 
 				return
 			}
 			defer func() { _ = conn.Close() }()
+			reached.record(conn.RemoteAddr())
 
 			// Confirm the server actually selected the offered group rather
 			// than assuming a successful handshake implies it.
@@ -747,8 +814,8 @@ func (s *Scanner) probeKeyExchangeGroups(ctx context.Context, host string, port 
 // 1.3 suite observable from here is the negotiated one. That limit is reported
 // to the caller rather than hidden, so an absent suite is never mistaken for an
 // unsupported one.
-func (s *Scanner) probeCipherSuites(ctx context.Context, host string, port int) (
-	supported []types.CipherSuite, tls13Enumerable bool) {
+func (s *Scanner) probeCipherSuites(ctx context.Context, host string, port int,
+	reached *reachedAddresses) (supported []types.CipherSuite, tls13Enumerable bool) {
 
 	candidates := tls.CipherSuites()
 	candidates = append(candidates, tls.InsecureCipherSuites()...)
@@ -789,6 +856,7 @@ func (s *Scanner) probeCipherSuites(ctx context.Context, host string, port int) 
 				return
 			}
 			defer func() { _ = conn.Close() }()
+			reached.record(conn.RemoteAddr())
 
 			state := conn.(*tls.Conn).ConnectionState()
 			if state.CipherSuite != id {
@@ -826,7 +894,8 @@ func isTLS13Suite(id uint16) bool {
 }
 
 // probeConnection connects with best available settings and extracts info.
-func (s *Scanner) probeConnection(ctx context.Context, host string, port int) (
+func (s *Scanner) probeConnection(ctx context.Context, host string, port int,
+	reached *reachedAddresses) (
 	*types.Certificate, []types.Certificate, []types.CipherSuite, []types.KeyExchange) {
 
 	cfg := &tls.Config{
@@ -842,6 +911,7 @@ func (s *Scanner) probeConnection(ctx context.Context, host string, port int) (
 		return nil, nil, nil, nil
 	}
 	defer conn.Close()
+	reached.record(conn.RemoteAddr())
 
 	state := conn.ConnectionState()
 
@@ -891,8 +961,10 @@ func (s *Scanner) probeConnection(ctx context.Context, host string, port int) (
 	return cert, chain, ciphers, keyExchanges
 }
 
-// tryConnect attempts a TLS connection with the given config.
-func (s *Scanner) tryConnect(ctx context.Context, host string, port int, cfg *tls.Config) bool {
+// tryConnect attempts a TLS connection with the given config, and records the
+// address it reached when the handshake completed.
+func (s *Scanner) tryConnect(ctx context.Context, host string, port int, cfg *tls.Config,
+	reached *reachedAddresses) bool {
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	dialer := &tls.Dialer{
 		NetDialer: &net.Dialer{Timeout: s.config.ConnectTimeout},
@@ -903,6 +975,7 @@ func (s *Scanner) tryConnect(ctx context.Context, host string, port int, cfg *tl
 	if err != nil {
 		return false
 	}
+	reached.record(conn.RemoteAddr())
 	conn.Close()
 	return true
 }

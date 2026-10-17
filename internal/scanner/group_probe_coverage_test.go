@@ -40,7 +40,8 @@ func TestAGroupThisBuildCannotNegotiateIsReportedNotProbed(t *testing.T) {
 
 	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
 	defer cancel()
-	supported, skipped := New(localScanConfig()).probeKeyExchangeGroups(ctx, host, port)
+	supported, skipped := New(localScanConfig()).probeKeyExchangeGroups(ctx, host, port,
+		&reachedAddresses{})
 
 	for _, id := range hybrids {
 		name := tlsGroups[id].name
