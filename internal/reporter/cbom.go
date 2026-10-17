@@ -3,6 +3,8 @@ package reporter
 import (
 	"fmt"
 	"io"
+	"net"
+	"net/url"
 	"strconv"
 	"strings"
 	"time"
@@ -65,12 +67,16 @@ func (r *CBOMReporter) generateCBOM(result *types.ScanResult) types.CryptoBOM {
 		return cbom
 	}
 
-	// Add service
+	// Add service. The endpoint is a URL: net.JoinHostPort puts an IPv6 address
+	// in brackets, and url.URL writes the % before a zone as %25. Written from
+	// host and port with "https://%s:%d", ::1 came out as https://::1:8443,
+	// where the port reads as part of the address.
+	endpoint := url.URL{Scheme: "https", Host: net.JoinHostPort(result.Host, strconv.Itoa(result.Port))}
 	cbom.Services = []types.CryptoService{
 		{
 			BOMRef:      "service-" + result.Target,
 			Name:        result.Target,
-			Endpoints:   []string{fmt.Sprintf("https://%s:%d", result.Host, result.Port)},
+			Endpoints:   []string{endpoint.String()},
 			Description: "TLS-enabled service",
 		},
 	}
