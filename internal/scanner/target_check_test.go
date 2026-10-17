@@ -36,6 +36,12 @@ func TestCheckTargetAcceptsHostsAddressesAndPorts(t *testing.T) {
 		{"[2001:db8::1]", "2001:db8::1", 443},
 		{"[2001:db8::1]:8443", "2001:db8::1", 8443},
 		{"[::1]:443", "::1", 443},
+		// A link-local address needs its zone to be reached, and 0.4.1 scanned
+		// one. The zone is kept in the host, where the dialer reads it.
+		{"[fe80::1%lo0]:8443", "fe80::1%lo0", 8443},
+		{"[fe80::1%eth0]", "fe80::1%eth0", 443},
+		{"[fe80::1%12]:443", "fe80::1%12", 443},
+		{"[fe80::1%br-1a2b3c4d5e6f]:443", "fe80::1%br-1a2b3c4d5e6f", 443},
 	}
 
 	for _, tt := range tests {
@@ -78,8 +84,16 @@ func TestCheckTargetRefusesEverythingElseWithAFixedReason(t *testing.T) {
 		{"[2001:db8::1", ReasonNotATarget},
 		{"[2001:db8::1]x", ReasonNotATarget},
 		{"[192.0.2.1]:443", ReasonNotATarget},
-		{"[fe80::1%eth0]:443", ReasonNotATarget},
 		{"[not-an-address]", ReasonNotATarget},
+		{"fe80::1%lo0", ReasonNotATarget},
+		{"[fe80::1%]:443", ReasonNotATarget},
+		// A zone that is not an interface name or number is refused with a
+		// reason that says so, never with one that denies it is an address.
+		{"[fe80::1%a=b]:443", ReasonZone},
+		{"[fe80::1%two words]:443", ReasonZone},
+		{"[fe80::1%lo0/x]", ReasonZone},
+		{"[fe80::1%" + strings.Repeat("a", 16) + "]:443", ReasonZone},
+		{"[fe80::1%exa\x1b[2Kmple]:443", ReasonZone},
 		{":443", ReasonNotATarget},
 		{"user@example.com", ReasonNotATarget},
 		{"example.com/path", ReasonNotATarget},

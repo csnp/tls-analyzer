@@ -227,9 +227,11 @@ reached, so check the level below whatever was last tightened.
       `--format bogus`, an unreachable host, and `-p 0`: each is one line on
       stderr. A mistyped flag adds a pointer to `--help`.
 - [ ] Port range is enforced on both routes. `-p 0`, `-p -5` and `-p 70000` are
-      refused naming the flag; `host:70000` and `host:abc` are refused naming the
-      value; `-p 1`, `-p 65535` and `host:8443` are accepted. An out-of-range port
-      previously reached the dialer and was reported as an unreachable host.
+      refused naming the flag; `host:70000` and `host:abc` are refused with "the
+      port is not a number from 1 to 65535" and without the value, which on a
+      `key: value` line of a targets file can be a secret; `-p 1`, `-p 65535` and
+      `host:8443` are accepted. An out-of-range port previously reached the
+      dialer and was reported as an unreachable host.
 
 ## 9. Test integrity
 

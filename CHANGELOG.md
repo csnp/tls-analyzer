@@ -141,7 +141,11 @@ field out.
   and with the system resolver alike. On macOS, every line without a colon,
   `KEY=VALUE` lines included, was handed to the system's name lookup, and whether
   those lookups then reached a DNS server was not measured. On Windows this was
-  not measured.
+  not measured. The check does not stop the single-word case: a line of one
+  word made of letters, digits, `-` and `_`, up to 63 characters and not only
+  digits, is a valid host name, as `localhost` is, so it is still looked up and
+  printed in the report and in the closing error. Only point `--targets` at a
+  file of host names.
 - **A target on the command line is checked by the same rule**, before any
   lookup, and a refusal gives the reason without repeating the argument. An
   empty target says "the target is empty". A URL is refused with a pointer to
@@ -153,7 +157,39 @@ field out.
   has no targets" instead of asking for a targets file.
 - **A target listed twice is scanned once.** Two lines name the same target when
   their hosts match ignoring case and they give the same port, with 443 where
-  none is written. A note on stderr names the lines it was listed on.
+  none is written. A note on stderr names the lines it was listed on. With
+  `--format json`, a run given more than one target still prints an array, as
+  0.4.1 did, also when the file names one target on several lines, and a run
+  given one target prints one object.
+- **A targets file that starts with a UTF-8 byte order mark is read.** Some
+  Windows editors and PowerShell write one. The mark stayed on the first line,
+  so the check above refused the whole file at line 1, and 0.4.1 looked that
+  line up and reported it as a target it could not resolve.
+- **An IPv6 link-local address with a zone, such as `[fe80::1%en0]:8443`, is
+  scanned again** when the zone is an interface name or number: 1 to 15
+  letters, digits, `-`, `_` or `.`. 0.4.1 did not check the zone, and the check
+  above refused zones with "not a host name, IP address or host:port". A zone of
+  other text is refused with "the IPv6 zone after % is not an interface name or
+  number".
+- **With `--timeout 1`, the error for a reachable service reads the server's
+  reply.** Each connection may take half of `--timeout`, and that half was
+  rounded down to whole seconds, so `--timeout 1` gave each connection a timeout
+  of 0, which a dial reads as no timeout. The extra handshake made after a scan
+  that completed none read the same 0 as a deadline that had already passed, so
+  it failed before reading the server's reply: against a plain HTTP server,
+  `--timeout 1` said the host may not speak TLS or may accept nothing this
+  scanner offers and named two key exchange groups to check, where the default
+  timeout said the reply was not TLS. The connection timeout is now half of
+  `--timeout` without rounding, 0.5 seconds for `--timeout 1`.
+- **When the error for a scan that completed no TLS handshake ends with an
+  `openssl s_client` check, it gives one command per key exchange group** this
+  scanner does not offer. It gave one command naming both, `-groups
+  SecP256r1MLKEM768:SecP384r1MLKEM1024`, which negotiates one of them and says
+  nothing about the other, as `docs/how-it-works.md` explains. Against a local
+  server that rejects the handshake with a TLS alert, the message for the
+  address 127.0.0.1 and a five-digit port is 398 bytes. The CLI prints up to 500,
+  and the address appears three times, so a host and port of up to 49
+  characters fit.
 - **A port that is not a number from 1 to 65535 is refused without quoting it.**
   The error used to repeat the text after the colon, which on a `key: value` line
   is the value.

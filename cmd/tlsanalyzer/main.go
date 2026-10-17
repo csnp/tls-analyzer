@@ -376,6 +376,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 		}
 	}
 
+	// Batch mode, and with --format json an array, follows how many targets
+	// were listed, not how many remain once repeats are dropped. A targets file
+	// naming one host on two lines printed an array in 0.4.1, and printed a
+	// single object once repeats were scanned once, so a script reading the
+	// array of a --targets run was handed an object.
+	batch := len(listed) > 1
+
 	// After the override, so two lines that differ only in the port --port
 	// replaced are one target.
 	targets, notes := dedupeTargets(listed)
@@ -398,7 +405,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	// Configure scanner
 	cfg := scanner.DefaultConfig()
 	cfg.Timeout = time.Duration(timeout) * time.Second
-	cfg.ConnectTimeout = time.Duration(timeout/2) * time.Second
+	cfg.ConnectTimeout = connectTimeout(timeout)
 	cfg.SNI = sni
 	cfg.CheckVulns = !skipVulns
 	cfg.CheckQuantum = !skipQuantum
@@ -443,7 +450,7 @@ func runScan(cmd *cobra.Command, args []string) error {
 	policyEvaluator.ServerName = sni
 
 	// Determine if batch mode
-	if len(targets) == 1 {
+	if !batch {
 		// Single target mode
 		return scanSingleTarget(ctx, s.Scan, cnsa2Analyzer, policyEvaluator, targets[0], policy, output)
 	}
@@ -695,7 +702,15 @@ func collectTargets(args []string) ([]listedTarget, error) {
 		fromFile := 0
 		lines := bufio.NewScanner(file)
 		for number := 1; lines.Scan(); number++ {
-			line := strings.TrimSpace(lines.Text())
+			text := lines.Text()
+			if number == 1 {
+				// Some Windows editors and PowerShell start a UTF-8 file with a
+				// byte order mark. TrimSpace leaves U+FEFF in place, so the
+				// first line was refused, and the refusal never shows the line,
+				// so nothing on screen explained why.
+				text = strings.TrimPrefix(text, "\xef\xbb\xbf")
+			}
+			line := strings.TrimSpace(text)
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
@@ -802,6 +817,14 @@ func describePlaces(where []int) string {
 			" and "+numbers[len(numbers)-1]+" of the targets file")
 	}
 	return strings.Join(parts, " and ")
+}
+
+// connectTimeout is the time each connection of a scan may take, half of
+// --timeout. It was timeout/2 in whole seconds, which is 0 for --timeout 1, and
+// a dial reads 0 as no timeout at all, the case validateFlags refuses for
+// --timeout itself.
+func connectTimeout(timeoutSeconds int) time.Duration {
+	return time.Duration(timeoutSeconds) * time.Second / 2
 }
 
 // atMostOneTarget takes at most one target from the command line. cobra's own

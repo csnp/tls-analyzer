@@ -32,6 +32,10 @@ import (
 //     speak TLS: TestAServerSharingNoKeyExchangeGroupIsNotReportedUnreachable.
 //   - the tls.RecordHeaderError case in noHandshakeError removed:
 //     TestAServiceThatDoesNotSpeakTLSIsNamedAsSuch.
+//   - noHandshakeError sets its deadline from a ConnectTimeout of 0, which has
+//     already passed: TestAZeroConnectTimeoutStillReadsTheReply.
+//   - the openssl command names every missing group after one -groups:
+//     TestAServerSharingNoKeyExchangeGroupIsNotReportedUnreachable.
 //   - hybridGroupsNotOffered returns nil, as it does when no ClientHello was
 //     read: TestHybridGroupsNotOfferedMatchesAHandshake, on any build that does
 //     not offer the P-curve hybrids.
@@ -77,6 +81,37 @@ func startTLSServerWithConfig(t *testing.T, cfg *tls.Config) (host string, port 
 		t.Fatalf("parse listener port: %v", err)
 	}
 	return addrHost, p
+}
+
+// startNonTLSServer serves plain HTTP on a loopback port for the duration of
+// the test: every connection is read once and answered with an HTTP 400, which
+// is not a TLS record.
+func startNonTLSServer(t *testing.T) int {
+	t.Helper()
+
+	ln, err := net.Listen("tcp", "127.0.0.1:0")
+	if err != nil {
+		t.Fatalf("listen: %v", err)
+	}
+	t.Cleanup(func() { _ = ln.Close() })
+
+	go func() {
+		for {
+			conn, err := ln.Accept()
+			if err != nil {
+				return
+			}
+			go func(c net.Conn) {
+				defer func() { _ = c.Close() }()
+				_ = c.SetDeadline(time.Now().Add(5 * time.Second))
+				buf := make([]byte, 512)
+				_, _ = c.Read(buf)
+				_, _ = c.Write([]byte("HTTP/1.0 400 Bad Request\r\n\r\n"))
+			}(conn)
+		}
+	}()
+
+	return ln.Addr().(*net.TCPAddr).Port
 }
 
 func scanExpectingError(t *testing.T, host string, port int) error {
@@ -148,8 +183,62 @@ func TestAServerSharingNoKeyExchangeGroupIsNotReportedUnreachable(t *testing.T) 
 		t.Errorf("error is %d bytes, over the %d the CLI prints, so its end is cut off: %q",
 			len(msg), sanitize.MaxReportDetail, msg)
 	}
-	if !strings.HasSuffix(msg, "-groups SecP256r1MLKEM768:SecP384r1MLKEM1024") {
-		t.Errorf("error should end with an openssl command offering both groups, got %q", msg)
+
+	// One command per group, as docs/how-it-works.md gives them. s_client
+	// negotiates one of the groups named after -groups, so the command this
+	// error used to end with, -groups SecP256r1MLKEM768:SecP384r1MLKEM1024,
+	// said nothing about SecP384r1MLKEM1024 against a server offering both.
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	alone := make(map[string]bool)
+	for _, cmd := range strings.Split(msg, "openssl s_client")[1:] {
+		offered := offeredGroups(cmd)
+		if len(offered) != 1 {
+			t.Errorf("an openssl command in the error offers %d groups, so it cannot "+
+				"confirm each one: %q", len(offered), cmd)
+			continue
+		}
+		alone[offered[0]] = true
+	}
+	notOffered := hybridGroupsNotOffered()
+	for _, group := range notOffered {
+		want := "openssl s_client -connect " + addr + " -groups " + group
+		if !alone[group] || !strings.Contains(msg, want) {
+			t.Errorf("error should give %q, a command offering %s on its own, got %q",
+				want, group, msg)
+		}
+	}
+	if len(notOffered) > 0 && !strings.HasSuffix(msg, "-groups "+notOffered[len(notOffered)-1]) {
+		t.Errorf("error should end with the last group's openssl command, got %q", msg)
+	}
+}
+
+// TestAZeroConnectTimeoutStillReadsTheReply is the reproduction of
+// "tlsanalyzer 127.0.0.1:8080 --timeout 1 misdescribes a plain HTTP server".
+// The command derived a connect timeout of 0 from --timeout 1, and
+// noHandshakeError turned it into a deadline that had already passed, so its
+// handshake failed with an i/o timeout before the server's reply was read and
+// the message said the host might not speak TLS or might accept nothing this
+// scanner offers. The scan's other dials read 0 as no timeout, and so does this
+// one.
+func TestAZeroConnectTimeoutStillReadsTheReply(t *testing.T) {
+	port := startNonTLSServer(t)
+
+	cfg := localScanConfig()
+	cfg.ConnectTimeout = 0
+	ctx, cancel := context.WithTimeout(context.Background(), 30*time.Second)
+	defer cancel()
+	result, err := New(cfg).Scan(ctx, net.JoinHostPort("127.0.0.1", strconv.Itoa(port)))
+	if err == nil {
+		t.Fatalf("a plain HTTP server was scanned as TLS: %+v", result)
+	}
+
+	msg := err.Error()
+	if strings.Contains(msg, "i/o timeout") {
+		t.Errorf("a zero connect timeout became an expired deadline: %q", msg)
+	}
+	if !strings.Contains(msg, "does not appear to speak TLS") {
+		t.Errorf("with a zero connect timeout the error should say the service does not "+
+			"appear to speak TLS, as it does with the default, got %q", msg)
 	}
 }
 
@@ -158,30 +247,7 @@ func TestAServerSharingNoKeyExchangeGroupIsNotReportedUnreachable(t *testing.T) 
 // HTTP response. Its error says the service does not appear to speak TLS and
 // does not send the reader to check key exchange groups.
 func TestAServiceThatDoesNotSpeakTLSIsNamedAsSuch(t *testing.T) {
-	ln, err := net.Listen("tcp", "127.0.0.1:0")
-	if err != nil {
-		t.Fatalf("listen: %v", err)
-	}
-	t.Cleanup(func() { _ = ln.Close() })
-
-	go func() {
-		for {
-			conn, err := ln.Accept()
-			if err != nil {
-				return
-			}
-			go func(c net.Conn) {
-				defer func() { _ = c.Close() }()
-				_ = c.SetDeadline(time.Now().Add(5 * time.Second))
-				buf := make([]byte, 512)
-				_, _ = c.Read(buf)
-				_, _ = c.Write([]byte("HTTP/1.0 400 Bad Request\r\n\r\n"))
-			}(conn)
-		}
-	}()
-
-	addr := ln.Addr().(*net.TCPAddr)
-	msg := scanExpectingError(t, "127.0.0.1", addr.Port).Error()
+	msg := scanExpectingError(t, "127.0.0.1", startNonTLSServer(t)).Error()
 
 	if strings.Contains(msg, "host unreachable") {
 		t.Errorf("a service that accepted the TCP connection was reported as possibly "+
