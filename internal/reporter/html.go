@@ -55,8 +55,9 @@ func (r *HTMLReporter) Report(w io.Writer, result *types.ScanResult) error {
 		// deduction differently.
 		"describePenalties": describePenalties,
 		// The certificate verdict words and negotiatedLabel below are shared
-		// the same way. The policy, milestone and CNSA 2.0 marks below live in
-		// verdict_marks.go too, but only this page renders them.
+		// the same way, and so are policyStatus and the milestone legend and
+		// marks. policyIncompleteNote and the two CNSA 2.0 finding helpers
+		// live in verdict_marks.go too, but only this page renders them.
 		"toneClass":                    toneClass,
 		"formatDate":                   formatDate,
 		"certificateHeadline":          certificateHeadline,
