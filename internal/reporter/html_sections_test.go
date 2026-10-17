@@ -120,9 +120,9 @@ func TestHTMLRendersWhatTheTextReportCarries(t *testing.T) {
 }
 
 // TestHTMLDoesNotDrawAStatusItDoesNotKnowAsMet guards the default arm. The text
-// renderer starts every milestone at a green check and only changes it for the
-// statuses it lists, so a status added later prints as met. The page must not
-// copy that: an unknown word is shown as the word.
+// renderer used to start every milestone at a green check and only change it
+// for the statuses it listed, so a status added later printed as met. The page
+// must not do that: an unknown word is shown as the word.
 func TestHTMLDoesNotDrawAStatusItDoesNotKnowAsMet(t *testing.T) {
 	result := fullResult()
 	result.CNSA2Timeline.Milestones = []types.CNSA2Milestone{{

@@ -66,16 +66,28 @@ asks for:
 The score rule cannot be met with hybrid ML-KEM key exchange and a classical
 (RSA or ECDSA) certificate, which is the best a publicly trusted setup reaches
 today. That combination scores 64; `tlsanalyzer --help` shows how the score is
-made up. Two further steps each pass 70: pure ML-KEM key exchange scores 80,
-and a post-quantum (ML-DSA or SLH-DSA) certificate scores 84, but publicly
-trusted certificate authorities do not issue those certificates yet. So a
-server that already has hybrid key exchange fails this preset on the score
-rule. The Fix for that violation says the key exchange is already in place,
-quotes what each remaining step scores, and ends with an `openssl s_client`
-command that checks whether the server accepts pure ML-KEM key exchange. The
-report limits a Fix to 500 bytes, cutting a longer one at the end and marking
-the cut with `...`, so with a long host name or `--sni` name the end of that
-command is cut.
+made up. Two further steps each pass 70 on that scale: pure ML-KEM key
+exchange scores 80, and a post-quantum (ML-DSA or SLH-DSA) certificate scores
+84, but publicly trusted certificate authorities do not issue those
+certificates yet. This version of the scanner cannot detect pure ML-KEM key
+exchange: it never offers a pure ML-KEM group, because Go's TLS stack defines
+none. So enabling pure ML-KEM next to hybrid key exchange leaves the reported
+score at 64. A server that already has hybrid key exchange fails this preset
+on the score rule. The Fix for that violation says the key exchange is already
+in place, quotes what each remaining step scores, says that this version would
+still report 64 after the pure ML-KEM step, and ends with an `openssl s_client`
+command that checks whether the server accepts pure ML-KEM key exchange.
+
+The report limits a Fix to 500 bytes and cuts a longer one at the end, where
+the command is. So when the whole Fix would be longer, its sentences are left
+out, the note about certificate authorities first and the opening sentence
+last, and the command is kept whole. The command alone is longer than 500 bytes
+when the scan used no `--sni` and the host name is longer than 196 characters
+for a server with classical key exchange, or 200 for one with hybrid key
+exchange, on port 443 (one fewer on a five-digit port). Then its end is still
+cut and marked with `...`. A different `--sni` name adds its own length to the
+command: scanned as `127.0.0.1`, the command fit whole for every `--sni` name
+of up to 254 characters.
 
 Measured on version 0.4.1: the scanner could not complete a handshake with a
 server that offered only `MLKEM1024` key exchange, or with one that presented

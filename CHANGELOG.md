@@ -87,11 +87,42 @@ field out.
   post-quantum certificate would pass, and, when there is room, that publicly
   trusted CAs do not issue post-quantum certificates yet. It ends with an
   `openssl s_client` command that checks the server, using the same server name
-  the scan asked for with `--sni`. The report limits a Fix to 500 bytes. The
-  sentence about CAs is left out whenever it would take the Fix past that
-  limit, and when a long host name or `--sni` name makes the Fix longer than
-  500 bytes even without it, the end of that command is cut and marked with
-  `...`.
+  the scan asked for with `--sni`. The report limits a Fix to 500 bytes and
+  cuts from the end, so when the Fix would be longer its sentences are left
+  out, the one about CAs first and the opening sentence last, and the command
+  is kept whole. Only a command that is longer than 500 bytes on its own is
+  still cut and marked with `...`: scanned without `--sni`, that takes a host
+  name of more than 195 to 200 characters, depending on the key exchange and
+  the port.
+- The same Fix no longer quotes pure ML-KEM key exchange as a way to raise the
+  score without saying that this version cannot detect it. The scanner never
+  offers a pure ML-KEM group, because Go's TLS stack defines none, so a server
+  with a classical certificate that enables `MLKEM1024` next to hybrid key
+  exchange is still scored 64. The
+  Fix now says, for example, "pure ML-KEM key exchange would reach 80, but this
+  version cannot detect it and would still report 64", and `docs/policies.md`
+  says the same.
+- The text report now heads a policy evaluation with the same verdict as the
+  HTML report, SARIF and CBOM. An evaluation that skipped a rule and found no
+  violation was printed as `✓ COMPLIANT` in the text report while the other
+  formats said compliance was not established, and it now reads
+  `? COMPLIANCE NOT ESTABLISHED`. The CNSA 2.0 milestones in the text report
+  use the HTML report's marks and words, for example
+  `✓ met: TLS 1.3 Required (2030-01-02)`, and a milestone status the report
+  does not recognise is shown as its plain word instead of with the check mark
+  for met.
+- Built with Go 1.26 or later, the scanner no longer reports
+  `SecP256r1MLKEM768` and `SecP384r1MLKEM1024` as unsupported. Go 1.26
+  implements both groups but keeps them disabled for this module, so every
+  probe of them failed, and a server offering `SecP384r1MLKEM1024` next to
+  `X25519` was graded as classical only, with no scan coverage note. Both are
+  now listed as key exchange groups not probed, as a Go 1.25 build already
+  listed them, and the grade is still computed from the groups that were
+  probed. Release builds use Go 1.25 and are unchanged.
+- The HTML report's Score Breakdown table now stacks its cells on a narrow
+  screen like the other tables. Measured on a saved report at a 375px wide
+  viewport, the page was 444px wide and scrolled sideways, and it is now 375px
+  wide.
 - `docs/policies.md` now says what `cnsa-2.0-2030` asks for, and that its score
   rule cannot be met with hybrid key exchange and a classical certificate,
   which is the best a publicly trusted setup reaches today.

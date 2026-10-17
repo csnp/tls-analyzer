@@ -167,15 +167,14 @@ func wrapText(text string, width int) []string {
 }
 
 // milestoneLegend keys the milestone status glyphs, which appeared with no
-// explanation anywhere in the output or in --help.
+// explanation anywhere in the output or in --help. The entries are
+// milestoneStatuses, the legend the HTML page prints.
 func (r *TextReporter) milestoneLegend() string {
-	return fmt.Sprintf("%s met, %s partial, %s in progress, %s not met, %s not yet required",
-		r.color(colorGreen, "✓"),
-		r.color(colorYellow, "◐"),
-		r.color(colorBlue, "○"),
-		r.color(colorRed, "✗"),
-		r.color(colorDim, "—"),
-	)
+	entries := make([]string, 0, len(milestoneStatuses))
+	for _, s := range milestoneStatuses {
+		entries = append(entries, r.paint(s.Mark))
+	}
+	return strings.Join(entries, ", ")
 }
 
 // printScanWarnings renders the limits on what this scan could observe.
@@ -639,11 +638,11 @@ func (r *TextReporter) printPolicyResult(w io.Writer, pr *types.PolicyResult) {
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorCyan, "POLICY EVALUATION"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 
-	// Policy name and compliance status
-	complianceStatus := r.color(colorGreen+colorBold, "✓ COMPLIANT")
-	if !pr.Compliant {
-		complianceStatus = r.color(colorRed+colorBold, "✗ NON-COMPLIANT")
-	}
+	// Policy name and compliance status, in policyStatus's words, which the
+	// HTML page, SARIF and CBOM also carry. An evaluation that skipped rules and
+	// found no violation is headed COMPLIANCE NOT ESTABLISHED, not COMPLIANT
+	// with a pass mark.
+	complianceStatus := r.color(colorBold, r.paint(policyStatus(pr)))
 
 	// A verdict that skipped rules is about a smaller set than the policy
 	// defines, and the score is computed by deducting from 100, so a skipped
@@ -722,29 +721,12 @@ func (r *TextReporter) printCNSA2Timeline(w io.Writer, timeline *types.CNSA2Time
 	fmt.Fprintf(w, "    %s\n", r.color(colorBold, "Milestones:"))
 	fmt.Fprintf(w, "      %s\n", r.color(colorDim, "legend: "+r.milestoneLegend()))
 	for _, m := range timeline.Milestones {
-		statusIcon := r.color(colorGreen, "✓")
-		statusColor := colorGreen
-		switch m.Status {
-		case "compliant":
-			statusIcon = r.color(colorGreen, "✓")
-			statusColor = colorGreen
-		case "partial":
-			statusIcon = r.color(colorYellow, "◐")
-			statusColor = colorYellow
-		case "in-progress":
-			statusIcon = r.color(colorBlue, "○")
-			statusColor = colorBlue
-		case "non-compliant":
-			statusIcon = r.color(colorRed, "✗")
-			statusColor = colorRed
-		case "not-applicable":
-			statusIcon = r.color(colorDim, "—")
-			statusColor = colorDim
-		}
-
-		fmt.Fprintf(w, "      %s %s (%s)\n",
-			statusIcon,
-			r.color(statusColor, m.Name),
+		// milestoneMark is the mark the HTML page draws. A status it does not
+		// list is printed as its own word, where this loop used to start every
+		// milestone at the green check and draw an unlisted status as met.
+		fmt.Fprintf(w, "      %s: %s (%s)\n",
+			r.paint(milestoneMark(m.Status)),
+			m.Name,
 			m.Deadline.Format("2006-01-02"))
 
 		if len(m.Gap) > 0 {

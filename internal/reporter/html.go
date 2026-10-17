@@ -543,6 +543,7 @@ const htmlTemplate = `<!DOCTYPE html>
             .facts th, .facts td, .stack-table td { display: block; border-bottom: none; padding: 0.25rem 0; }
             .facts tr, .stack-table tr { display: block; border-bottom: 1px solid var(--color-border); padding: 0.5rem 0; }
             .stack-table thead { display: none; }
+            .stack-table td:empty { display: none; }
             .stack-table td::before {
                 content: attr(data-label) ": ";
                 color: var(--color-text-dim);
@@ -599,46 +600,46 @@ const htmlTemplate = `<!DOCTYPE html>
             </div>
         </div>
 
-        <section>
+        <section id="score-breakdown">
             <h2>Score Breakdown</h2>
-            <table>
+            <table class="stack-table">
                 <thead>
                     <tr>
-                        <th>Category</th>
-                        <th>Score</th>
-                        <th>Details</th>
+                        <th scope="col">Category</th>
+                        <th scope="col">Score</th>
+                        <th scope="col">Details</th>
                     </tr>
                 </thead>
                 <tbody>
                     {{range .Grade.Factors}}
                     <tr>
-                        <td>{{.Category}}</td>
-                        <td>{{progressBar .Score .MaxScore}}</td>
-                        <td>{{.Details}}</td>
+                        <td data-label="Category">{{.Category}}</td>
+                        <td data-label="Score">{{progressBar .Score .MaxScore}}</td>
+                        <td data-label="Details">{{.Details}}</td>
                     </tr>
                     {{end}}
                     <tr>
-                        <td><strong>Dimension subtotal</strong></td>
-                        <td><strong>{{.Grade.DimensionScore}}/100</strong></td>
-                        <td>{{.Grade.DimensionPoints}} of {{.Grade.DimensionMaxPoints}} available points</td>
+                        <td data-label="Category"><strong>Dimension subtotal</strong></td>
+                        <td data-label="Score"><strong>{{.Grade.DimensionScore}}/100</strong></td>
+                        <td data-label="Details">{{.Grade.DimensionPoints}} of {{.Grade.DimensionMaxPoints}} available points</td>
                     </tr>
                     <tr>
-                        <td><strong>Vulnerability penalty</strong></td>
+                        <td data-label="Category"><strong>Vulnerability penalty</strong></td>
                         {{if not .Grade.VulnerabilitiesAssessed}}
-                        <td><strong>not measured</strong></td>
-                        <td>Vulnerability checks were skipped, so the score below is an upper bound and is not comparable with a full scan.</td>
+                        <td data-label="Score"><strong>not measured</strong></td>
+                        <td data-label="Details">Vulnerability checks were skipped, so the score below is an upper bound and is not comparable with a full scan.</td>
                         {{else if .Grade.VulnerabilityPenalty}}
-                        <td><strong>-{{.Grade.VulnerabilityPenalty}}</strong></td>
-                        <td>{{describePenalties .Grade.Penalties}}</td>
+                        <td data-label="Score"><strong>-{{.Grade.VulnerabilityPenalty}}</strong></td>
+                        <td data-label="Details">{{describePenalties .Grade.Penalties}}</td>
                         {{else}}
-                        <td><strong>none</strong></td>
-                        <td>No vulnerability findings deducted points.</td>
+                        <td data-label="Score"><strong>none</strong></td>
+                        <td data-label="Details">No vulnerability findings deducted points.</td>
                         {{end}}
                     </tr>
                     <tr>
-                        <td><strong>TLS Security score</strong></td>
-                        <td><strong>{{.Grade.Score}}/100</strong></td>
-                        <td>{{if .Grade.PenaltyFloored}}The penalty exceeded the subtotal, so the score is held at 0.{{end}}</td>
+                        <td data-label="Category"><strong>TLS Security score</strong></td>
+                        <td data-label="Score"><strong>{{.Grade.Score}}/100</strong></td>
+                        <td data-label="Details">{{if .Grade.PenaltyFloored}}The penalty exceeded the subtotal, so the score is held at 0.{{end}}</td>
                     </tr>
                 </tbody>
             </table>
