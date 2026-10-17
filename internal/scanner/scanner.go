@@ -341,9 +341,11 @@ func (s *Scanner) noHandshakeError(ctx context.Context, host string, port int) e
 	addr := net.JoinHostPort(host, strconv.Itoa(port))
 	conn, err := (&net.Dialer{Timeout: s.config.ConnectTimeout}).DialContext(ctx, "tcp", addr)
 	if err != nil {
+		// addr, as in the messages below. Written from host and port, an IPv6
+		// address lost its brackets and its port read as part of it: ::1:1.
 		return fmt.Errorf(
-			"no TLS connection could be established to %s:%d (host unreachable, "+
-				"port closed, or not speaking TLS)", host, port)
+			"no TLS connection could be established to %s (host unreachable, "+
+				"port closed, or not speaking TLS)", addr)
 	}
 	defer func() { _ = conn.Close() }()
 

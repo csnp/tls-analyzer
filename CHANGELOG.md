@@ -214,6 +214,12 @@ field out.
   and failed at once, as on Ubuntu in CI. The test now writes the target from
   the address and interface it bound to, as a user does, and takes only the
   port from the listener.
+- **The error for a target that no TCP connection could be made to writes an
+  IPv6 address in brackets.** `tlsanalyzer '[::1]:1'` said "no TLS connection
+  could be established to ::1:1", where the port reads as part of the address,
+  and now names `[::1]:1`. A zone-scoped address keeps its brackets the same
+  way: `[fe80::1%lo0]:9` was written `fe80::1%lo0:9`. `127.0.0.1:1` and
+  `localhost:1` are written as before.
 
 ## [0.4.1] - 2026-08-05
 
