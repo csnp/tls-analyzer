@@ -109,15 +109,15 @@ Sample terminal output:
 
     Milestones:
       legend: ✓ met, ◐ partial, ○ in progress, ✗ not met, — not yet required
-      ○ Preparation Phase (2025-12-31)
-      ✓ New NSS Systems (2027-01-01)
-      ◐ TLS 1.3 Required (2030-01-02)
+      ○ in progress: Preparation Phase (2025-12-31)
+      ✓ met: New NSS Systems (2027-01-01)
+      ◐ partial: TLS 1.3 Required (2030-01-02)
          └─ Legacy protocol still enabled: TLS 1.2
          └─ Legacy protocol still enabled: TLS 1.1
          └─ Legacy protocol still enabled: TLS 1.0
-      — Legacy System Update (2033-01-01)
+      — not yet required: Legacy System Update (2033-01-01)
          └─ PQC certificates not yet available
-      — Full PQC Transition (2035-01-01)
+      — not yet required: Full PQC Transition (2035-01-01)
          └─ PQC certificates not yet available
 
 ───────────────────────────────────────────────────────────────

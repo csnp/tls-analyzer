@@ -565,6 +565,16 @@ func toolchainSupportsGroup(id tls.CurveID) bool {
 	return !strings.HasPrefix(id.String(), "CurveID(")
 }
 
+// buildOffersGroup reports whether this build's TLS client puts a group in its
+// ClientHello when asked to. Naming a group is not enough: Go 1.26 names
+// SecP256r1MLKEM768 and SecP384r1MLKEM1024 but leaves them out for a module that
+// declares go 1.25 (GODEBUG tlssecpmlkem=0), so every probe of them failed and a
+// server offering one was reported as not supporting it, with no coverage note.
+// hybridGroupsNotOffered reads a real ClientHello for that.
+func buildOffersGroup(id tls.CurveID) bool {
+	return toolchainSupportsGroup(id) && !slices.Contains(hybridGroupsNotOffered(), tlsGroups[id].name)
+}
+
 // probeKeyExchangeGroups determines which key exchange groups the server
 // actually supports, by offering exactly one group per handshake. This reports
 // server capability rather than only the group this client happened to
@@ -594,7 +604,7 @@ func (s *Scanner) probeKeyExchangeGroups(ctx context.Context, host string, port 
 
 	var wg sync.WaitGroup
 	for i, id := range candidates {
-		if !toolchainSupportsGroup(id) {
+		if !buildOffersGroup(id) {
 			info := tlsGroups[id]
 			results[i] = probeResult{skipped: info.name}
 			continue

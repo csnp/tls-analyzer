@@ -15,12 +15,12 @@ import (
 // given the sections the text report has, so each one was written down here
 // rather than copied into the template.
 //
-// The policy status, the milestone legend and the CNSA 2.0 algorithm tones
-// below are rendered by the HTML page alone, and the policy status words by
-// SARIF and CBOM. The text report still words its own policy status, in
-// printPolicyResult, and its own milestone legend and marks, in
-// printCNSA2Timeline and milestoneLegend, so for those the text report can
-// differ from the page.
+// The policy status and the milestone legend and marks below are rendered by
+// both the text report and the HTML page, and the policy status words by SARIF
+// and CBOM. The text report used to word its own policy status and draw its
+// own milestone marks, and headed an evaluation that skipped rules COMPLIANT
+// with a pass mark while the page said compliance was not established. The
+// CNSA 2.0 algorithm tones are still the HTML page's alone.
 
 // tone is what a verdict means, not what colour it is. Each renderer maps it to
 // its own palette.
@@ -132,9 +132,8 @@ const (
 	policyStatusNotEstablished = "compliance not established"
 )
 
-// policyStatus is the headline verdict of a policy evaluation as the HTML page
-// shows it. The text report heads its policy section in printPolicyResult and
-// does not call this.
+// policyStatus is the headline verdict of a policy evaluation as the text
+// report and the HTML page show it.
 //
 // An evaluation that skipped rules and found no violation has not established
 // compliance, only that the part of the policy that ran was satisfied, so

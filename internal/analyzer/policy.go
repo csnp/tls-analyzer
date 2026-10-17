@@ -1679,12 +1679,19 @@ var (
 // scanner.AssessQuantumRisk, so a change to the weights or the dimension scores
 // in quantum.go changes this text with it.
 //
+// The scanner cannot detect pure ML-KEM key exchange. It never offers a pure
+// ML-KEM group, because Go's crypto/tls defines none, so a server that also
+// accepts MLKEM1024 is scored as it was. The step that names pure ML-KEM
+// therefore also says what this version would still report. Quoting its score
+// alone sent the reader after a change this tool cannot see.
+//
 // The report caps a Fix at sanitize.MaxReportDetail bytes and cuts from the
-// end, where the Verify is. So the note on certificate availability, which the
-// report's Recommended Action line also carries once the key exchange is hybrid
-// or pure ML-KEM, is left out when it would push the Fix past the cap. Nothing
-// else is shortened: a host name long enough to push the Fix past the cap
-// without the note still has the end of the Verify cut.
+// end, where the Verify is. So when the whole Fix is longer than the cap, its
+// sentences are left out in the order quantumFix gives, starting with the note
+// on certificate availability, which the report's Recommended Action line also
+// carries once the key exchange is hybrid or pure ML-KEM. The Verify itself is
+// never shortened: one that is longer than the cap on its own still has its end
+// cut.
 func (e *PolicyEvaluator) quantumScoreRemediation(result *types.ScanResult, minimum int) string {
 	hasHybrid, hasPure := false, false
 	for _, ke := range result.KeyExchanges {
@@ -1698,18 +1705,20 @@ func (e *PolicyEvaluator) quantumScoreRemediation(result *types.ScanResult, mini
 	current := result.QuantumRisk.Score
 	certificateDone := postureScore(result, nil, true) <= postureScore(result, nil, false)
 
-	var head, verify string
+	var fix quantumFix
 	from := result // the posture the remaining steps are counted from
 	switch {
 	case !hasHybrid && !hasPure:
 		withHybrid := postureScore(result, &hybridMLKEMKeyExchange, false)
-		head = fmt.Sprintf("Enable hybrid ML-KEM key exchange first (for example %s); with this "+
+		fix.head = fmt.Sprintf("Enable hybrid ML-KEM key exchange first (for example %s); with this "+
 			"certificate that raises the score from %d to %d.", hybridMLKEMKeyExchange.Name, current, withHybrid)
-		verify = "Verify hybrid ML-KEM support: " + e.opensslGroupCheck(result, hybridMLKEMKeyExchange.Name)
+		fix.shortHead = "Enable hybrid ML-KEM key exchange."
+		fix.verify = "Verify hybrid ML-KEM support: " + e.opensslGroupCheck(result, hybridMLKEMKeyExchange.Name)
 		if withHybrid >= minimum {
-			return head + " " + verify
+			return fix.String()
 		}
-		head += fmt.Sprintf(" That is still below the minimum of %d. From there,", minimum)
+		fix.shortfall = fmt.Sprintf("That is still below the minimum of %d.", minimum)
+		fix.stepsFrom = "From there, "
 		from = &types.ScanResult{
 			KeyExchanges: append(append([]types.KeyExchange(nil), result.KeyExchanges...), hybridMLKEMKeyExchange),
 			Certificate:  result.Certificate,
@@ -1721,53 +1730,127 @@ func (e *PolicyEvaluator) quantumScoreRemediation(result *types.ScanResult, mini
 		}
 		switch {
 		case certificateDone:
-			head = fmt.Sprintf("%s ML-KEM key exchange and a post-quantum certificate are already in "+
+			fix.head = fmt.Sprintf("%s ML-KEM key exchange and a post-quantum certificate are already in "+
 				"place; the score is %d.", kind, current)
+			fix.shortHead = fmt.Sprintf("%s ML-KEM key exchange and a post-quantum certificate are "+
+				"already in place.", kind)
 		case result.Certificate == nil:
-			head = fmt.Sprintf("%s ML-KEM key exchange is already in place; with no certificate "+
+			fix.head = fmt.Sprintf("%s ML-KEM key exchange is already in place; with no certificate "+
 				"recorded it scores %d.", kind, current)
 		default:
-			head = fmt.Sprintf("%s ML-KEM key exchange is already in place; with a classical "+
+			fix.head = fmt.Sprintf("%s ML-KEM key exchange is already in place; with a classical "+
 				"certificate it scores %d.", kind, current)
 		}
-		verify = "Verify pure ML-KEM support: " + e.opensslGroupCheck(result, "MLKEM1024")
+		if fix.shortHead == "" {
+			fix.shortHead = fmt.Sprintf("%s ML-KEM key exchange is already in place.", kind)
+		}
+		fix.verify = "Verify pure ML-KEM support: " + e.opensslGroupCheck(result, "MLKEM1024")
 	}
 
 	// What each step not yet taken would bring the score to.
-	var steps []string
 	reachesMinimum := false
 	if !hasPure {
 		score := postureScore(from, &pureMLKEMKeyExchange, false)
 		reachesMinimum = reachesMinimum || score >= minimum
-		steps = append(steps, fmt.Sprintf("pure ML-KEM key exchange would reach %d", score))
+		fix.pureStep = fmt.Sprintf("pure ML-KEM key exchange would reach %d, but this version "+
+			"cannot detect it and would still report %d", score, postureScore(from, nil, false))
 	}
 	if !certificateDone {
 		score := postureScore(from, nil, true)
 		reachesMinimum = reachesMinimum || score >= minimum
-		steps = append(steps, fmt.Sprintf("a post-quantum certificate would reach %d", score))
+		fix.certificateStep = fmt.Sprintf("a post-quantum certificate would reach %d", score)
+		// The certificate step cannot be taken at will. The assessment already
+		// says why, so quote its words rather than make a second claim about CAs.
+		fix.note = strings.ToUpper(scanner.QuantumCertificateAvailability[:1]) +
+			scanner.QuantumCertificateAvailability[1:] + "."
 	}
-	text := head
-	if len(steps) > 0 {
-		sentence := strings.Join(steps, ", and ") + "."
-		if from == result {
-			sentence = strings.ToUpper(sentence[:1]) + sentence[1:]
-		}
-		text += " " + sentence
-	}
-	if len(steps) == 2 && !reachesMinimum {
-		text += fmt.Sprintf(" Only both together meet the minimum of %d, reaching %d.",
+	if fix.pureStep != "" && fix.certificateStep != "" && !reachesMinimum {
+		fix.both = fmt.Sprintf("Only both together meet the minimum of %d, reaching %d.",
 			minimum, postureScore(from, &pureMLKEMKeyExchange, true))
 	}
-	// The certificate step cannot be taken at will. The assessment already says
-	// why, so quote its words rather than make a second claim about CAs.
-	if !certificateDone {
-		note := strings.ToUpper(scanner.QuantumCertificateAvailability[:1]) +
-			scanner.QuantumCertificateAvailability[1:] + "."
-		if len(text)+len(note)+len(verify)+2 <= sanitize.MaxReportDetail {
-			text += " " + note
+	return fix.String()
+}
+
+// quantumFix is the quantum.minQuantumScore Fix as its parts, so that the parts
+// can give way to the Verify when the whole does not fit the report cap. An
+// empty part is not rendered.
+type quantumFix struct {
+	head            string // what is in place, or the first step to take
+	shortHead       string // head without its score, for when head does not fit
+	shortfall       string // that the first step alone is not enough
+	stepsFrom       string // the posture the steps below start from
+	pureStep        string // pure ML-KEM key exchange and what would still be reported
+	certificateStep string // a post-quantum certificate
+	both            string // that only both steps together meet the minimum
+	note            string // why the certificate step cannot be taken today
+	verify          string // the openssl command, which is never left out
+}
+
+// The parts of a quantumFix in the order they are left out, first to last,
+// when the Fix is longer than the report cap. The certificate note goes first
+// because the assessment's Recommended Action line carries the same words, and
+// the certificate step before the pure ML-KEM step because a hybrid server's
+// Verify checks pure ML-KEM support. The pure ML-KEM step carries the score
+// this version would still report, so the step is never named without it.
+// The head gives way to its short form, which says what to do without the
+// score, and that goes last.
+const (
+	fixNote = iota
+	fixBoth
+	fixCertificateStep
+	fixPureStep
+	fixShortfall
+	fixHead
+	fixShortHead
+	fixParts
+)
+
+// String renders the Fix with as many of its parts as fit the report cap,
+// leaving them out in the order above. The Verify is always the end of it, so a
+// Fix the cap still cuts is one whose Verify alone is longer than the cap.
+func (f quantumFix) String() string {
+	for dropped := 0; dropped < fixParts; dropped++ {
+		if text := f.render(dropped); len(text) <= sanitize.MaxReportDetail {
+			return text
 		}
 	}
-	return text + " " + verify
+	return f.render(fixParts)
+}
+
+// render joins the parts, leaving out the first dropped parts in the order
+// above.
+func (f quantumFix) render(dropped int) string {
+	kept := func(part int) bool { return part >= dropped }
+
+	var sentences []string
+	switch {
+	case f.head != "" && kept(fixHead):
+		sentences = append(sentences, f.head)
+	case f.shortHead != "" && kept(fixShortHead):
+		sentences = append(sentences, f.shortHead)
+	}
+	if f.shortfall != "" && kept(fixShortfall) {
+		sentences = append(sentences, f.shortfall)
+	}
+	var steps []string
+	if f.pureStep != "" && kept(fixPureStep) {
+		steps = append(steps, f.pureStep)
+	}
+	if f.certificateStep != "" && kept(fixCertificateStep) {
+		steps = append(steps, f.certificateStep)
+	}
+	if len(steps) > 0 {
+		// One sentence, so that "From there" covers every step.
+		sentence := f.stepsFrom + strings.Join(steps, "; ") + "."
+		sentences = append(sentences, strings.ToUpper(sentence[:1])+sentence[1:])
+	}
+	if f.both != "" && kept(fixBoth) && len(steps) == 2 {
+		sentences = append(sentences, f.both)
+	}
+	if f.note != "" && kept(fixNote) {
+		sentences = append(sentences, f.note)
+	}
+	return strings.Join(append(sentences, f.verify), " ")
 }
 
 // postureScore asks the grader what the scanned posture scores with one key
