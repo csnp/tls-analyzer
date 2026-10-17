@@ -11,6 +11,8 @@ import (
 	"strings"
 	"testing"
 	"time"
+
+	"github.com/csnp/qramm-tls-analyzer/internal/sanitize"
 )
 
 // These tests cover a build whose TLS client can offer none of the hybrid
@@ -126,6 +128,29 @@ func TestFIPSChildScanNamesTheHybridGroupsItCannotOffer(t *testing.T) {
 			t.Errorf("the handshake failure does not name %s, which this build cannot "+
 				"offer: %q", name, msg)
 		}
+	}
+
+	// The same server through a 39-character spelling of 127.0.0.1, read as the
+	// CLI prints it. The address is written in the headline and in each of the
+	// three commands, so the CLI's cut fell after the second command and the
+	// third group went unnamed. A long address takes no name lookup this way.
+	long := "0000:0000:0000:0000:0000:ffff:127.0.0.1"
+	addr := net.JoinHostPort(long, strconv.Itoa(port))
+	printed := sanitize.WrapError(scanExpectingError(t, long, port)).Error()
+	t.Logf("error for %s as the CLI prints it, %d bytes: %s", addr, len(printed), printed)
+	for _, name := range hybridNames {
+		if !strings.Contains(printed, name) {
+			t.Errorf("the handshake failure for %s, as the CLI prints it, does not name %s, "+
+				"which this build cannot offer: %q", addr, name, printed)
+		}
+	}
+	whole, cut := opensslCommands(printed, sanitize.ShellWord(addr), hybridNames)
+	if cut != "" {
+		t.Errorf("the CLI's cut ends the error inside an openssl command: %q", cut)
+	}
+	if len(whole) == 0 {
+		t.Errorf("the error for %s gives no openssl command, though one fits within the %d "+
+			"bytes the CLI prints: %q", addr, sanitize.MaxReportDetail, printed)
 	}
 
 	host, port = startTLSServerWithConfig(t, &tls.Config{
