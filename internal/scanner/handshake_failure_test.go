@@ -40,6 +40,9 @@ import (
 //     already passed: TestAZeroConnectTimeoutStillReadsTheReply.
 //   - the openssl command names every missing group after one -groups:
 //     TestAServerSharingNoKeyExchangeGroupIsNotReportedUnreachable.
+//   - the openssl commands give the address unquoted, as net.JoinHostPort
+//     renders it: TestTheOpensslCommandsQuoteAnIPv6Address. This one was
+//     observed: that test failed on the earlier code with the address bare.
 //   - hybridGroupsNotOffered returns nil, as it does when no ClientHello was
 //     read: TestHybridGroupsNotOfferedMatchesAHandshake, on any build that does
 //     not offer the P-curve hybrids.
@@ -59,6 +62,14 @@ func startTLSServerWithConfig(t *testing.T, cfg *tls.Config) (host string, port 
 	if err != nil {
 		t.Fatalf("listen: %v", err)
 	}
+	return serveTLS(t, ln)
+}
+
+// serveTLS runs the server side of a handshake on every connection ln accepts
+// until the test ends, and returns the host and port ln listens on.
+func serveTLS(t *testing.T, ln net.Listener) (host string, port int) {
+	t.Helper()
+
 	t.Cleanup(func() { _ = ln.Close() })
 
 	go func() {
@@ -213,6 +224,63 @@ func TestAServerSharingNoKeyExchangeGroupIsNotReportedUnreachable(t *testing.T) 
 	}
 	if len(notOffered) > 0 && !strings.HasSuffix(msg, "-groups "+notOffered[len(notOffered)-1]) {
 		t.Errorf("error should end with the last group's openssl command, got %q", msg)
+	}
+}
+
+// TestTheOpensslCommandsQuoteAnIPv6Address is the reproduction of "suggested
+// openssl command for an IPv6 target does not run when pasted into zsh": the
+// server of TestAServerSharingNoKeyExchangeGroupIsNotReportedUnreachable,
+// listening on ::1. net.JoinHostPort brackets an IPv6 address, and zsh reads
+// the brackets as a glob pattern, so pasting either command printed "no
+// matches found: [::1]:56128" and openssl did not run.
+func TestTheOpensslCommandsQuoteAnIPv6Address(t *testing.T) {
+	notBefore, notAfter := validFrom()
+	cert := issueLeaf(t, []string{"localhost"}, nil, notBefore, notAfter)
+
+	ln, err := tls.Listen("tcp", "[::1]:0", &tls.Config{
+		Certificates:     []tls.Certificate{cert.serving},
+		MinVersion:       tls.VersionTLS13,
+		CurvePreferences: []tls.CurveID{groupSecP256r1MLKEM768},
+	})
+	if err != nil {
+		t.Skipf("this machine has no IPv6 loopback address to listen on: %v", err)
+	}
+	host, port := serveTLS(t, ln)
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+
+	probe, err := tls.DialWithDialer(&net.Dialer{Timeout: 5 * time.Second}, "tcp", addr,
+		&tls.Config{InsecureSkipVerify: true})
+	if err == nil {
+		_ = probe.Close()
+		t.Skip("this build's TLS client completes a handshake using SecP256r1MLKEM768, " +
+			"so the server in this test is scannable")
+	}
+
+	msg := scanExpectingError(t, host, port).Error()
+	t.Logf("error for %s, %d bytes: %s", addr, len(msg), msg)
+
+	notOffered := hybridGroupsNotOffered()
+	if len(notOffered) == 0 {
+		t.Fatalf("this build cannot negotiate SecP256r1MLKEM768, the server's only group, "+
+			"yet the error gives no openssl command to check it: %q", msg)
+	}
+	for _, group := range notOffered {
+		want := "openssl s_client -connect '" + addr + "' -groups " + group
+		if !strings.Contains(msg, want) {
+			t.Errorf("error should give %q, with the address quoted so that zsh does not "+
+				"read its brackets as a glob, got %q", want, msg)
+		}
+	}
+	if strings.Contains(msg, "-connect "+addr) {
+		t.Errorf("an openssl command in the error gives the address unquoted, which zsh "+
+			"refuses with \"no matches found: %s\": %q", addr, msg)
+	}
+
+	// Quoting adds two bytes to each command, and the CLI cuts a scan error
+	// longer than sanitize.MaxReportDetail bytes from the end.
+	if len(msg) > sanitize.MaxReportDetail {
+		t.Errorf("error is %d bytes, over the %d the CLI prints, so its end is cut off: %q",
+			len(msg), sanitize.MaxReportDetail, msg)
 	}
 }
 

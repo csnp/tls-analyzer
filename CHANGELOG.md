@@ -202,6 +202,17 @@ field out.
   address 127.0.0.1 and a five-digit port is 398 bytes. The CLI prints up to 500,
   and the address appears three times, so a host and port of up to 49
   characters fit.
+- **The `openssl s_client` commands in that error quote an IPv6 address**, for
+  example `-connect '[::1]:56128'`. The address was printed bare, and zsh, the
+  default shell on macOS, reads its brackets as a glob pattern, so it answered
+  either command with `no matches found:` and the address, and openssl did not
+  run. Measured with OpenSSL 4.0.3 against a local server on `::1` that offers
+  only `SecP256r1MLKEM768`, both commands now run as printed in zsh and in
+  bash, and the first reports `Negotiated TLS1.3 group: SecP256r1MLKEM768`. A
+  zone-scoped address such as `[fe80::1%en0]:8443` is quoted the same way, and
+  a host name or an IPv4 address is printed as before. The quotes add 4 bytes:
+  against that server the message for a five-digit port is 390 bytes, so an
+  IPv6 address and port of up to 47 characters fit.
 - **A port that is not a number from 1 to 65535 is refused without quoting it.**
   The error used to repeat the text after the colon, which on a `key: value` line
   is the value.

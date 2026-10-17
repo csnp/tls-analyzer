@@ -144,3 +144,29 @@ type wrappedError struct{ err error }
 func (e wrappedError) Error() string { return ForReport(e.err.Error(), MaxReportDetail) }
 
 func (e wrappedError) Unwrap() error { return e.err }
+
+// ShellWord renders invocation text as a single shell word. The target and the
+// --sni value are untrusted (the third source in the package comment), and the
+// report and the scan error print commands built from them to be pasted, so
+// text that is empty or holds anything other than ASCII letters and digits,
+// '.', '-', '_' and ':' is single-quoted. That includes the brackets of an IPv6
+// address, which zsh reads as a glob.
+//
+// It lives here, with the other renderers of untrusted text, because the
+// analyzer and the scanner both print such a command and the scanner cannot
+// import the analyzer, which imports it.
+func ShellWord(s string) string {
+	s = ForReport(s, MaxReportDetail)
+	plain := s != ""
+	for _, r := range s {
+		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
+			r == '.' || r == '-' || r == '_' || r == ':') {
+			plain = false
+			break
+		}
+	}
+	if plain {
+		return s
+	}
+	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
+}

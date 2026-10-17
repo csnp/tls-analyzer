@@ -1905,31 +1905,11 @@ func (e *PolicyEvaluator) opensslGroupCheck(result *types.ScanResult, host, grou
 	if name == "" {
 		name = result.Host
 	}
-	cmd := "openssl s_client -connect " + shellWord(net.JoinHostPort(host, strconv.Itoa(result.Port)))
+	cmd := "openssl s_client -connect " + sanitize.ShellWord(net.JoinHostPort(host, strconv.Itoa(result.Port)))
 	if net.ParseIP(strings.Trim(name, "[]")) == nil {
-		cmd += " -servername " + shellWord(name)
+		cmd += " -servername " + sanitize.ShellWord(name)
 	}
 	return cmd + " -groups " + group + " </dev/null"
-}
-
-// shellWord renders invocation text as a single shell word. The target and the
-// --sni value are untrusted (see package sanitize), and the report offers this
-// command to be pasted, so anything beyond a plain host name is single-quoted.
-// That includes the brackets of an IPv6 address, which zsh reads as a glob.
-func shellWord(s string) string {
-	s = sanitize.ForReport(s, sanitize.MaxReportDetail)
-	plain := s != ""
-	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
-			r == '.' || r == '-' || r == '_' || r == ':') {
-			plain = false
-			break
-		}
-	}
-	if plain {
-		return s
-	}
-	return "'" + strings.ReplaceAll(s, "'", `'\''`) + "'"
 }
 
 func (e *PolicyEvaluator) calculateScore(pr *types.PolicyResult, policy *types.Policy) int {
