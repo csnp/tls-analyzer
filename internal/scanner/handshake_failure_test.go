@@ -27,6 +27,10 @@ import (
 //     observed: that test failed on the earlier code with the message above.
 //   - noHandshakeError returns the handshake message without dialling TCP
 //     first: TestAClosedPortIsStillReportedUnreachable.
+//   - the unreachable message writes the host and the port with "%s:%d"
+//     instead of the joined address:
+//     TestAnUnreachableIPv6AddressIsWrittenInBrackets. This one was observed:
+//     both of its cases failed on code that did so.
 //   - the "remote error" case in noHandshakeError removed, so a TLS alert gets
 //     the wording for an unclassified failure, which says the server may not
 //     speak TLS: TestAServerSharingNoKeyExchangeGroupIsNotReportedUnreachable.
@@ -280,6 +284,47 @@ func TestAClosedPortIsStillReportedUnreachable(t *testing.T) {
 	}
 	if strings.Contains(msg, "TLS handshake with") {
 		t.Errorf("a closed port was described as a failed TLS handshake: %q", msg)
+	}
+}
+
+// TestAnUnreachableIPv6AddressIsWrittenInBrackets is the reproduction of
+// "tlsanalyzer '[::1]:1' --timeout 2 prints no TLS connection could be
+// established to ::1:1". The message for a port that refused the TCP
+// connection wrote the host and the port with "%s:%d", so an IPv6 address lost
+// its brackets and its port read as part of the address. Each case is skipped
+// where this machine has no such address that accepts a listener.
+func TestAnUnreachableIPv6AddressIsWrittenInBrackets(t *testing.T) {
+	t.Run("loopback", func(t *testing.T) {
+		ln, err := net.Listen("tcp", "[::1]:0")
+		if err != nil {
+			t.Skipf("the IPv6 loopback address accepts no listener here: %v", err)
+		}
+		port := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+
+		checkUnreachableAddress(t, "::1", port)
+	})
+
+	t.Run("zone-scoped link-local", func(t *testing.T) {
+		notBefore, notAfter := validFrom()
+		cert := issueLeaf(t, []string{"localhost"}, nil, notBefore, notAfter)
+		ln, host := listenOnALinkLocalAddress(t, &tls.Config{Certificates: []tls.Certificate{cert.serving}})
+		port := ln.Addr().(*net.TCPAddr).Port
+		_ = ln.Close()
+
+		checkUnreachableAddress(t, host, port)
+	})
+}
+
+// checkUnreachableAddress scans a port nothing listens on and checks that the
+// unreachable message names the address as net.JoinHostPort writes it.
+func checkUnreachableAddress(t *testing.T, host string, port int) {
+	t.Helper()
+
+	msg := scanExpectingError(t, host, port).Error()
+	addr := net.JoinHostPort(host, strconv.Itoa(port))
+	if !strings.Contains(msg, "no TLS connection could be established to "+addr+" (") {
+		t.Errorf("the unreachable message should name the address as %s, got %q", addr, msg)
 	}
 }
 
