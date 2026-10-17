@@ -393,10 +393,13 @@ func (s *Scanner) noHandshakeError(ctx context.Context, host string, port int) e
 	// One command per group. s_client negotiates one of the groups named after
 	// -groups, so a command naming two says nothing about the one it did not
 	// pick, which is why docs/how-it-works.md gives each group its own command.
+	// An IPv6 address is quoted, since zsh reads its brackets as a glob and
+	// refuses the command.
 	if groups := hybridGroupsNotOffered(); len(groups) > 0 {
+		connect := sanitize.ShellWord(addr)
 		commands := make([]string, len(groups))
 		for i, group := range groups {
-			commands[i] = fmt.Sprintf("openssl s_client -connect %s -groups %s", addr, group)
+			commands[i] = fmt.Sprintf("openssl s_client -connect %s -groups %s", connect, group)
 		}
 		msg += " Check the key exchange groups this scanner does not offer, one command each: " +
 			strings.Join(commands, " and ")
