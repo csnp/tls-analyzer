@@ -409,14 +409,15 @@ func (s *Scanner) noHandshakeError(ctx context.Context, host string, port int) e
 // (GODEBUG tlssecpmlkem). The name a CurveID renders as shows only the first
 // case, so this has crypto/tls write a ClientHello and reads the groups in it.
 //
-// It returns nil when every hybrid group is offered and when no ClientHello
-// could be read, so a caller never names a group it did not observe missing.
+// It returns nil when every hybrid group is offered and when the result could
+// not be observed, so a caller never names a group it did not observe missing.
 var hybridGroupsNotOffered = sync.OnceValue(func() []string {
 	hybrids := []tls.CurveID{groupX25519MLKEM768, groupSecP256r1MLKEM768, groupSecP384r1MLKEM1024}
 
-	// X25519 keeps the preference list non-empty after crypto/tls drops the
-	// groups it will not offer, so a ClientHello is always written.
-	offered, ok := clientHelloGroups(append(slices.Clone(hybrids), tls.X25519))
+	// A client left with none of these groups writes no ClientHello, which
+	// clientHelloGroups reports as offering none of them. A filler group such as
+	// X25519 would not prevent that: FIPS 140-3 mode does not offer X25519.
+	offered, ok := clientHelloGroups(hybrids)
 	if !ok {
 		return nil
 	}
@@ -432,7 +433,10 @@ var hybridGroupsNotOffered = sync.OnceValue(func() []string {
 
 // clientHelloGroups returns the supported_groups a client configured with
 // prefs sends, read by an in-memory server that stops the handshake as soon as
-// the ClientHello arrives. ok is false when no ClientHello was read.
+// the ClientHello arrives. A client that returns without writing anything sends
+// no groups: crypto/tls does that when it will offer none of prefs ("tls: no
+// supported elliptic curves for ECDHE"). ok is false when the client wrote
+// something but no ClientHello was read.
 func clientHelloGroups(prefs []tls.CurveID) (groups []tls.CurveID, ok bool) {
 	clientSide, serverSide := net.Pipe()
 	defer func() { _ = clientSide.Close() }()
@@ -450,7 +454,8 @@ func clientHelloGroups(prefs []tls.CurveID) (groups []tls.CurveID, ok bool) {
 			return nil, errCaptured
 		},
 	})
-	client := tls.Client(clientSide, &tls.Config{
+	clientConn := &writeObserver{Conn: clientSide}
+	client := tls.Client(clientConn, &tls.Config{
 		InsecureSkipVerify: true,
 		MinVersion:         tls.VersionTLS13,
 		CurvePreferences:   prefs,
@@ -460,12 +465,34 @@ func clientHelloGroups(prefs []tls.CurveID) (groups []tls.CurveID, ok bool) {
 	go func() {
 		defer close(done)
 		_ = client.Handshake()
+		// Closing the client's end ends the server's read now. Left open, a
+		// client that gave up before writing kept the server waiting until the
+		// deadline.
+		_ = clientSide.Close()
 	}()
 	_ = server.Handshake()
 	_ = serverSide.Close()
 	<-done
 
+	if !ok && !clientConn.wrote {
+		return nil, true
+	}
 	return groups, ok
+}
+
+// writeObserver records whether anything was written to Conn, which tells a
+// client that gave up before sending a ClientHello from one whose ClientHello
+// was lost.
+type writeObserver struct {
+	net.Conn
+	wrote bool
+}
+
+func (w *writeObserver) Write(p []byte) (int, error) {
+	if len(p) > 0 {
+		w.wrote = true
+	}
+	return w.Conn.Write(p)
 }
 
 // probeProtocols checks which TLS versions are supported.

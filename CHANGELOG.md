@@ -120,6 +120,17 @@ field out.
   now listed as key exchange groups not probed, as a Go 1.25 build already
   listed them, and the grade is still computed from the groups that were
   probed. Release builds use Go 1.25 and are unchanged.
+- Run with `GODEBUG=fips140=on,tlsmlkem=0`, the scanner can offer none of the
+  hybrid key exchange groups, and its check for which groups it offers waited 5
+  seconds for a ClientHello that was never sent. A handshake failure then named
+  no groups, and a completed scan left `X25519MLKEM768`, `SecP256r1MLKEM768`
+  and `SecP384r1MLKEM1024` out of its results with no scan coverage note. The
+  check now ends when the client gives up. Measured with Go 1.26.3 against a
+  local server offering `X25519MLKEM768`, `X25519` and P-256, the scan took
+  0.01 seconds instead of 5.01 and lists the three groups as key exchange
+  groups not probed, and the grade did not change. Against one offering only
+  `X25519MLKEM768` and `X25519`, the handshake failure now names the three
+  groups.
 - The HTML report's Score Breakdown table now stacks its cells on a narrow
   screen like the other tables. Measured on a saved report at a 375px wide
   viewport, the page was 444px wide and scrolled sideways, and it is now 375px
