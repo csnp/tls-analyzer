@@ -81,13 +81,18 @@ command that checks whether the server accepts pure ML-KEM key exchange.
 The report limits a Fix to 500 bytes and cuts a longer one at the end, where
 the command is. So when the whole Fix would be longer, its sentences are left
 out, the note about certificate authorities first and the opening sentence
-last, and the command is kept whole. The command alone is longer than 500 bytes
+last, and the command is kept whole. The command names the host twice, after
+`-connect` and after `-servername`, so on its own it is longer than 500 bytes
 when the scan used no `--sni` and the host name is longer than 196 characters
 for a server with classical key exchange, or 200 for one with hybrid key
-exchange, on port 443 (one fewer on a five-digit port). Then its end is still
-cut and marked with `...`. A different `--sni` name adds its own length to the
-command: scanned as `127.0.0.1`, the command fit whole for every `--sni` name
-of up to 254 characters.
+exchange, on port 443 (one fewer on a five-digit port). Then the command
+connects to the IP address the scan resolved the host name to and names the
+host once, after `-servername`, and the sentences are fitted beside it again.
+In the tests, with an IPv4 address and with the longest IPv6 address text, at
+ports 443 and 65535, that kept the command whole for every host name length
+from 1 to 254 characters, with no `--sni` name and with a different 253-character
+one. Scanned as `127.0.0.1`, the command fit whole for every `--sni` name of up
+to 254 characters.
 
 Measured on version 0.4.1: the scanner could not complete a handshake with a
 server that offered only `MLKEM1024` key exchange, or with one that presented

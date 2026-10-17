@@ -90,10 +90,11 @@ field out.
   the scan asked for with `--sni`. The report limits a Fix to 500 bytes and
   cuts from the end, so when the Fix would be longer its sentences are left
   out, the one about CAs first and the opening sentence last, and the command
-  is kept whole. Only a command that is longer than 500 bytes on its own is
-  still cut and marked with `...`: scanned without `--sni`, that takes a host
-  name of more than 195 to 200 characters, depending on the key exchange and
-  the port.
+  is kept whole. The command names the host twice, so scanned without `--sni`
+  a host name of more than 195 to 200 characters, depending on the key exchange
+  and the port, made it longer than 500 bytes on its own, and its end was still
+  cut. Such a command now connects to the IP address the scan resolved the host
+  name to and names the host once, after `-servername`.
 - The same Fix no longer quotes pure ML-KEM key exchange as a way to raise the
   score without saying that this version cannot detect it. The scanner never
   offers a pure ML-KEM group, because Go's TLS stack defines none, so a server

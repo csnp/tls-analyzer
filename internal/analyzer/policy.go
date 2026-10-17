@@ -1689,9 +1689,10 @@ var (
 // end, where the Verify is. So when the whole Fix is longer than the cap, its
 // sentences are left out in the order quantumFix gives, starting with the note
 // on certificate availability, which the report's Recommended Action line also
-// carries once the key exchange is hybrid or pure ML-KEM. The Verify itself is
-// never shortened: one that is longer than the cap on its own still has its end
-// cut.
+// carries once the key exchange is hybrid or pure ML-KEM. A Verify that is
+// longer than the cap on its own is replaced by one that connects to the
+// address the scan resolved the host to, so a long host name is written once,
+// after -servername, rather than also after -connect.
 func (e *PolicyEvaluator) quantumScoreRemediation(result *types.ScanResult, minimum int) string {
 	hasHybrid, hasPure := false, false
 	for _, ke := range result.KeyExchanges {
@@ -1706,6 +1707,12 @@ func (e *PolicyEvaluator) quantumScoreRemediation(result *types.ScanResult, mini
 	certificateDone := postureScore(result, nil, true) <= postureScore(result, nil, false)
 
 	var fix quantumFix
+	verify := func(label, group string) {
+		fix.verify = label + e.opensslGroupCheck(result, result.Host, group)
+		if ip := net.ParseIP(result.IP); ip != nil && ip.String() != result.Host {
+			fix.verifyAtAddress = label + e.opensslGroupCheck(result, ip.String(), group)
+		}
+	}
 	from := result // the posture the remaining steps are counted from
 	switch {
 	case !hasHybrid && !hasPure:
@@ -1713,7 +1720,7 @@ func (e *PolicyEvaluator) quantumScoreRemediation(result *types.ScanResult, mini
 		fix.head = fmt.Sprintf("Enable hybrid ML-KEM key exchange first (for example %s); with this "+
 			"certificate that raises the score from %d to %d.", hybridMLKEMKeyExchange.Name, current, withHybrid)
 		fix.shortHead = "Enable hybrid ML-KEM key exchange."
-		fix.verify = "Verify hybrid ML-KEM support: " + e.opensslGroupCheck(result, hybridMLKEMKeyExchange.Name)
+		verify("Verify hybrid ML-KEM support: ", hybridMLKEMKeyExchange.Name)
 		if withHybrid >= minimum {
 			return fix.String()
 		}
@@ -1744,7 +1751,7 @@ func (e *PolicyEvaluator) quantumScoreRemediation(result *types.ScanResult, mini
 		if fix.shortHead == "" {
 			fix.shortHead = fmt.Sprintf("%s ML-KEM key exchange is already in place.", kind)
 		}
-		fix.verify = "Verify pure ML-KEM support: " + e.opensslGroupCheck(result, "MLKEM1024")
+		verify("Verify pure ML-KEM support: ", "MLKEM1024")
 	}
 
 	// What each step not yet taken would bring the score to.
@@ -1784,6 +1791,7 @@ type quantumFix struct {
 	both            string // that only both steps together meet the minimum
 	note            string // why the certificate step cannot be taken today
 	verify          string // the openssl command, which is never left out
+	verifyAtAddress string // verify connecting to the scanned address, for when verify alone does not fit
 }
 
 // The parts of a quantumFix in the order they are left out, first to last,
@@ -1806,12 +1814,21 @@ const (
 )
 
 // String renders the Fix with as many of its parts as fit the report cap,
-// leaving them out in the order above. The Verify is always the end of it, so a
-// Fix the cap still cuts is one whose Verify alone is longer than the cap.
+// leaving them out in the order above. The Verify is always the end of it. When
+// the Verify alone is longer than the cap, the parts are fitted again beside
+// verifyAtAddress, so a Fix the cap still cuts is one whose Verify is longer
+// than the cap in both forms, or that has no scanned address to connect to.
 func (f quantumFix) String() string {
-	for dropped := 0; dropped < fixParts; dropped++ {
-		if text := f.render(dropped); len(text) <= sanitize.MaxReportDetail {
-			return text
+	verifies := []string{f.verify}
+	if f.verifyAtAddress != "" {
+		verifies = append(verifies, f.verifyAtAddress)
+	}
+	for _, verify := range verifies {
+		f.verify = verify
+		for dropped := 0; dropped <= fixParts; dropped++ {
+			if text := f.render(dropped); len(text) <= sanitize.MaxReportDetail {
+				return text
+			}
 		}
 	}
 	return f.render(fixParts)
@@ -1875,18 +1892,20 @@ func postureScore(result *types.ScanResult, add *types.KeyExchange, postQuantumC
 	return scanner.AssessQuantumRisk(&posture).Score
 }
 
-// opensslGroupCheck renders an s_client command that completes a handshake only
-// if the server accepts the named group, asking for the same name the scan did.
+// opensslGroupCheck renders an s_client command that connects to host, the
+// scanned host or the address the scan resolved it to, and completes a
+// handshake only if the server accepts the named group, asking for the same
+// name the scan did.
 //
 // The scanner sends no SNI for an IP address, and s_client sends none for an IP
 // address given to -connect, so -servername is left out in that case rather
 // than sending one the scan never did.
-func (e *PolicyEvaluator) opensslGroupCheck(result *types.ScanResult, group string) string {
+func (e *PolicyEvaluator) opensslGroupCheck(result *types.ScanResult, host, group string) string {
 	name := e.ServerName
 	if name == "" {
 		name = result.Host
 	}
-	cmd := "openssl s_client -connect " + shellWord(net.JoinHostPort(result.Host, strconv.Itoa(result.Port)))
+	cmd := "openssl s_client -connect " + shellWord(net.JoinHostPort(host, strconv.Itoa(result.Port)))
 	if net.ParseIP(strings.Trim(name, "[]")) == nil {
 		cmd += " -servername " + shellWord(name)
 	}

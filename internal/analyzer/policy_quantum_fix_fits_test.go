@@ -47,6 +47,7 @@ type fixCase struct {
 	port        int
 	host        string
 	serverName  string // empty: the scan sent the host itself
+	ip          string // the address the scan resolved the host to; empty: none recorded
 }
 
 // fixFor evaluates the case and returns its quantum.minQuantumScore Fix, or ok
@@ -54,7 +55,7 @@ type fixCase struct {
 func fixFor(t *testing.T, c fixCase) (fix string, ok bool) {
 	t.Helper()
 	scan := quantumPostureScan([]types.KeyExchange{c.keyExchange}, "ECDSA")
-	scan.Host, scan.Port = c.host, c.port
+	scan.Host, scan.Port, scan.IP = c.host, c.port, c.ip
 	e := NewPolicyEvaluator()
 	e.ServerName = c.serverName
 	policy, found := e.GetPolicy(c.policy)
@@ -109,7 +110,7 @@ func TestQuantumScoreFixEndsWithTheWholeVerifyWheneverItFits(t *testing.T) {
 					} {
 						verify := expectedVerify(c)
 						if len(verify) > sanitize.MaxReportDetail {
-							continue // longer than the cap on its own; see the docs
+							continue // longer than the cap on its own; policy_quantum_fix_address_test.go
 						}
 						fix, fires := fixFor(t, c)
 						if !fires {
