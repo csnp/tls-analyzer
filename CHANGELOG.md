@@ -265,6 +265,16 @@ field out.
   and now names `[::1]:1`. A zone-scoped address keeps its brackets the same
   way: `[fe80::1%lo0]:9` was written `fe80::1%lo0:9`. `127.0.0.1:1` and
   `localhost:1` are written as before.
+- **The service endpoint in `--format cbom` output writes an IPv6 address in
+  brackets.** Against a local server on `::1`, `tlsanalyzer '[::1]:8443'
+  --format cbom` listed the endpoint `https://::1:8443`, where the port reads as
+  part of the address, and now lists `https://[::1]:8443`. A zone-scoped address
+  is bracketed the same way, and the `%` before its zone is written `%25`, the
+  form RFC 6874 gives a zone in a URI: `fe80::1%lo0` on port 9 is written
+  `https://[fe80::1%25lo0]:9`, where it was `https://fe80::1%lo0:9`. Go's
+  `net/url` refuses the form with a bare `%`, `https://[fe80::1%lo0]:9`, with
+  `invalid URL escape "%lo"`. A host name or an IPv4 address is written as
+  before, for example `https://localhost:8443` and `https://127.0.0.1:8443`.
 
 ## [0.4.1] - 2026-08-05
 
