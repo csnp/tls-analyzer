@@ -1691,8 +1691,8 @@ var (
 // on certificate availability, which the report's Recommended Action line also
 // carries once the key exchange is hybrid or pure ML-KEM. A Verify that is
 // longer than the cap on its own is replaced by one that connects to the
-// address the scan resolved the host to, so a long host name is written once,
-// after -servername, rather than also after -connect.
+// address the scan's connections reached, the result's IP, so a long host name
+// is written once, after -servername, rather than also after -connect.
 func (e *PolicyEvaluator) quantumScoreRemediation(result *types.ScanResult, minimum int) string {
 	hasHybrid, hasPure := false, false
 	for _, ke := range result.KeyExchanges {

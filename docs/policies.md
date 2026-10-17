@@ -86,8 +86,11 @@ last, and the command is kept whole. The command names the host twice, after
 when the scan used no `--sni` and the host name is longer than 196 characters
 for a server with classical key exchange, or 200 for one with hybrid key
 exchange, on port 443 (one fewer on a five-digit port). Then the command
-connects to the IP address the scan resolved the host name to and names the
-host once, after `-servername`, and the sentences are fitted beside it again.
+connects to the IP address the scan's connections reached, which the JSON
+report carries as `ip`, and names the host once, after `-servername`, and the
+sentences are fitted beside it again. A host name can resolve to several
+addresses, and a connection moves on to the next when one refuses it, so that
+address is not always the first one the name resolved to.
 In the tests, with an IPv4 address and with the longest IPv6 address text, at
 ports 443 and 65535, that kept the command whole for every host name length
 from 1 to 254 characters, with no `--sni` name and with a different 253-character

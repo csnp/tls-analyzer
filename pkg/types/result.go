@@ -10,9 +10,13 @@ import (
 // ScanResult represents the complete result of a TLS scan.
 type ScanResult struct {
 	// Target information
-	Target    string    `json:"target"`
-	Host      string    `json:"host"`
-	Port      int       `json:"port"`
+	Target string `json:"target"`
+	Host   string `json:"host"`
+	Port   int    `json:"port"`
+	// IP is the address the scan's connections reached: the remote address of
+	// the first of them to complete a TLS handshake. A host name can resolve to
+	// several addresses and a dial moves on when one refuses the connection, so
+	// this is not always the first address the name resolved to.
 	IP        string    `json:"ip,omitempty"`
 	Timestamp time.Time `json:"timestamp"`
 	Duration  Duration  `json:"duration"`
