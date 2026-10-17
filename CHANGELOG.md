@@ -195,6 +195,13 @@ field out.
   is the value.
 - **A bracketed IPv6 address without a port, such as `[2001:db8::1]`, is now
   accepted** and scanned on 443. It was refused with "missing port in address".
+- **The test that scans a zone-scoped link-local address passes on Linux
+  kernels that offer Multipath TCP**, which Go listeners use there since 1.24.
+  The kernel reports such a listener's link-local address without its scope,
+  so the test's target had no zone, the scan dialed the address without one
+  and failed at once, as on Ubuntu in CI. The test now writes the target from
+  the address and interface it bound to, as a user does, and takes only the
+  port from the listener.
 
 ## [0.4.1] - 2026-08-05
 
