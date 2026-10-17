@@ -349,8 +349,13 @@ func (s *Scanner) noHandshakeError(ctx context.Context, host string, port int) e
 
 	// Repeat the default handshake on this connection for its error, which
 	// separates a service that does not speak TLS from one that does and shares
-	// nothing with this client.
-	_ = conn.SetDeadline(time.Now().Add(s.config.ConnectTimeout))
+	// nothing with this client. A zero ConnectTimeout means no timeout, as it
+	// does for the scan's other dials. Turned into a deadline it is one
+	// that has already passed, so the handshake failed with an i/o timeout
+	// before the server's reply was read, and the message guessed.
+	if s.config.ConnectTimeout > 0 {
+		_ = conn.SetDeadline(time.Now().Add(s.config.ConnectTimeout))
+	}
 	hsErr := tls.Client(conn, &tls.Config{
 		InsecureSkipVerify: true,
 		ServerName:         s.getSNI(host),
@@ -363,7 +368,8 @@ func (s *Scanner) noHandshakeError(ctx context.Context, host string, port int) e
 	}
 
 	// The CLI truncates a scan error to sanitize.MaxReportDetail bytes and the
-	// address appears twice, so the wording leaves room for a long host name.
+	// address appears once here and once in each openssl command, so the
+	// wording is kept short to leave room for a host name.
 	msg := fmt.Sprintf("TLS handshake with %s failed (%v).", addr, hsErr)
 
 	var notTLS tls.RecordHeaderError
@@ -382,11 +388,16 @@ func (s *Scanner) noHandshakeError(ctx context.Context, host string, port int) e
 			"speak TLS or may accept nothing this scanner offers."
 	}
 
+	// One command per group. s_client negotiates one of the groups named after
+	// -groups, so a command naming two says nothing about the one it did not
+	// pick, which is why docs/how-it-works.md gives each group its own command.
 	if groups := hybridGroupsNotOffered(); len(groups) > 0 {
-		msg += fmt.Sprintf(
-			" This scanner does not offer the key exchange groups %s. Check for them "+
-				"with: openssl s_client -connect %s -groups %s",
-			strings.Join(groups, " and "), addr, strings.Join(groups, ":"))
+		commands := make([]string, len(groups))
+		for i, group := range groups {
+			commands[i] = fmt.Sprintf("openssl s_client -connect %s -groups %s", addr, group)
+		}
+		msg += " Check the key exchange groups this scanner does not offer, one command each: " +
+			strings.Join(commands, " and ")
 	}
 	return errors.New(msg)
 }
@@ -1477,6 +1488,7 @@ const (
 	ReasonURL        = "looks like a URL: use the host name, or host:port"
 	ReasonPort       = "the port is not a number from 1 to 65535"
 	ReasonEmpty      = "the target is empty"
+	ReasonZone       = "the IPv6 zone after % is not an interface name or number"
 )
 
 // TargetError says why a target was refused. Its message is the reason alone.
@@ -1498,9 +1510,10 @@ func (e *TargetError) Error() string { return e.Reason }
 // unchecked name.
 //
 // Accepted: a host name by the rule Go's resolver applies before it sends a
-// query, an IPv4 literal, or a bracketed IPv6 literal, each optionally followed
-// by :port with the port a decimal number from 1 to 65535. Without a port, 443.
-// Everything else is refused.
+// query, an IPv4 literal, or a bracketed IPv6 literal with an optional zone
+// that passes isZone, each optionally followed by :port with the port a
+// decimal number from 1 to 65535. Without a port, 443. Everything else is
+// refused.
 func CheckTarget(target string) (string, int, error) {
 	notATarget := &TargetError{ReasonNotATarget}
 
@@ -1525,11 +1538,16 @@ func CheckTarget(target string) (string, int, error) {
 		default:
 			return "", 0, notATarget
 		}
-		// A zone is free text after the address, so it is refused rather than
-		// carried into the report.
 		addr, err := netip.ParseAddr(host)
-		if err != nil || !addr.Is6() || addr.Zone() != "" {
+		if err != nil || !addr.Is6() {
 			return "", 0, notATarget
+		}
+		// A zone, such as %lo0 in fe80::1%lo0, is free text after the address.
+		// A link-local address cannot be reached without one, so a zone that
+		// is an interface name or number is kept, and any other is refused
+		// rather than carried into the report.
+		if zone := addr.Zone(); zone != "" && !isZone(zone) {
+			return "", 0, &TargetError{ReasonZone}
 		}
 	} else {
 		if i := strings.IndexByte(target, ':'); i >= 0 {
@@ -1559,6 +1577,29 @@ func CheckTarget(target string) (string, int, error) {
 func isIPv4Literal(s string) bool {
 	addr, err := netip.ParseAddr(s)
 	return err == nil && addr.Is4()
+}
+
+// maxZoneLen is the longest interface name the macOS headers allow: IFNAMSIZ,
+// 16, less its terminating NUL. A Windows zone is an interface number, a 32-bit
+// value of at most 10 digits.
+const maxZoneLen = 15
+
+// isZone accepts an IPv6 zone that is shaped like an interface name, such as
+// lo0, en0 or eth0, or an interface number: 1 to 15 letters, digits, '-', '_'
+// or '.'. That lets through no more free text than a one-label host name,
+// which is accepted too. 0.4.1 did not check the zone.
+func isZone(s string) bool {
+	if len(s) == 0 || len(s) > maxZoneLen {
+		return false
+	}
+	for i := 0; i < len(s); i++ {
+		c := s[i]
+		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' ||
+			c == '-' || c == '_' || c == '.') {
+			return false
+		}
+	}
+	return true
 }
 
 // isHostName applies the rule Go's resolver applies to a name before it sends a

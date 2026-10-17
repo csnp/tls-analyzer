@@ -235,6 +235,18 @@ looked up, and a file with any other line is refused: the message gives the
 line numbers and the reason, and never prints the lines themselves. A target
 listed twice is scanned once.
 
+The check cannot tell a host name from a single word. A line of one word made
+of letters, digits, `-` and `_`, up to 63 characters and not only digits, is a
+valid host name, as `localhost` is, so it is looked up and printed like other
+targets. A token or password on a line by itself can pass the check, so only
+point `--targets` at a file of host names.
+
+A byte order mark at the start of the file is ignored. An IPv6 link-local
+address keeps its zone, as in `[fe80::1%en0]:8443`, when the zone is an
+interface name or number. With `--format json`, a run given more than one
+target prints an array, also when the file names one target on several lines,
+and a run given one target prints one object.
+
 ```bash
 # Create targets file
 echo "api.yourdomain.com
