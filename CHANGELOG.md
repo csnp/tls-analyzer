@@ -355,6 +355,15 @@ field out.
   and an error writing the blank line between batch results now fail the run
   too. With these, `golangci-lint run` (v2.12.2) reports no issues; it reported
   17, and 133 with its per-issue caps removed.
+- **The reports draw `!` where they drew U+26A0, and `-` for a CNSA 2.0
+  milestone not yet required.** The text report and the HTML page drew a
+  supported deprecated protocol, a certificate with fewer than 30 days left and
+  a self-signed certificate with U+26A0 WARNING SIGN, which has the Unicode
+  Emoji property, and marked a milestone not yet required, in the legend and on
+  the milestone, with U+2014 EM DASH. `tlsanalyzer example.com --no-color` now
+  prints `TLS 1.0      ! Supported (Deprecated)` and
+  `legend: ✓ met, ◐ partial, ○ in progress, ✗ not met, - not yet required`.
+  The words and colours are unchanged.
 
 ## [0.4.1] - 2026-08-05
 

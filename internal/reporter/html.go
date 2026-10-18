@@ -227,7 +227,7 @@ func protocolIcon(p types.Protocol) template.HTML {
 		return template.HTML(`<span class="status-icon status-bad">✗</span>`)
 	}
 	if types.IsDeprecatedProtocol(p.Version) {
-		return template.HTML(`<span class="status-icon status-warn">⚠</span>`)
+		return template.HTML(`<span class="status-icon status-warn">!</span>`)
 	}
 	return template.HTML(`<span class="status-icon status-good">✓</span>`)
 }

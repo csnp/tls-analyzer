@@ -73,7 +73,7 @@ func TestTextDrawsMilestonesAsTheHTMLPageDoes(t *testing.T) {
 		{"partial", "◐ partial: M-partial (2027-01-01)", "partial</span>: M-partial"},
 		{"in-progress", "○ in progress: M-in-progress (2027-01-01)", "in progress</span>: M-in-progress"},
 		{"non-compliant", "✗ not met: M-non-compliant (2027-01-01)", "not met</span>: M-non-compliant"},
-		{"not-applicable", "— not yet required: M-not-applicable (2027-01-01)",
+		{"not-applicable", "- not yet required: M-not-applicable (2027-01-01)",
 			"not yet required</span>: M-not-applicable"},
 		// A status the legend does not list has no symbol: it is its own word.
 		{"undetermined", "undetermined: M-undetermined (2027-01-01)", "undetermined</span>: M-undetermined"},
@@ -107,7 +107,7 @@ func TestTextDrawsMilestonesAsTheHTMLPageDoes(t *testing.T) {
 	}
 
 	legend := lineContaining(t, text, "legend:")
-	if want := "legend: ✓ met, ◐ partial, ○ in progress, ✗ not met, — not yet required"; strings.TrimSpace(legend) != want {
+	if want := "legend: ✓ met, ◐ partial, ○ in progress, ✗ not met, - not yet required"; strings.TrimSpace(legend) != want {
 		t.Errorf("text legend = %q, want %q", strings.TrimSpace(legend), want)
 	}
 }

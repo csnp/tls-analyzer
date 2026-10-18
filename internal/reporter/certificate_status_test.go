@@ -195,8 +195,8 @@ func TestDeprecatedProtocolsAreMarkedInEveryReport(t *testing.T) {
 		if err := (&TextReporter{NoColor: true}).Report(&text, result); err != nil {
 			t.Fatalf("text report: %v", err)
 		}
-		if !strings.Contains(text.String(), v+"      ⚠ Supported (Deprecated)") &&
-			!strings.Contains(text.String(), "⚠ Supported (Deprecated)") {
+		if !strings.Contains(text.String(), v+"      ! Supported (Deprecated)") &&
+			!strings.Contains(text.String(), "! Supported (Deprecated)") {
 			t.Fatalf("text report does not mark supported %s as deprecated:\n%s", v, text.String())
 		}
 

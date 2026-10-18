@@ -42,6 +42,10 @@ const (
 // mark is a verdict as a glyph and its words. Glyph is empty when the verdict
 // has no symbol of its own, which is how an unrecognised status is shown: as
 // its plain word, never borrowing the symbol for "met".
+//
+// The two certificate warnings below are drawn as "!", where they were U+26A0
+// WARNING SIGN, which has the Unicode Emoji property. The protocol list and the
+// HTML protocol icon draw the same "!" for a supported deprecated protocol.
 type mark struct {
 	Glyph string
 	Label string
@@ -76,7 +80,7 @@ func certificateHeadline(cert *types.Certificate) mark {
 	case cert.ChainTrust == types.CheckFailed:
 		return mark{"✗", "NOT TRUSTED", toneBad}
 	case cert.DaysUntilExpiry < 30:
-		return mark{"⚠", fmt.Sprintf("Expiring in %d days", cert.DaysUntilExpiry), toneWarn}
+		return mark{"!", fmt.Sprintf("Expiring in %d days", cert.DaysUntilExpiry), toneWarn}
 	}
 	return mark{"✓", "Valid", toneGood}
 }
@@ -115,7 +119,7 @@ func chainCheck(cert *types.Certificate) mark {
 }
 
 // selfSignedMark flags a certificate that is signed by its own key.
-var selfSignedMark = mark{"⚠", "Self-signed certificate", toneWarn}
+var selfSignedMark = mark{"!", "Self-signed certificate", toneWarn}
 
 // certificateQuantum is whether the certificate's own signature scheme
 // survives a quantum attack.
@@ -212,12 +216,13 @@ type milestoneStatus struct {
 
 // milestoneStatuses is the legend, in the order it is printed. A status that
 // is not listed here has no symbol: milestoneMark shows it as its plain word.
+// A milestone not yet required is marked "-", where it was U+2014 EM DASH.
 var milestoneStatuses = []milestoneStatus{
 	{"compliant", mark{"✓", "met", toneGood}},
 	{"partial", mark{"◐", "partial", toneWarn}},
 	{"in-progress", mark{"○", "in progress", toneInfo}},
 	{"non-compliant", mark{"✗", "not met", toneBad}},
-	{"not-applicable", mark{"—", "not yet required", toneDim}},
+	{"not-applicable", mark{"-", "not yet required", toneDim}},
 }
 
 // milestoneMark is the symbol and words for a milestone status.
