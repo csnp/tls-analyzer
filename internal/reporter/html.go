@@ -55,9 +55,10 @@ func (r *HTMLReporter) Report(w io.Writer, result *types.ScanResult) error {
 		// deduction differently.
 		"describePenalties": describePenalties,
 		// The certificate verdict words and negotiatedLabel below are shared
-		// the same way, and so are policyStatus and the milestone legend and
-		// marks. policyIncompleteNote and the two CNSA 2.0 finding helpers
-		// live in verdict_marks.go too, but only this page renders them.
+		// the same way, and so are policyStatus, the milestone legend and
+		// marks, and the CNSA 2.0 finding rows with their counts and
+		// replacements. policyIncompleteNote and cnsa2FindingTone live in
+		// verdict_marks.go too, but only this page renders them.
 		"toneClass":                    toneClass,
 		"formatDate":                   formatDate,
 		"certificateHeadline":          certificateHeadline,
@@ -68,8 +69,10 @@ func (r *HTMLReporter) Report(w io.Writer, result *types.ScanResult) error {
 		"negotiatedLabel":              func() string { return negotiatedLabel },
 		"policyStatus":                 policyStatus,
 		"policyIncompleteNote":         policyIncompleteNote,
-		"milestoneMark":                milestoneMark,
+		"milestoneMarkAt":              milestoneMarkAt,
 		"milestoneStatuses":            func() []milestoneStatus { return milestoneStatuses },
+		"cnsa2FindingRows":             cnsa2FindingRows,
+		"cnsa2FindingCount":            cnsa2FindingCount,
 		"cnsa2FindingTone":             cnsa2FindingTone,
 		"cnsa2FindingNeedsReplacement": cnsa2FindingNeedsReplacement,
 	}).Parse(htmlTemplate)
@@ -709,7 +712,7 @@ const htmlTemplate = `<!DOCTYPE html>
             <p class="note">Legend: {{range $i, $s := milestoneStatuses}}{{if $i}}, {{end}}{{template "mark" $s.Mark}}{{end}}</p>
             <ul class="plain-list">
                 {{range .Milestones}}
-                <li>{{template "mark" (milestoneMark .Status)}}: {{.Name}} ({{formatDate .Deadline}}){{if .Gap}}
+                <li>{{template "mark" (milestoneMarkAt . $.CNSA2Timeline.AssessmentDate)}}: {{.Name}} ({{formatDate .Deadline}}){{if .Gap}}
                     <ul>{{range .Gap}}<li>{{.}}</li>{{end}}</ul>{{end}}
                 </li>
                 {{end}}
@@ -718,8 +721,8 @@ const htmlTemplate = `<!DOCTYPE html>
             {{if .Findings}}
             <h3>Algorithm status</h3>
             <ul class="plain-list">
-                {{range .Findings}}
-                <li><span class="verdict {{toneClass (cnsa2FindingTone .Status)}}">{{.Status}}</span>: {{.Category}}, {{.Algorithm}}{{if cnsa2FindingNeedsReplacement .}}. Replace with {{.Replacement}}{{end}}</li>
+                {{range cnsa2FindingRows .Findings}}
+                <li><span class="verdict {{toneClass (cnsa2FindingTone .Status)}}">{{.Status}}</span>: {{.Category}}, {{.Algorithm}}{{with cnsa2FindingCount .}} ({{.}}){{end}}{{if cnsa2FindingNeedsReplacement .CNSA2Finding}}. Replace with {{.Replacement}}{{end}}</li>
                 {{end}}
             </ul>
             {{end}}

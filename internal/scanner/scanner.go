@@ -350,16 +350,6 @@ func (s *Scanner) Scan(ctx context.Context, target string) (*types.ScanResult, e
 	return result, nil
 }
 
-// hasTLS13 reports whether the target negotiated or accepted TLS 1.3.
-func hasTLS13(protocols []types.Protocol) bool {
-	for _, p := range protocols {
-		if p.Version == "TLS 1.3" && p.Supported {
-			return true
-		}
-	}
-	return false
-}
-
 // mergeCipherSuites combines the negotiated suite with the enumerated ones,
 // keeping the strongest first and removing duplicates.
 func mergeCipherSuites(negotiated, offered []types.CipherSuite) []types.CipherSuite {
@@ -458,14 +448,22 @@ func handshakeFailureMessage(addr string, hsErr error, notOffered []string) stri
 	case errors.As(hsErr, &opErr) && opErr.Op == "remote error":
 		// crypto/tls reports a TLS alert from the peer this way, and only a peer
 		// that speaks TLS sends one.
-		reached = " The server answered in TLS, so it is reachable, but it rejected the " +
-			"handshakes this scanner tried."
+		reached = " The server answered in TLS, so it is reachable."
 	default:
 		reached = " The host accepted a TCP connection, so it is reachable, but it may not " +
-			"speak TLS or may accept nothing this scanner offers."
+			"speak TLS."
 	}
+
+	// The handshake that failed offers crypto/tls's default cipher suites, which
+	// leave out every 3DES and RC4 suite, and crypto/tls implements no DHE suite.
+	// A server accepting only those, such as 3des.badssl.com, rc4.badssl.com or
+	// dh1024.badssl.com, fails it the way a server sharing no key exchange group
+	// does, and this message named only the groups. The scan's cipher suite probe
+	// offers 3DES and RC4 suites one at a time, but every other probe uses the
+	// default list, so such a server still cannot be scanned.
+	suites := " It may accept only cipher suites this handshake lacks, such as 3DES, RC4 or DHE"
 	if len(notOffered) == 0 {
-		return msg + reached
+		return msg + reached + suites + "."
 	}
 
 	// One command per group. s_client negotiates one of the groups named after
@@ -478,7 +476,7 @@ func handshakeFailureMessage(addr string, hsErr error, notOffered []string) stri
 	for i, group := range notOffered {
 		commands[i] = fmt.Sprintf("openssl s_client -connect %s -groups %s", connect, group)
 	}
-	full := msg + reached + " Check the key exchange groups this scanner does not offer, " +
+	full := msg + reached + suites + ", or only key exchange groups this scanner does not offer, " +
 		"one command each: " + strings.Join(commands, " and ")
 	if len(full) <= sanitize.MaxReportDetail {
 		return full
@@ -490,14 +488,17 @@ func handshakeFailureMessage(addr string, hsErr error, notOffered []string) stri
 	// hybrid groups, a 38-character host and port lost the third. The groups are
 	// named straight after the headline instead, where they fit for the longest
 	// address the scanner accepts, a 254-byte host name and a five-digit port,
-	// after any TLS alert, and only the commands that fit whole follow.
+	// after any TLS alert, and only the commands that fit whole follow. The
+	// cipher suites share that sentence, which keeps a whole command within the
+	// cut for a 47-byte IPv6 address under that GODEBUG setting.
 	names := notOffered[len(notOffered)-1]
 	noun := "group"
 	if n := len(notOffered); n > 1 {
 		names = strings.Join(notOffered[:n-1], ", ") + " and " + names
 		noun = "groups"
 	}
-	msg += fmt.Sprintf(" This scanner does not offer the key exchange %s %s.", noun, names) + reached
+	msg += fmt.Sprintf(" This scanner does not offer the key exchange %s %s, and this handshake "+
+		"lacks cipher suites such as 3DES, RC4 or DHE.", noun, names) + reached
 	sep := " Check each group with its own command, for example: "
 	for _, cmd := range commands {
 		if len(msg)+len(sep)+len(cmd) > sanitize.MaxReportDetail {
@@ -910,7 +911,7 @@ func (s *Scanner) probeConnection(ctx context.Context, host string, port int,
 	if err != nil {
 		return nil, nil, nil, nil
 	}
-	defer conn.Close()
+	defer func() { _ = conn.Close() }()
 	reached.record(conn.RemoteAddr())
 
 	state := conn.ConnectionState()
@@ -976,7 +977,7 @@ func (s *Scanner) tryConnect(ctx context.Context, host string, port int, cfg *tl
 		return false
 	}
 	reached.record(conn.RemoteAddr())
-	conn.Close()
+	_ = conn.Close()
 	return true
 }
 
@@ -1383,6 +1384,14 @@ func parseCertificateAt(cert *x509.Certificate, now time.Time) *types.Certificat
 
 	daysUntilExpiry := int(cert.NotAfter.Sub(now).Hours() / 24)
 
+	// The DNS names, then the IP addresses. The names alone were listed, so a
+	// certificate that passed the name check through an IP address SAN showed
+	// no SAN at all.
+	sans := slices.Clone(cert.DNSNames)
+	for _, ip := range cert.IPAddresses {
+		sans = append(sans, ip.String())
+	}
+
 	return &types.Certificate{
 		// Both checks start as not performed. Only the leaf is checked, by the
 		// caller; a certificate in the presented chain keeps this state, so
@@ -1400,7 +1409,7 @@ func parseCertificateAt(cert *x509.Certificate, now time.Time) *types.Certificat
 		PublicKeyBits:      bits,
 		KeyUsage:           keyUsage,
 		ExtKeyUsage:        extKeyUsage,
-		SANs:               cert.DNSNames,
+		SANs:               sans,
 		IsCA:               cert.IsCA,
 		IsSelfSigned:       cert.Subject.String() == cert.Issuer.String(),
 		QuantumSafe:        quantumSafe,
@@ -1736,8 +1745,8 @@ func isZone(s string) bool {
 	}
 	for i := 0; i < len(s); i++ {
 		c := s[i]
-		if !('a' <= c && c <= 'z' || 'A' <= c && c <= 'Z' || '0' <= c && c <= '9' ||
-			c == '-' || c == '_' || c == '.') {
+		if (c < 'a' || c > 'z') && (c < 'A' || c > 'Z') && (c < '0' || c > '9') &&
+			c != '-' && c != '_' && c != '.' {
 			return false
 		}
 	}

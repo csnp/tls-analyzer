@@ -177,8 +177,10 @@ func (r *SARIFReporter) Report(w io.Writer, result *types.ScanResult) error {
 		}
 	}
 
+	// The raw.githubusercontent.com path of the OASIS repository that this used
+	// to name answers 404, so a validator following $schema found nothing.
 	report := sarifReport{
-		Schema:  "https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json",
+		Schema:  "https://json.schemastore.org/sarif-2.1.0.json",
 		Version: "2.1.0",
 		Runs: []sarifRun{
 			{

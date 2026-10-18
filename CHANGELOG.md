@@ -170,11 +170,10 @@ field out.
   and with the system resolver alike. On macOS, every line without a colon,
   `KEY=VALUE` lines included, was handed to the system's name lookup, and whether
   those lookups then reached a DNS server was not measured. On Windows this was
-  not measured. The check does not stop the single-word case: a line of one
-  word made of letters, digits, `-` and `_`, up to 63 characters and not only
-  digits, is a valid host name, as `localhost` is, so it is still looked up and
-  printed in the report and in the closing error. Only point `--targets` at a
-  file of host names.
+  not measured. A line whose host is a single word is a valid host name, as
+  `localhost` is, so this check passes it; such a line is now refused unless
+  `--allow-single-label` is given, as described below. Only point `--targets`
+  at a file of host names.
 - **A target on the command line is checked by the same rule**, before any
   lookup, and a refusal gives the reason without repeating the argument. An
   empty target says "the target is empty". A URL is refused with a pointer to
@@ -312,6 +311,50 @@ field out.
   and `help` commands. `--help` now uses that `--port` wording, the page shows
   the `--help` text from `Usage:` to its end and its exit codes, and a test
   fails if either block is not text `--help` prints.
+- **A one-word line in a targets file is refused unless `--allow-single-label`
+  is given.** A token on a line by itself passes the target check, so it was
+  looked up as a host name: a file holding the line `single-label-repro` ended
+  in `lookup single-label-repro: no such host`. Such a line, with or without a
+  port, is now refused before anything is looked up, and the message gives its
+  line number and the flag, never the line. `localhost` is accepted without the
+  flag, in any case and with or without a trailing dot, and a single word given
+  as the target on the command line is not refused.
+- **The error for a server that accepts only cipher suites outside Go's
+  default list names them as a possible cause.** It named only the key exchange
+  groups this scanner does not offer. Against a local server accepting only
+  `TLS_ECDHE_ECDSA_WITH_RC4_128_SHA`, it now reads `The server answered in TLS,
+  so it is reachable. It may accept only cipher suites this handshake lacks,
+  such as 3DES, RC4 or DHE, or only key exchange groups this scanner does not
+  offer, one command each:` followed by the commands. Such a server still
+  cannot be scanned.
+- **IP address SANs are listed.** The SANs line of the text and HTML reports and
+  `certificate.subjectAltNames` in JSON held the DNS names only, so a
+  certificate valid for its target through an IP address SAN showed no SAN.
+  They now give the DNS names and then the IP addresses: for a certificate
+  naming `localhost` and `127.0.0.1`, JSON carries both.
+- **A CNSA 2.0 milestone past its deadline says so.** Scanned on 2026-10-18, the
+  timeline read `○ in progress: Preparation Phase (2025-12-31)` under
+  `Current Phase: New NSS Systems`. A milestone that is not met and whose
+  deadline is not after the assessment date now reads, for example,
+  `○ in progress, deadline passed: Preparation Phase (2025-12-31)`, in the text
+  and HTML reports. The status in JSON and the timeline score are unchanged.
+- **Algorithm Status gives one line per algorithm and status.** It printed one
+  line per finding, and there is one symmetric finding per cipher suite, so
+  identical lines repeated. Findings that read the same are printed once with a
+  count, as in `[transitional] symmetric: AES (9 cipher suites)` from
+  `tlsanalyzer example.com`, in the text and HTML reports. JSON still lists
+  every finding.
+- **The SARIF `$schema` is a URL that answers.** It was
+  `https://raw.githubusercontent.com/oasis-tcs/sarif-spec/master/Schemata/sarif-schema-2.1.0.json`,
+  which answered 404 on 2026-10-18, and is now
+  `https://json.schemastore.org/sarif-2.1.0.json`, which answered 200 with the
+  SARIF 2.1.0 schema.
+- **A text report that cannot be written fails the run.** The text report wrote
+  each line with an unchecked `fmt.Fprintf` and returned no error, where the
+  other formats return the write error. An error closing the `--output` file
+  and an error writing the blank line between batch results now fail the run
+  too. With these, `golangci-lint run` (v2.12.2) reports no issues; it reported
+  17, and 133 with its per-issue caps removed.
 
 ## [0.4.1] - 2026-08-05
 
