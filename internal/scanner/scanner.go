@@ -31,7 +31,7 @@ import (
 // Version is the scanner library default. Binaries built from cmd/tlsanalyzer
 // override the value recorded in reports with their own release version,
 // injected at build time.
-const Version = "0.4.1"
+const Version = "0.5.0"
 
 // LookupIP is the name lookup Scan performs before any connection. It is a
 // variable so a test can count the lookups a run makes: the guarantee that a

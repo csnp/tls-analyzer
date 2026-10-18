@@ -5,7 +5,7 @@ All notable changes to QRAMM TLS Analyzer are documented here.
 The format follows [Keep a Changelog](https://keepachangelog.com/en/1.1.0/), and
 this project adheres to [Semantic Versioning](https://semver.org/spec/v2.0.0.html).
 
-## [Unreleased]
+## [0.5.0] - 2026-10-18
 
 ### The CBOM security levels hold security strength, not key size
 
@@ -136,16 +136,18 @@ field out.
   listed them, and the grade is still computed from the groups that were
   probed. Release builds use Go 1.25 and are unchanged.
 - Run with `GODEBUG=fips140=on,tlsmlkem=0`, the scanner can offer none of the
-  hybrid key exchange groups, and its check for which groups it offers waited 5
-  seconds for a ClientHello that was never sent. A handshake failure then named
-  no groups, and a completed scan left `X25519MLKEM768`, `SecP256r1MLKEM768`
-  and `SecP384r1MLKEM1024` out of its results with no scan coverage note. The
-  check now ends when the client gives up. Measured with Go 1.26.3 against a
-  local server offering `X25519MLKEM768`, `X25519` and P-256, the scan took
-  0.01 seconds instead of 5.01 and lists the three groups as key exchange
-  groups not probed, and the grade did not change. Against one offering only
+  hybrid key exchange groups. In 0.4.1 a completed scan then left
+  `X25519MLKEM768`, `SecP256r1MLKEM768` and `SecP384r1MLKEM1024` out of its
+  results with no scan coverage note, and a handshake failure named no groups.
+  A completed scan now lists the three groups as key exchange groups not
+  probed, with the same grade 0.4.1 gave. Against a server offering only
   `X25519MLKEM768` and `X25519`, the handshake failure now names the three
-  groups.
+  groups. The check for which groups the scanner offers was added after 0.4.1,
+  and until it was fixed it waited 5 seconds for a ClientHello that was never
+  sent; no release carried that stall. Measured with Go 1.26.3 against a local
+  server offering `X25519MLKEM768`, `X25519` and P-256, the scan took under 15
+  ms on 0.4.1, 5.00 seconds on the commit before the fix, and under 10 ms on
+  0.5.0.
 - The HTML report's Score Breakdown table now stacks its cells on a narrow
   screen like the other tables. Measured on a saved report at a 375px wide
   viewport, the page was 444px wide and scrolled sideways, and it is now 375px
@@ -1122,6 +1124,7 @@ reproducing it. Reported in [#1](https://github.com/csnp/tls-analyzer/issues/1).
 - Go 1.25 or later is now required, for `tls.ConnectionState.CurveID`. CI and
   release builds moved from Go 1.21 to Go 1.25.
 
+[0.5.0]: https://github.com/csnp/tls-analyzer/releases/tag/v0.5.0
 [0.4.1]: https://github.com/csnp/tls-analyzer/releases/tag/v0.4.1
 [0.4.0]: https://github.com/csnp/tls-analyzer/releases/tag/v0.4.0
 [0.3.0]: https://github.com/csnp/tls-analyzer/releases/tag/v0.3.0
