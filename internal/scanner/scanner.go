@@ -489,8 +489,13 @@ func handshakeFailureMessage(addr string, hsErr error, notOffered []string) stri
 	// named straight after the headline instead, where they fit for the longest
 	// address the scanner accepts, a 254-byte host name and a five-digit port,
 	// after any TLS alert, and only the commands that fit whole follow. The
-	// cipher suites share that sentence, which keeps a whole command within the
-	// cut for a 47-byte IPv6 address under that GODEBUG setting.
+	// cipher suites share that sentence, introduced with "like" rather than
+	// "such as", which keeps a whole command within the cut under that GODEBUG
+	// setting for a 47-byte IPv6 address, such as
+	// [ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535, after any TLS alert and
+	// after the server closes the connection. With "such as", the two alerts
+	// with the longest text, 113 and 121, left the first command one byte past
+	// the cut, so the error gave none.
 	names := notOffered[len(notOffered)-1]
 	noun := "group"
 	if n := len(notOffered); n > 1 {
@@ -498,7 +503,7 @@ func handshakeFailureMessage(addr string, hsErr error, notOffered []string) stri
 		noun = "groups"
 	}
 	msg += fmt.Sprintf(" This scanner does not offer the key exchange %s %s, and this handshake "+
-		"lacks cipher suites such as 3DES, RC4 or DHE.", noun, names) + reached
+		"lacks cipher suites like 3DES, RC4 or DHE.", noun, names) + reached
 	sep := " Check each group with its own command, for example: "
 	for _, cmd := range commands {
 		if len(msg)+len(sep)+len(cmd) > sanitize.MaxReportDetail {
