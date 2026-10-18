@@ -41,9 +41,15 @@ func cbomEndpoints(t *testing.T, out string) []string {
 //
 // Each endpoint is also read back with net/url, which catches a zone written
 // with a bare %: url.Parse refuses "https://[fe80::1%lo0]:9" with "invalid URL
-// escape". It does not catch the missing brackets, because it reads
-// "https://::1:8443" as host ::1 and port 8443, so the exact string is checked
-// too.
+// escape". What it does with the missing brackets depends on the
+// urlstrictcolons GODEBUG setting. With urlstrictcolons=1, the default when
+// go.mod says go 1.26 or later, url.Parse refuses "https://::1:8443" with
+// `invalid port "::1:8443" after host`. With urlstrictcolons=0, the default
+// when go.mod says go 1.25 or earlier, as this module's does, it reads the same
+// string as host ::1 and port 8443 and returns no error. The exact string is
+// checked first so the missing brackets fail the test under either setting, and
+// so does an endpoint that parses to the same parts but is written another way,
+// such as "https://[::1]:8443/" with a trailing slash.
 func TestCBOMEndpointWritesAnIPv6AddressInBrackets(t *testing.T) {
 	cases := []struct {
 		name string
