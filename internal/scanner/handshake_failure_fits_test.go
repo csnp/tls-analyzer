@@ -41,6 +41,10 @@ import (
 //     TestFIPSChildScanNamesTheHybridGroupsItCannotOffer.
 //   - the groups are named ahead of the commands even when every command fits:
 //     TestAHandshakeFailureGivesTheCommandsThatFit.
+//   - the sentence naming the groups and the cipher suites is made longer, so
+//     that a 47-byte IPv6 address keeps no whole command after the alerts with
+//     the longest text: TestAHandshakeFailureKeepsACommandForA47ByteIPv6Address.
+//     It was observed to fail with the cipher suites introduced by "such as".
 
 // TestAHandshakeFailureNamesEveryGroupWithinTheCut builds the error for host
 // names of every length the scanner accepts: 1 to 253 bytes at port 443 and
@@ -191,6 +195,64 @@ func TestAHandshakeFailureGivesTheCommandsThatFit(t *testing.T) {
 	if len(whole) == 0 || whole[0] != groups[0] {
 		t.Errorf("for %s the error should give a whole command for %s, which fits: %q",
 			addr, groups[0], msg)
+	}
+}
+
+// TestAHandshakeFailureKeepsACommandForA47ByteIPv6Address builds the error for
+// three IPv6 addresses that are 47 bytes with their brackets and port 65535:
+// one written with all eight groups, one with a zone and one ending in an IPv4
+// address. The handshake ends with each of the 256 TLS alert values or with the
+// server closing the connection, for each set of groups not offered that
+// TestAHandshakeFailureNamesEveryGroupWithinTheCut uses. Read as the CLI prints
+// it, every error gives at least one whole openssl command. With the cipher
+// suites introduced by "such as" and the three hybrid groups not offered, as
+// under GODEBUG=fips140=on,tlsmlkem=0, none was given after alert 113 (bad
+// certificate status response) or alert 121 (encrypted client hello required).
+func TestAHandshakeFailureKeepsACommandForA47ByteIPv6Address(t *testing.T) {
+	x25519, p256, p384 := tlsGroups[groupX25519MLKEM768].name,
+		tlsGroups[groupSecP256r1MLKEM768].name, tlsGroups[groupSecP384r1MLKEM1024].name
+	groupSets := [][]string{{x25519, p256, p384}, {p256, p384}, {x25519}}
+
+	reasons := []error{io.EOF, io.ErrUnexpectedEOF}
+	for a := range 256 {
+		reasons = append(reasons, &net.OpError{Op: "remote error", Err: tls.AlertError(a)})
+	}
+
+	for _, target := range []string{
+		"[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535",
+		"[fe80::ffff:ffff:ffff:ffff%abcdefghijklm]:65535",
+		"[0000:0000:0000:0000:0000:ffff:1.20.30.4]:65535",
+	} {
+		host, port, err := CheckTarget(target)
+		if err != nil {
+			t.Fatalf("the scanner refuses %q, so this test should not cover it: %v", target, err)
+		}
+		addr := net.JoinHostPort(host, strconv.Itoa(port))
+		if len(addr) != 47 {
+			t.Fatalf("%s is %d bytes, not the 47 this test is about", addr, len(addr))
+		}
+		connect := sanitize.ShellWord(addr)
+
+		longest := ""
+		for _, groups := range groupSets {
+			for _, reason := range reasons {
+				msg := handshakeFailureMessage(addr, reason, groups)
+				if len(msg) > len(longest) {
+					longest = msg
+				}
+				printed := sanitize.WrapError(errors.New(msg)).Error()
+				whole, cut := opensslCommands(printed, connect, groups)
+				if len(whole) == 0 {
+					t.Errorf("for %s after %q, the error as the CLI prints it gives no whole "+
+						"openssl command for %v, %d bytes: %q", addr, reason, groups, len(msg), printed)
+				}
+				if cut != "" {
+					t.Errorf("for %s after %q, the CLI's cut ends the error inside an openssl "+
+						"command: %q", addr, reason, cut)
+				}
+			}
+		}
+		t.Logf("the longest error for %s is %d bytes: %s", addr, len(longest), longest)
 	}
 }
 
