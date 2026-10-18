@@ -214,10 +214,11 @@ field out.
   scanner does not offer. It gave one command naming both, `-groups
   SecP256r1MLKEM768:SecP384r1MLKEM1024`, which negotiates one of them and says
   nothing about the other, as `docs/how-it-works.md` explains. Against a local
-  server that rejects the handshake with a TLS alert, the message for the
-  address 127.0.0.1 and a five-digit port is 398 bytes. The CLI prints up to 500,
-  and the address appears three times, so a host and port of up to 49
-  characters fit.
+  server that answers every ClientHello with a handshake_failure alert, the
+  message for the address 127.0.0.1 and a five-digit port is 426 bytes. The CLI
+  prints up to 500, and the address appears three times, so against that server
+  both commands fit for a host name or an IPv4 address and port of up to 39
+  characters.
 - **The `openssl s_client` commands in that error quote an IPv6 address**, for
   example `-connect '[::1]:56128'`. The address was printed bare, and zsh, the
   default shell on macOS, reads its brackets as a glob pattern, so it answered
@@ -227,8 +228,9 @@ field out.
   bash, and the first reports `Negotiated TLS1.3 group: SecP256r1MLKEM768`. A
   zone-scoped address such as `[fe80::1%en0]:8443` is quoted the same way, and
   a host name or an IPv4 address is printed as before. The quotes add 4 bytes:
-  against that server the message for a five-digit port is 390 bytes, so an
-  IPv6 address and port of up to 47 characters fit.
+  against a local server on `::1` that answers every ClientHello with a
+  handshake_failure alert, the message for a five-digit port is 418 bytes, so
+  both commands fit for an IPv6 address and port of up to 38 characters.
 - **When the `openssl s_client` commands in that error do not all fit, it still
   names each key exchange group this scanner does not offer.** Each command
   repeats the address, and the CLI prints up to 500 bytes of a scan error, so a
@@ -241,13 +243,13 @@ field out.
   name on a five-digit port lost `SecP384r1MLKEM1024` the same way. Such an
   error now names the groups straight after its first sentence and gives only
   the commands that fit whole, which for both of those host names is the
-  command for the first group. An error whose commands fit is unchanged:
-  against `127.0.0.1` and `::1` on a five-digit port it is byte for byte the
-  same as before, 398 and 390 bytes, and so is the 467-byte error against
-  `127.0.0.1` with the setting above. A test builds the error for every host
-  name length the scanner accepts, at ports 443 and 65535, and for the longest
-  name after each of the 256 TLS alert values, and finds each group named
-  within the 500 bytes.
+  command for the first group. An error whose commands all fit names the groups
+  only in its commands, as before: after a handshake_failure alert on a
+  five-digit port, it is 426 bytes for `127.0.0.1` and 418 bytes for `::1`, and
+  495 bytes for `127.0.0.1` with the setting above. A test builds the error for
+  every host name length the scanner accepts, at ports 443 and 65535, and for
+  the longest name after each of the 256 TLS alert values, and finds each group
+  named within the 500 bytes.
 - **A port that is not a number from 1 to 65535 is refused without quoting it.**
   The error used to repeat the text after the colon, which on a `key: value` line
   is the value.
