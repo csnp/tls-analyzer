@@ -69,8 +69,8 @@ Sample terminal output:
 
   Target: example.com
   IP: 172.66.147.243
-  Scanned: 2026-10-18 11:26:21 MDT
-  Duration: 109.753625ms
+  Scanned: 2026-10-18 13:31:29 MDT
+  Duration: 126.759917ms
 
 ───────────────────────────────────────────────────────────────
   OVERALL GRADE
@@ -107,16 +107,16 @@ Sample terminal output:
                         exclusivity.
 
     Milestones:
-      legend: ✓ met, ◐ partial, ○ in progress, ✗ not met, — not yet required
+      legend: ✓ met, ◐ partial, ○ in progress, ✗ not met, - not yet required
       ○ in progress, deadline passed: Preparation Phase (2025-12-31)
       ✓ met: New NSS Systems (2027-01-01)
       ◐ partial: TLS 1.3 Required (2030-01-02)
          └─ Legacy protocol still enabled: TLS 1.2
          └─ Legacy protocol still enabled: TLS 1.1
          └─ Legacy protocol still enabled: TLS 1.0
-      — not yet required: Legacy System Update (2033-01-01)
+      - not yet required: Legacy System Update (2033-01-01)
          └─ PQC certificates not yet available
-      — not yet required: Full PQC Transition (2035-01-01)
+      - not yet required: Full PQC Transition (2035-01-01)
          └─ PQC certificates not yet available
 
 ───────────────────────────────────────────────────────────────

@@ -404,7 +404,7 @@ func (r *TextReporter) printProtocols(w *strings.Builder, protocols []types.Prot
 		status := r.color(colorRed, "✗ Not Supported")
 		if p.Supported {
 			if types.IsDeprecatedProtocol(p.Version) {
-				status = r.color(colorYellow, "⚠ Supported (Deprecated)")
+				status = r.color(colorYellow, "! Supported (Deprecated)")
 			} else {
 				status = r.color(colorGreen, "✓ Supported")
 			}
