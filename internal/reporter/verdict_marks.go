@@ -3,6 +3,7 @@ package reporter
 import (
 	"fmt"
 	"strings"
+	"time"
 
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 )
@@ -237,6 +238,26 @@ func milestoneMark(status string) mark {
 	return mark{"", status, toneUnknown}
 }
 
+// milestoneMarkAt is milestoneMark for a milestone of a timeline assessed at
+// assessed. A milestone that is not met and whose deadline is not after the
+// assessment date is also said to be past its deadline.
+//
+// The analyzer marks the Preparation Phase in progress whenever a scan runs, so
+// on 2026-10-18 the timeline printed "○ in progress: Preparation Phase
+// (2025-12-31)" under "Current Phase: New NSS Systems", with nothing to say that
+// its deadline had passed. The deadline is compared with the assessment date the
+// timeline carries, the date its current phase was worked out from, so a saved
+// result reads the same later. A timeline or a milestone without a date says
+// nothing about deadlines.
+func milestoneMarkAt(m types.CNSA2Milestone, assessed time.Time) mark {
+	mk := milestoneMark(m.Status)
+	if m.Status != "compliant" && !assessed.IsZero() && !m.Deadline.IsZero() &&
+		!assessed.Before(m.Deadline) {
+		mk.Label += ", deadline passed"
+	}
+	return mk
+}
+
 // cnsa2FindingTone is how an algorithm's CNSA 2.0 status is coloured. A status
 // it does not know is unknown, never approved.
 func cnsa2FindingTone(status string) tone {
@@ -255,4 +276,52 @@ func cnsa2FindingTone(status string) tone {
 // advice to act on rather than a note.
 func cnsa2FindingNeedsReplacement(f types.CNSA2Finding) bool {
 	return f.Replacement != "" && (f.Status == "deprecated" || f.Status == "prohibited")
+}
+
+// cnsa2FindingRow is one line of the CNSA 2.0 algorithm status list: a finding,
+// and how many findings read the same as it.
+type cnsa2FindingRow struct {
+	types.CNSA2Finding
+	Count int
+}
+
+// cnsa2FindingRows folds the findings that read the same into one row each, in
+// the order each first appears, for the text report and the HTML page.
+//
+// The analyzer makes one symmetric finding per cipher suite, so a server with
+// 17 AES suites printed "[approved    ] symmetric: AES" 8 times and
+// "[transitional] symmetric: AES" 9 times, naming no suite. A line shows a
+// finding's status, category and algorithm, and its replacement when that is
+// advice to act on, so those decide which findings read the same.
+func cnsa2FindingRows(findings []types.CNSA2Finding) []cnsa2FindingRow {
+	type line struct{ status, category, algorithm, replacement string }
+
+	rows := make([]cnsa2FindingRow, 0, len(findings))
+	index := make(map[line]int, len(findings))
+	for _, f := range findings {
+		key := line{status: f.Status, category: f.Category, algorithm: f.Algorithm}
+		if cnsa2FindingNeedsReplacement(f) {
+			key.replacement = f.Replacement
+		}
+		if i, ok := index[key]; ok {
+			rows[i].Count++
+			continue
+		}
+		index[key] = len(rows)
+		rows = append(rows, cnsa2FindingRow{CNSA2Finding: f, Count: 1})
+	}
+	return rows
+}
+
+// cnsa2FindingCount says how many findings a row stands for, and is empty for
+// a row of one. The analyzer makes a symmetric finding for each cipher suite,
+// so those are counted as cipher suites.
+func cnsa2FindingCount(row cnsa2FindingRow) string {
+	switch {
+	case row.Count < 2:
+		return ""
+	case row.Category == "symmetric":
+		return fmt.Sprintf("%d cipher suites", row.Count)
+	}
+	return fmt.Sprintf("%d findings", row.Count)
 }

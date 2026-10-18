@@ -91,10 +91,10 @@ func (s *Scanner) assessQuantumRisk(result *types.ScanResult) types.QuantumRiskA
 		Details:  []string{},
 	}
 
-	var keyExchangeScore int = 0
-	var certScore int = 0
-	var hybridPQC bool = false
-	var fullPQC bool = false
+	keyExchangeScore := 0
+	certScore := 0
+	hybridPQC := false
+	fullPQC := false
 
 	// Analyze key exchanges. The scanner reports every group a server supports,
 	// so the posture is set by the strongest one available: a server that

@@ -21,6 +21,10 @@ Available Commands:
   version      Print version information
 
 Flags:
+      --allow-single-label   Accept a one-word host name, such as intranet, in the
+                             targets file. Without it such a line is refused, since
+                             a token on a line by itself looks the same. localhost
+                             is accepted either way
       --compact              Compact JSON output (no indentation)
   -c, --concurrency int      Number of concurrent scans for batch mode (default 10)
   -f, --format string        Output format: text, json, sarif, cbom, html (default "text")

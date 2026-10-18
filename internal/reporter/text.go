@@ -27,7 +27,21 @@ const (
 )
 
 // Report writes the scan result as formatted text.
-func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
+//
+// The report is built in memory and reaches out in one write, whose error is
+// returned. Every line used to go to out through an unchecked fmt.Fprintf, so
+// a report that could not be written returned nil, where the other formats
+// return the error.
+func (r *TextReporter) Report(out io.Writer, result *types.ScanResult) error {
+	var b strings.Builder
+	r.render(&b, result)
+	_, err := io.WriteString(out, b.String())
+	return err
+}
+
+// render builds the report for one result. A strings.Builder takes every write,
+// so there is no write error to check until Report hands the text on.
+func (r *TextReporter) render(w *strings.Builder, result *types.ScanResult) {
 	// Decided on the RAW result, before the scrubbed copy below exists, and
 	// through the shared classifier every renderer consults. See
 	// targetWasNeverReached for why the raw value and why one place.
@@ -51,7 +65,7 @@ func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
 	if scanFailed {
 		r.printHeader(w, result)
 		r.printScanError(w, result.Error)
-		return nil
+		return
 	}
 
 	// Header
@@ -104,12 +118,10 @@ func (r *TextReporter) Report(w io.Writer, result *types.ScanResult) error {
 	if len(result.ScanWarnings) > 0 {
 		r.printScanWarnings(w, result.ScanWarnings)
 	}
-
-	return nil
 }
 
 // printScanError renders the reason a target produced no measurements.
-func (r *TextReporter) printScanError(w io.Writer, message string) {
+func (r *TextReporter) printScanError(w *strings.Builder, message string) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, strings.Repeat("─", 63)))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorRed, "NOT SCANNED"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, strings.Repeat("─", 63)))
@@ -131,7 +143,7 @@ func (r *TextReporter) printScanError(w io.Writer, message string) {
 // Scope text is prose rather than a field value, so it is wrapped with a hanging
 // indent instead of printed as one long line. The indent is per-caller so the
 // note lines up with the value column of the section it belongs to.
-func (r *TextReporter) printScope(w io.Writer, label, text string, indent int) {
+func (r *TextReporter) printScope(w *strings.Builder, label, text string, indent int) {
 	const width = 60
 
 	for i, line := range wrapText(text, width) {
@@ -178,7 +190,7 @@ func (r *TextReporter) milestoneLegend() string {
 }
 
 // printScanWarnings renders the limits on what this scan could observe.
-func (r *TextReporter) printScanWarnings(w io.Writer, warnings []string) {
+func (r *TextReporter) printScanWarnings(w *strings.Builder, warnings []string) {
 	fmt.Fprintf(w, "\n%s\n", r.color(colorBold, strings.Repeat("─", 63)))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorYellow, "SCAN COVERAGE"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, strings.Repeat("─", 63)))
@@ -207,7 +219,7 @@ func (r *TextReporter) color(c, text string) string {
 	return c + text + colorReset
 }
 
-func (r *TextReporter) printHeader(w io.Writer, result *types.ScanResult) {
+func (r *TextReporter) printHeader(w *strings.Builder, result *types.ScanResult) {
 	fmt.Fprintf(w, "\n%s\n", r.color(colorBold, "═══════════════════════════════════════════════════════════════"))
 	fmt.Fprintf(w, "%s\n", r.color(colorBold+colorCyan, "  QRAMM TLS Analyzer - Quantum-Ready Security Assessment"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "═══════════════════════════════════════════════════════════════"))
@@ -237,7 +249,7 @@ func (r *TextReporter) printHeader(w io.Writer, result *types.ScanResult) {
 // whether Q was a good result.
 const quantumGradeLegend = "Q+ ready, Q partial, Q- limited, QV vulnerable"
 
-func (r *TextReporter) printGrade(w io.Writer, grade types.Grade) {
+func (r *TextReporter) printGrade(w *strings.Builder, grade types.Grade) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold, "OVERALL GRADE"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
@@ -290,7 +302,7 @@ func (r *TextReporter) printGrade(w io.Writer, grade types.Grade) {
 // real and consistently applied vulnerability penalty sat between them and was
 // never printed. The normalization is shown too, since a skipped dimension
 // changes the denominator and four dimensions worth 25 each then do not total 100.
-func (r *TextReporter) printScoreReconciliation(w io.Writer, grade types.Grade) {
+func (r *TextReporter) printScoreReconciliation(w *strings.Builder, grade types.Grade) {
 	const labelWidth = 44
 
 	subtotal := fmt.Sprintf("%d/100", grade.DimensionScore)
@@ -383,7 +395,7 @@ func (r *TextReporter) progressBar(value, max, width int) string {
 	return "[" + r.color(color, bar) + "]"
 }
 
-func (r *TextReporter) printProtocols(w io.Writer, protocols []types.Protocol) {
+func (r *TextReporter) printProtocols(w *strings.Builder, protocols []types.Protocol) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold, "PROTOCOL SUPPORT"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
@@ -408,7 +420,7 @@ func (r *TextReporter) printProtocols(w io.Writer, protocols []types.Protocol) {
 	fmt.Fprintln(w)
 }
 
-func (r *TextReporter) printCipherSuites(w io.Writer, ciphers []types.CipherSuite) {
+func (r *TextReporter) printCipherSuites(w *strings.Builder, ciphers []types.CipherSuite) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold, "CIPHER SUITES"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
@@ -453,7 +465,7 @@ func (r *TextReporter) printCipherSuites(w io.Writer, ciphers []types.CipherSuit
 	fmt.Fprintln(w)
 }
 
-func (r *TextReporter) printCertificate(w io.Writer, cert *types.Certificate) {
+func (r *TextReporter) printCertificate(w *strings.Builder, cert *types.Certificate) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold, "CERTIFICATE"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
@@ -533,7 +545,7 @@ func (r *TextReporter) paint(m mark) string {
 	return m.String()
 }
 
-func (r *TextReporter) printQuantumRisk(w io.Writer, qr types.QuantumRiskAssessment) {
+func (r *TextReporter) printQuantumRisk(w *strings.Builder, qr types.QuantumRiskAssessment) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorPurple, "QUANTUM RISK ASSESSMENT"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
@@ -579,7 +591,7 @@ func (r *TextReporter) printQuantumRisk(w io.Writer, qr types.QuantumRiskAssessm
 	}
 }
 
-func (r *TextReporter) printVulnerabilities(w io.Writer, vulns []types.Vulnerability) {
+func (r *TextReporter) printVulnerabilities(w *strings.Builder, vulns []types.Vulnerability) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorRed, "VULNERABILITIES"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
@@ -616,7 +628,7 @@ func (r *TextReporter) printVulnerabilities(w io.Writer, vulns []types.Vulnerabi
 	}
 }
 
-func (r *TextReporter) printRecommendations(w io.Writer, recs []types.Recommendation) {
+func (r *TextReporter) printRecommendations(w *strings.Builder, recs []types.Recommendation) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorGreen, "RECOMMENDATIONS"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
@@ -633,7 +645,7 @@ func (r *TextReporter) printRecommendations(w io.Writer, recs []types.Recommenda
 	}
 }
 
-func (r *TextReporter) printPolicyResult(w io.Writer, pr *types.PolicyResult) {
+func (r *TextReporter) printPolicyResult(w *strings.Builder, pr *types.PolicyResult) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorCyan, "POLICY EVALUATION"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
@@ -701,7 +713,7 @@ func (r *TextReporter) printPolicyResult(w io.Writer, pr *types.PolicyResult) {
 	}
 }
 
-func (r *TextReporter) printCNSA2Timeline(w io.Writer, timeline *types.CNSA2Timeline) {
+func (r *TextReporter) printCNSA2Timeline(w *strings.Builder, timeline *types.CNSA2Timeline) {
 	fmt.Fprintf(w, "%s\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
 	fmt.Fprintf(w, "  %s\n", r.color(colorBold+colorPurple, "CNSA 2.0 COMPLIANCE TIMELINE"))
 	fmt.Fprintf(w, "%s\n\n", r.color(colorBold, "───────────────────────────────────────────────────────────────"))
@@ -721,11 +733,11 @@ func (r *TextReporter) printCNSA2Timeline(w io.Writer, timeline *types.CNSA2Time
 	fmt.Fprintf(w, "    %s\n", r.color(colorBold, "Milestones:"))
 	fmt.Fprintf(w, "      %s\n", r.color(colorDim, "legend: "+r.milestoneLegend()))
 	for _, m := range timeline.Milestones {
-		// milestoneMark is the mark the HTML page draws. A status it does not
+		// milestoneMarkAt is the mark the HTML page draws. A status it does not
 		// list is printed as its own word, where this loop used to start every
 		// milestone at the green check and draw an unlisted status as met.
 		fmt.Fprintf(w, "      %s: %s (%s)\n",
-			r.paint(milestoneMark(m.Status)),
+			r.paint(milestoneMarkAt(m, timeline.AssessmentDate)),
 			m.Name,
 			m.Deadline.Format("2006-01-02"))
 
@@ -737,12 +749,13 @@ func (r *TextReporter) printCNSA2Timeline(w io.Writer, timeline *types.CNSA2Time
 	}
 	fmt.Fprintln(w)
 
-	// Key findings
+	// Key findings, one line for each set of findings that read the same, with
+	// how many there are. See cnsa2FindingRows.
 	if len(timeline.Findings) > 0 {
 		fmt.Fprintf(w, "    %s\n", r.color(colorBold, "Algorithm Status:"))
-		for _, f := range timeline.Findings {
+		for _, row := range cnsa2FindingRows(timeline.Findings) {
 			statusColor := colorDim
-			switch f.Status {
+			switch row.Status {
 			case "approved":
 				statusColor = colorGreen
 			case "transitional":
@@ -753,13 +766,18 @@ func (r *TextReporter) printCNSA2Timeline(w io.Writer, timeline *types.CNSA2Time
 				statusColor = colorRed + colorBold
 			}
 
-			fmt.Fprintf(w, "      [%s] %s: %s\n",
-				r.color(statusColor, fmt.Sprintf("%-12s", f.Status)),
-				f.Category,
-				f.Algorithm)
+			count := ""
+			if c := cnsa2FindingCount(row); c != "" {
+				count = " (" + c + ")"
+			}
+			fmt.Fprintf(w, "      [%s] %s: %s%s\n",
+				r.color(statusColor, fmt.Sprintf("%-12s", row.Status)),
+				row.Category,
+				row.Algorithm,
+				count)
 
-			if f.Replacement != "" && (f.Status == "deprecated" || f.Status == "prohibited") {
-				fmt.Fprintf(w, "               Replace with: %s\n", f.Replacement)
+			if cnsa2FindingNeedsReplacement(row.CNSA2Finding) {
+				fmt.Fprintf(w, "               Replace with: %s\n", row.Replacement)
 			}
 		}
 		fmt.Fprintln(w)

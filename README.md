@@ -69,8 +69,8 @@ Sample terminal output:
 
   Target: example.com
   IP: 172.66.147.243
-  Scanned: 2026-10-18 07:56:05 MDT
-  Duration: 119.54325ms
+  Scanned: 2026-10-18 11:26:21 MDT
+  Duration: 109.753625ms
 
 ───────────────────────────────────────────────────────────────
   OVERALL GRADE
@@ -108,7 +108,7 @@ Sample terminal output:
 
     Milestones:
       legend: ✓ met, ◐ partial, ○ in progress, ✗ not met, — not yet required
-      ○ in progress: Preparation Phase (2025-12-31)
+      ○ in progress, deadline passed: Preparation Phase (2025-12-31)
       ✓ met: New NSS Systems (2027-01-01)
       ◐ partial: TLS 1.3 Required (2030-01-02)
          └─ Legacy protocol still enabled: TLS 1.2
@@ -136,8 +136,10 @@ Sample terminal output:
 ```
 
 Abridged by cutting whole sections, not by editing lines: the real report also
-carries the CNSA 2.0 algorithm status listing, which repeats one line per
-accepted suite, plus the protocol, cipher suite, quantum risk, vulnerability,
+carries the CNSA 2.0 algorithm status listing, which gives one line per
+algorithm and status with a count where several cipher suites share it, as in
+`[transitional] symmetric: AES (9 cipher suites)`, plus the protocol, cipher
+suite, quantum risk, vulnerability,
 recommendation and scan coverage sections, and every enumerated key exchange
 group and cipher suite.
 
@@ -183,7 +185,7 @@ scope. Both print a scope note saying which question they answer.
 ### What it does not check
 
 - Revocation is not checked. Check revocation separately.
-- `SecP256r1MLKEM768` and `SecP384r1MLKEM1024` are not probed and are not reported, even by a server that offers them.
+- `SecP256r1MLKEM768` and `SecP384r1MLKEM1024` are not probed, and the scan coverage note says so.
 - Chain trust is judged by the scanning machine: an internal CA's certificate shows as untrusted unless that CA is installed there.
 - Post-quantum certificate signatures (ML-DSA, SLH-DSA) are reported as unavailable rather than detected.
 
@@ -234,11 +236,12 @@ looked up, and a file with any other line is refused: the message gives the
 line numbers and the reason, and never prints the lines themselves. A target
 listed twice is scanned once.
 
-The check cannot tell a host name from a single word. A line of one word made
-of letters, digits, `-` and `_`, up to 63 characters and not only digits, is a
-valid host name, as `localhost` is, so it is looked up and printed like other
-targets. A token or password on a line by itself can pass the check, so only
-point `--targets` at a file of host names.
+A line whose host is a single word, such as `intranet` or `intranet:8443`, is
+refused unless `--allow-single-label` is given, because a token or password on
+a line by itself has the same shape: letters, digits, `-` and `_`, up to 63
+characters. `localhost` is accepted without the flag, and a single word given
+as the target on the command line is not refused. Only point `--targets` at a
+file of host names.
 
 A byte order mark at the start of the file is ignored. An IPv6 link-local
 address keeps its zone, as in `[fe80::1%en0]:8443`, when the zone is an

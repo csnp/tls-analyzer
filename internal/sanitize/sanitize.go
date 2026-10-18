@@ -159,8 +159,8 @@ func ShellWord(s string) string {
 	s = ForReport(s, MaxReportDetail)
 	plain := s != ""
 	for _, r := range s {
-		if !(r >= 'a' && r <= 'z' || r >= 'A' && r <= 'Z' || r >= '0' && r <= '9' ||
-			r == '.' || r == '-' || r == '_' || r == ':') {
+		if (r < 'a' || r > 'z') && (r < 'A' || r > 'Z') && (r < '0' || r > '9') &&
+			r != '.' && r != '-' && r != '_' && r != ':' {
 			plain = false
 			break
 		}

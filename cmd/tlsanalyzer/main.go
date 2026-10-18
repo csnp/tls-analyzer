@@ -49,6 +49,8 @@ var (
 	policyFile   string
 	targetsFile  string
 	concurrency  int
+
+	allowSingleLabel bool
 )
 
 // Exit codes. A compliance check that cannot fail a build is not a gate, and
@@ -363,11 +365,16 @@ func init() {
 			"line. Lines starting with # are skipped. Every line is\n"+
 			"checked before anything is looked up, and a file with\n"+
 			"any other line is refused")
+	rootCmd.Flags().BoolVar(&allowSingleLabel, "allow-single-label", false,
+		"Accept a one-word host name, such as intranet, in the\n"+
+			"targets file. Without it such a line is refused, since\n"+
+			"a token on a line by itself looks the same. localhost\n"+
+			"is accepted either way")
 	rootCmd.Flags().IntVarP(&concurrency, "concurrency", "c", 10,
 		"Number of concurrent scans for batch mode")
 }
 
-func runScan(cmd *cobra.Command, args []string) error {
+func runScan(cmd *cobra.Command, args []string) (runErr error) {
 	// Collect and check every target. Nothing is looked up until all of them
 	// have passed.
 	listed, err := collectTargets(args)
@@ -441,7 +448,13 @@ func runScan(cmd *cobra.Command, args []string) error {
 			// invocation, which this tool treats as untrusted text.
 			return fmt.Errorf("failed to create output file: %w", sanitize.WrapError(err))
 		}
-		defer f.Close()
+		// An error closing the report file fails the run, unless the run had
+		// already failed. The error used to be dropped.
+		defer func() {
+			if err := f.Close(); err != nil && runErr == nil {
+				runErr = fmt.Errorf("failed to write output file: %w", sanitize.WrapError(err))
+			}
+		}()
 		output = f
 	}
 
@@ -616,7 +629,10 @@ func scanBatchTargets(ctx context.Context, scan scanFunc, cnsa2 *analyzer.CNSA2A
 			return err
 		}
 		if outputFormat == "text" {
-			fmt.Fprintln(output) // Separator between results
+			// Separator between results
+			if _, err := fmt.Fprintln(output); err != nil {
+				return err
+			}
 		}
 	}
 
@@ -717,7 +733,7 @@ func collectTargets(args []string) ([]listedTarget, error) {
 			// Same reasoning as the output file: the os error carries the path.
 			return nil, fmt.Errorf("failed to open targets file: %w", sanitize.WrapError(err))
 		}
-		defer file.Close()
+		defer func() { _ = file.Close() }()
 
 		var refused []refusedLine
 		fromFile := 0
@@ -735,8 +751,13 @@ func collectTargets(args []string) ([]listedTarget, error) {
 			if line == "" || strings.HasPrefix(line, "#") {
 				continue
 			}
-			if _, _, err := scanner.CheckTarget(line); err != nil {
+			host, _, err := scanner.CheckTarget(line)
+			if err != nil {
 				refused = append(refused, refusedLine{line: number, reason: err.Error()})
+				continue
+			}
+			if !allowSingleLabel && isSingleLabel(host) {
+				refused = append(refused, refusedLine{line: number, reason: reasonSingleLabel})
 				continue
 			}
 			targets = append(targets, listedTarget{target: line, line: number})
@@ -758,6 +779,31 @@ func collectTargets(args []string) ([]listedTarget, error) {
 	}
 
 	return targets, nil
+}
+
+// reasonSingleLabel is why a targets file line whose host is one word is
+// refused. Like the reasons scanner.CheckTarget gives, it names nothing from the
+// line.
+const reasonSingleLabel = "a single word, accepted as a host name only with --allow-single-label"
+
+// isSingleLabel reports whether host, as scanner.CheckTarget returns it, is a
+// host name of one label other than localhost.
+//
+// A word of letters, digits, '-' and '_' is a valid host name, as localhost
+// is, so the target check passes a token that sits on a line by itself, and the
+// line was looked up: the 0.5.0 changelog records such a line reaching the DNS
+// server on Linux. A targets file line naming such a host is refused unless
+// --allow-single-label is given. localhost is reserved for the machine itself
+// (RFC 6761), so it is accepted without the flag, with or without a trailing
+// dot and in any case. A target typed on the command line is not checked for
+// this, since it was written as a target.
+func isSingleLabel(host string) bool {
+	name := strings.TrimSuffix(host, ".")
+	if strings.ContainsAny(name, ".:") {
+		// More than one label, or an IP address.
+		return false
+	}
+	return !strings.EqualFold(name, "localhost")
 }
 
 // refusedLinesError names the targets file the way the open and read errors do,
