@@ -68,9 +68,9 @@ Sample terminal output:
 ═══════════════════════════════════════════════════════════════
 
   Target: example.com
-  IP: 104.20.23.154
-  Scanned: 2026-07-30 14:11:25 MDT
-  Duration: 143.383583ms
+  IP: 172.66.147.243
+  Scanned: 2026-10-18 07:56:05 MDT
+  Duration: 119.54325ms
 
 ───────────────────────────────────────────────────────────────
   OVERALL GRADE
@@ -95,7 +95,7 @@ Sample terminal output:
 
     Current Phase:      New NSS Systems
     Timeline Score:     84/100
-    Days to Deadline:   154
+    Days to Deadline:   74
     Next Action:        Legacy protocol still enabled: TLS 1.2
     Scope:              milestone status reports whether this server can negotiate
                         the algorithms a milestone requires. A milestone can be met
@@ -126,10 +126,10 @@ Sample terminal output:
     Status:      ✓ Valid
     Subject:     CN=example.com
     Issuer:      CN=Cloudflare TLS Issuing ECC CA 3,O=SSL Corporation,C=US
-    Valid:       2026-07-29 to 2026-10-27
+    Valid:       2026-09-26 to 2026-12-25
     Key:         ECDSA 256-bit
     Signature:   ECDSA-SHA256
-    SANs:        example.com, *.example.com
+    SANs:        "example.com", "*.example.com"
     Name check:  ✓ valid for example.com
     Chain trust: ✓ chains to a root this host trusts
     Quantum:     ✗ Quantum Vulnerable
@@ -141,8 +141,8 @@ accepted suite, plus the protocol, cipher suite, quantum risk, vulnerability,
 recommendation and scan coverage sections, and every enumerated key exchange
 group and cipher suite.
 
-Generated with `tlsanalyzer example.com --no-color` on the 0.4.1 build, and
-re-checked against it line for line at that release.
+Generated with `tlsanalyzer example.com --no-color` on the 0.5.0 build, and
+re-checked against it line for line on 2026-10-18.
 
 The score breakdown reconciles: the four dimensions total 66 of 100 points, the
 vulnerability findings deduct 45, and the headline is 66 - 45 = 21.
