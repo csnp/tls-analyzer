@@ -280,6 +280,38 @@ field out.
 - **The README header no longer shows the Go Report Card badge.** goreportcard.com
   has retired its service, and the badge rendered "go report: retired" instead
   of a grade. The CI, Go Reference and License badges remain.
+- **`tlsanalyzer --version` prints the version.** It answered `Error: unknown
+  flag: --version`. `--version` and `-v` now print the same text as
+  `tlsanalyzer version`.
+- **`tlsanalyzer policies` writes no escape sequences to a pipe or a file, and
+  takes `--no-color`.** Piped, the listing wrapped each of its 5 policy names in
+  an ANSI bold sequence and a reset, because it read `--no-color` and never asked
+  whether stdout is a terminal, as the scan report does. `--no-color` was
+  defined for a scan only, so `tlsanalyzer policies --no-color` was refused as
+  an unknown flag. On a terminal the names are still bold unless `--no-color`
+  is given.
+- **`tlsanalyzer policies extra` and `tlsanalyzer version extra` are refused.**
+  Each printed its usual output and exited 0, while `tlsanalyzer print-policy
+  strict extra` refused its extra argument. Both now exit 1 with an error that
+  says the command takes no arguments, print nothing to stdout and do not
+  repeat the argument. The `policies` error names `print-policy` as the way to
+  print one policy.
+- **A flag value that cannot be read is refused the way a value out of range
+  is, without naming a Go function.** `--timeout abc` answered `invalid argument
+  "abc" for "-t, --timeout" flag: strconv.ParseInt: parsing "abc": invalid
+  syntax`, and now answers `--timeout: invalid value "abc": must be a whole
+  number of seconds`, in the shape of `--timeout: invalid value 0: must be at
+  least 1 second`. A value for `--port` or `--concurrency` that is not a whole
+  number is answered with `must be a whole number`, a whole number outside the
+  range of a 64-bit integer with `out of range`, and a value such as
+  `--no-color=maybe` for an on or off flag with `must be true or false`.
+- **The CLI Reference in `docs/commands.md` is the text `--help` prints.** It
+  was written by hand and had drifted from `--help`: it described `--port` as
+  "Target port, 1-65535, overrides a port in the target" where `--help` said
+  "Target port (overrides port in target)", and it left out the `completion`
+  and `help` commands. `--help` now uses that `--port` wording, the page shows
+  the `--help` text from `Usage:` to its end and its exit codes, and a test
+  fails if either block is not text `--help` prints.
 
 ## [0.4.1] - 2026-08-05
 

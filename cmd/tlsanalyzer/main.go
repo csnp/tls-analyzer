@@ -23,6 +23,7 @@ import (
 	"github.com/csnp/qramm-tls-analyzer/internal/scanner"
 	"github.com/csnp/qramm-tls-analyzer/pkg/types"
 	"github.com/spf13/cobra"
+	"github.com/spf13/pflag"
 	"gopkg.in/yaml.v3"
 )
 
@@ -209,18 +210,23 @@ Examples:
 var versionCmd = &cobra.Command{
 	Use:   "version",
 	Short: "Print version information",
+	Args:  noArguments(""),
 	Run: func(cmd *cobra.Command, args []string) {
-		fmt.Printf("qramm-tls-analyzer %s\n", version)
-		fmt.Printf("  commit: %s\n", commit)
-		fmt.Printf("  built:  %s\n", date)
-		fmt.Println()
-		fmt.Println("Part of the QRAMM Toolkit by CSNP (https://csnp.org)")
+		fmt.Print(versionText())
 	},
+}
+
+// versionText is what `tlsanalyzer version` and `tlsanalyzer --version` print.
+func versionText() string {
+	return fmt.Sprintf("qramm-tls-analyzer %s\n  commit: %s\n  built:  %s\n\n"+
+		"Part of the QRAMM Toolkit by CSNP (https://csnp.org)\n", version, commit, date)
 }
 
 var policiesCmd = &cobra.Command{
 	Use:   "policies",
 	Short: "List available security policies",
+	Args: noArguments("To print one policy, give its name to print-policy, " +
+		"for example: tlsanalyzer print-policy strict"),
 	Run: func(cmd *cobra.Command, args []string) {
 		evaluator := analyzer.NewPolicyEvaluator()
 		policies := evaluator.ListPolicies()
@@ -291,6 +297,15 @@ func init() {
 	rootCmd.AddCommand(policiesCmd)
 	rootCmd.AddCommand(printPolicyCmd)
 
+	// --version answered "unknown flag". With Version set, cobra answers the
+	// flag before it checks arguments or runs a scan, and prints the version
+	// template, which here is the version command's own text. The text reaches
+	// the template through a function instead of being parsed as one, because
+	// cobra panics on a template that does not parse.
+	rootCmd.Version = version
+	cobra.AddTemplateFunc("versionText", versionText)
+	rootCmd.SetVersionTemplate("{{versionText}}")
+
 	// Suppressing the usage block leaves a flag mistake with no next step, so
 	// point at --help explicitly rather than printing every flag.
 	//
@@ -300,6 +315,9 @@ func init() {
 	// surface as the report. The wrapper keeps the error chain intact so cobra
 	// still classifies it as a usage error.
 	rootCmd.SetFlagErrorFunc(func(cmd *cobra.Command, err error) error {
+		if refused := flagValueError(err); refused != nil {
+			return refused
+		}
 		return fmt.Errorf("%w\nRun 'tlsanalyzer --help' to see the available flags",
 			sanitize.WrapError(err))
 	})
@@ -309,7 +327,10 @@ func init() {
 		"Output format: text, json, sarif, cbom, html")
 	rootCmd.Flags().StringVarP(&outputFile, "output", "o", "",
 		"Output file (default: stdout)")
-	rootCmd.Flags().BoolVar(&noColor, "no-color", false,
+	// Persistent, so the policies listing, which is bold on a terminal, takes
+	// it too. Defined on the scan alone, `policies --no-color` was refused as an
+	// unknown flag.
+	rootCmd.PersistentFlags().BoolVar(&noColor, "no-color", false,
 		"Disable colored output")
 	rootCmd.Flags().BoolVar(&jsonCompact, "compact", false,
 		"Compact JSON output (no indentation)")
@@ -318,7 +339,7 @@ func init() {
 	rootCmd.Flags().IntVarP(&timeout, "timeout", "t", 30,
 		"Connection timeout in seconds")
 	rootCmd.Flags().IntVarP(&port, "port", "p", 443,
-		"Target port (overrides port in target)")
+		"Target port, 1-65535, overrides a port in the target")
 	rootCmd.Flags().StringVar(&sni, "sni", "",
 		"Server Name Indication (SNI) to use")
 
@@ -839,6 +860,81 @@ func atMostOneTarget(cmd *cobra.Command, args []string) error {
 	return nil
 }
 
+// noArguments refuses arguments to a command that takes none, and adds next to
+// the refusal when it is not empty. With no check, `policies extra` printed the
+// listing and exited 0, and `version extra` printed the version, while
+// `print-policy strict extra` refused its extra argument.
+//
+// The refusal counts the arguments and does not quote them, because they are
+// invocation text, the third source in the sanitize package comment.
+// cobra.NoArgs quotes the first one and calls it an unknown command.
+func noArguments(next string) cobra.PositionalArgs {
+	return func(cmd *cobra.Command, args []string) error {
+		if len(args) == 0 {
+			return nil
+		}
+		msg := fmt.Sprintf("%s takes no arguments, and was given %d", cmd.CommandPath(), len(args))
+		if next != "" {
+			msg += ". " + next
+		}
+		return errors.New(msg)
+	}
+}
+
+// flagValueError answers a flag value pflag could not read in the shape
+// validateFlags answers one it read but cannot use, so `--timeout abc` and
+// `--timeout 0` open the same way. pflag's own message quoted the error of the
+// Go function that failed:
+//
+//	invalid argument "abc" for "-t, --timeout" flag: strconv.ParseInt: parsing "abc": invalid syntax
+//
+// It returns nil for any other error, which keeps the generic message.
+func flagValueError(err error) error {
+	var invalid *pflag.InvalidValueError
+	if !errors.As(err, &invalid) || invalid.GetFlag() == nil {
+		return nil
+	}
+	flag := invalid.GetFlag()
+
+	var want string
+	switch flag.Value.Type() {
+	case "int":
+		want = "must be a whole number"
+		if flag.Name == "timeout" {
+			want += " of seconds"
+		}
+		// A whole number outside the range of a 64-bit integer is refused too,
+		// and telling its writer to give a whole number would not say why.
+		if errors.Is(err, strconv.ErrRange) {
+			want = "out of range"
+		}
+	case "bool":
+		want = "must be true or false"
+	default:
+		return nil
+	}
+
+	// The value is invocation text and is repeated, so it goes through %q,
+	// which escapes its control characters, and Bound, which caps its length:
+	// the pairing sanitize.Bound exists for.
+	return &flagValueRefusal{
+		message: fmt.Sprintf("--%s: invalid value %q: %s",
+			flag.Name, sanitize.Bound(invalid.GetValue(), sanitize.MaxReportDetail), want),
+		err: err,
+	}
+}
+
+// flagValueRefusal carries flagValueError's message and keeps the error chain
+// intact, as the generic flag error does.
+type flagValueRefusal struct {
+	message string
+	err     error
+}
+
+func (e *flagValueRefusal) Error() string { return e.message }
+
+func (e *flagValueRefusal) Unwrap() error { return e.err }
+
 // validateFlags rejects every flag value the tool cannot act on, before any
 // target is resolved or any connection is attempted.
 //
@@ -952,8 +1048,12 @@ func isTTY() bool {
 	return (fi.Mode() & os.ModeCharDevice) != 0
 }
 
+// colorBold makes s bold for the policies listing, which is written to stdout.
+// It read --no-color and nothing else, so `tlsanalyzer policies | cat` carried
+// an escape sequence on each side of every policy name. The scan report already
+// asks whether stdout is a terminal, and this asks the same.
 func colorBold(s string) string {
-	if noColor {
+	if noColor || !stdoutIsTTY() {
 		return s
 	}
 	return "\033[1m" + s + "\033[0m"
