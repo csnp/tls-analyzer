@@ -98,25 +98,20 @@ func TestSanitizeForReportTruncatesCorrectly(t *testing.T) {
 
 // TestSanitizeForReportCostDoesNotGrowQuadratically compares two sizes rather
 // than trusting one absolute number, so the check still means something on a
-// machine much faster or slower than this one. Doubling the input must not
-// quadruple the time.
+// machine much faster or slower than this one. Four times the input must not
+// cost more than eight times the time.
 func TestSanitizeForReportCostDoesNotGrowQuadratically(t *testing.T) {
-	measure := func(n int) time.Duration {
+	timeOf := func(n int) func() time.Duration {
 		input := strings.Repeat("a", n)
-		// Take the best of three, so a scheduling hiccup does not decide the test.
-		best := time.Duration(1<<62 - 1)
-		for i := 0; i < 3; i++ {
+		return func() time.Duration {
 			start := time.Now()
 			sanitizeForReport(input, 120)
-			if d := time.Since(start); d < best {
-				best = d
-			}
+			return time.Since(start)
 		}
-		return best
 	}
 
-	small := measure(50_000)
-	large := measure(200_000)
+	best := fastestOf(costRounds, costMinRounds, costBudget, timeOf(50_000), timeOf(200_000))
+	small, large := best[0], best[1]
 
 	// Four times the input. Linear predicts ~4x; quadratic predicts ~16x. Allow
 	// a very generous 8x before calling it quadratic, and put a floor under the
@@ -128,5 +123,98 @@ func TestSanitizeForReportCostDoesNotGrowQuadratically(t *testing.T) {
 		t.Errorf("4x the input cost %.1fx the time (%s -> %s); linear predicts ~4x and "+
 			"quadratic ~16x, so the truncation is scaling with the square of the input",
 			ratio, small, large)
+	}
+}
+
+// The cost comparison above runs each size up to costRounds times and stops
+// adding rounds once the time it has observed passes costBudget, after at
+// least costMinRounds.
+const (
+	costRounds    = 15
+	costMinRounds = 3
+	costBudget    = 2 * time.Second
+)
+
+// fastestOf runs each timing up to rounds times and returns the fastest
+// observation of each, in the order the timings were given.
+//
+// Each round runs every timing once, so the sizes take turns. Load from other
+// processes only adds time, which makes the fastest run the closest reading of
+// the work itself, but taking turns matters as much as repeating: when every
+// small run came before every large one, load that arrived in between landed
+// on the large side alone and read as superlinear growth.
+//
+// Once the observed time passes budget, no round starts after the first
+// minRounds, so a slow implementation is timed minRounds times, not rounds.
+func fastestOf(rounds, minRounds int, budget time.Duration, timings ...func() time.Duration) []time.Duration {
+	best := make([]time.Duration, len(timings))
+	for i := range best {
+		best[i] = time.Duration(1<<62 - 1)
+	}
+	var spent time.Duration
+	for round := 0; round < rounds; round++ {
+		if round >= minRounds && spent > budget {
+			break
+		}
+		for i, timing := range timings {
+			d := timing()
+			spent += d
+			if d < best[i] {
+				best[i] = d
+			}
+		}
+	}
+	return best
+}
+
+// TestFastestOfSeesThroughLoadThatStartsPartWay is the regression test for a
+// cost comparison that failed under go test -race -p 4 on a loaded machine
+// while the code it measures was unchanged: 4x the input cost 10.2x the time.
+//
+// The fake workload costs 1 ms at the small size and 4 ms at the large one on
+// a fake clock, and a call that starts while load is on costs three times as
+// much. The load arrives 3 ms in, once three small runs are done, and lasts
+// until 60 ms. When every small run comes before every large one, that load
+// lands on the large side alone and reads as 12x growth.
+func TestFastestOfSeesThroughLoadThatStartsPartWay(t *testing.T) {
+	const loadFrom, loadUntil = 3 * time.Millisecond, 60 * time.Millisecond
+	var now time.Duration
+	timing := func(cost time.Duration) func() time.Duration {
+		return func() time.Duration {
+			d := cost
+			if now >= loadFrom && now < loadUntil {
+				d *= 3
+			}
+			now += d
+			return d
+		}
+	}
+
+	best := fastestOf(costRounds, costMinRounds, time.Hour, timing(time.Millisecond), timing(4*time.Millisecond))
+
+	if best[0] != time.Millisecond || best[1] != 4*time.Millisecond {
+		t.Errorf("fastest observations are %s and %s, want 1ms and 4ms: load that "+
+			"arrived part way through the measurement decided the result", best[0], best[1])
+	}
+}
+
+// TestFastestOfStopsAtTheBudget keeps a quadratic regression from turning the
+// cost comparison into a run that only ends at the test binary's timeout: at
+// the pre-fix cost of 46 s per 200 KB call, fifteen rounds would take over
+// eleven minutes.
+func TestFastestOfStopsAtTheBudget(t *testing.T) {
+	calls := []int{0, 0}
+	slow := func(i int) func() time.Duration {
+		return func() time.Duration {
+			calls[i]++
+			return 30 * time.Second
+		}
+	}
+
+	fastestOf(costRounds, costMinRounds, costBudget, slow(0), slow(1))
+
+	if calls[0] != costMinRounds || calls[1] != costMinRounds {
+		t.Errorf("each timing ran %v times, want %d: past the budget only the minimum "+
+			"number of rounds should run", calls, costMinRounds)
 	}
 }
