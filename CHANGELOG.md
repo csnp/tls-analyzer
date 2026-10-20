@@ -366,6 +366,14 @@ field out.
   prints `TLS 1.0      ! Supported (Deprecated)` and
   `legend: ✓ met, ◐ partial, ○ in progress, ✗ not met, - not yet required`.
   The words and colours are unchanged.
+- **The README's quick start starts with the release binary.** It opened with
+  `git clone`, `go build` and `sudo mv`, which need Go 1.25+ and `sudo`, and
+  left the pre-built archives to a link. The first block now downloads the
+  latest release's archive for macOS on Apple silicon and its `checksums.txt`
+  with `curl`, unpacks the archive only after `shasum` reports it `OK`, and runs
+  `./tlsanalyzer version`. Building from source comes second and runs the
+  binary where it was built, without `sudo`. `docs/install.md` names the
+  archive for each platform.
 
 ## [0.4.1] - 2026-08-05
 

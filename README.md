@@ -31,9 +31,27 @@ Part of the [QRAMM (Quantum Readiness Assurance Maturity Model)](https://qramm.o
 
 ## Quick Start
 
-### Option 1: Build from Source
+### Option 1: Download a binary
 
-Requires Go 1.25+ ([install Go](https://go.dev/doc/install)), which is what `go.mod` declares
+This needs no Go toolchain and no `sudo`. On macOS with Apple silicon, copy and
+paste this block. It downloads the latest release's archive and its
+`checksums.txt`, checks the archive against that file, and unpacks the
+`tlsanalyzer` binary into the current directory:
+
+```bash
+curl -fsSLO https://github.com/csnp/tls-analyzer/releases/latest/download/tlsanalyzer-darwin-arm64.tar.gz
+curl -fsSLO https://github.com/csnp/tls-analyzer/releases/latest/download/checksums.txt
+shasum -a 256 -c --ignore-missing checksums.txt && tar -xzf tlsanalyzer-darwin-arm64.tar.gz
+./tlsanalyzer version
+```
+
+`tar` runs only when the check prints `tlsanalyzer-darwin-arm64.tar.gz: OK`. For
+an Intel Mac, Linux or Windows, [docs/install.md](docs/install.md) names the
+archive to download.
+
+### Option 2: Build from source
+
+Requires Go 1.25+ ([install Go](https://go.dev/doc/install)), which is what `go.mod` declares.
 
 Copy and paste this entire block:
 
@@ -41,21 +59,16 @@ Copy and paste this entire block:
 git clone https://github.com/csnp/qramm-tls-analyzer.git
 cd qramm-tls-analyzer
 go build -o tlsanalyzer ./cmd/tlsanalyzer
-sudo mv tlsanalyzer /usr/local/bin/
-cd ..
-tlsanalyzer version
+./tlsanalyzer version
 ```
 
-### Option 2: Download Binary
+### Run your first scan
 
-Download pre-built binaries from [Releases](https://github.com/csnp/qramm-tls-analyzer/releases).
-To check a download against the release's `checksums.txt`, follow [docs/install.md](docs/install.md).
-
-### Run Your First Scan
+From the directory that holds `tlsanalyzer`:
 
 ```bash
 # Scan a domain you own or have permission to test
-tlsanalyzer yourdomain.com
+./tlsanalyzer yourdomain.com
 ```
 
 Expected output: Security grade, quantum risk score, CNSA 2.0 timeline.

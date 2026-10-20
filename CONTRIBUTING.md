@@ -172,6 +172,15 @@ Releases are managed by maintainers:
 3. Create annotated tag: `git tag -a v0.x.0 -m "Release v0.x.0"`
 4. Push tag: `git push origin v0.x.0`
 5. GitHub Actions builds and publishes release
+6. Render the Homebrew formula from the release's published `checksums.txt`, and
+   commit the output to [csnp/homebrew-tap](https://github.com/csnp/homebrew-tap)
+   as `Formula/tlsanalyzer.rb`:
+
+   ```bash
+   dir=$(mktemp -d)
+   curl -fsSL -o "$dir/checksums.txt" https://github.com/csnp/tls-analyzer/releases/download/v0.x.0/checksums.txt
+   go run ./packaging/brewformula -version 0.x.0 -checksums "$dir/checksums.txt" > "$dir/tlsanalyzer.rb"
+   ```
 
 ## Getting Help
 
