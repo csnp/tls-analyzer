@@ -20,17 +20,17 @@ import (
 // will not offer, and when none is left it returns "tls: no supported elliptic
 // curves for ECDHE" before writing a ClientHello. clientHelloGroups then waited
 // out its 5-second deadline for a ClientHello that was never coming, and
-// hybridGroupsNotOffered returned nil. With GODEBUG=fips140=on,tlsmlkem=0 on Go
-// 1.26.3 a scan took 5 seconds longer, a failed handshake was reported without
-// the groups this build cannot offer, and a completed scan carried no note that
-// the hybrid groups were not probed.
+// hybridGroupsNotOffered, now groupsNotOffered, returned nil. With
+// GODEBUG=fips140=on,tlsmlkem=0 on Go 1.26.3 a scan took 5 seconds longer, a
+// failed handshake was reported without the groups this build cannot offer, and
+// a completed scan carried no note that the hybrid groups were not probed.
 //
 // The mutation each test is written to catch:
 //   - clientHelloGroups waits for the server's read to time out after the
 //     client has returned:
 //     TestClientHelloGroupsReturnsAsSoonAsTheClientGivesUp.
 //   - clientHelloGroups reports a client that wrote nothing as a ClientHello it
-//     could not read, so hybridGroupsNotOffered names no group:
+//     could not read, so groupsNotOffered names no group:
 //     TestClientHelloGroupsReturnsAsSoonAsTheClientGivesUp and
 //     TestAFIPSBuildWithoutMLKEMNamesTheHybridGroupsItCannotOffer.
 //
@@ -64,8 +64,9 @@ func TestClientHelloGroupsReturnsAsSoonAsTheClientGivesUp(t *testing.T) {
 	}
 }
 
-// fipsChildEnv marks the child process that
-// TestAFIPSBuildWithoutMLKEMNamesTheHybridGroupsItCannotOffer starts.
+// fipsChildEnv marks the child processes that
+// TestAFIPSBuildWithoutMLKEMNamesTheHybridGroupsItCannotOffer and
+// TestAFIPSBuildListsX25519AsNotProbed start.
 const fipsChildEnv = "TLS_ANALYZER_TEST_FIPS_CHILD"
 
 // TestAFIPSBuildWithoutMLKEMNamesTheHybridGroupsItCannotOffer runs the tests
@@ -80,7 +81,7 @@ func TestAFIPSBuildWithoutMLKEMNamesTheHybridGroupsItCannotOffer(t *testing.T) {
 	}
 
 	cmd := exec.Command(os.Args[0], "-test.count=1", "-test.v",
-		"-test.run=^(TestHybridGroupsNotOfferedMatchesAHandshake|TestFIPSChildScanNamesTheHybridGroupsItCannotOffer)$")
+		"-test.run=^(TestGroupsNotOfferedMatchesAHandshake|TestFIPSChildScanNamesTheHybridGroupsItCannotOffer)$")
 	cmd.Env = append(os.Environ(), "GODEBUG=fips140=on,tlsmlkem=0", fipsChildEnv+"=1")
 	out, err := cmd.CombinedOutput()
 	if strings.Contains(string(out), "--- SKIP: TestFIPSChildScanNamesTheHybridGroupsItCannotOffer") {
@@ -90,7 +91,7 @@ func TestAFIPSBuildWithoutMLKEMNamesTheHybridGroupsItCannotOffer(t *testing.T) {
 		t.Fatalf("the tests in the FIPS child process failed (%v):\n%s", err, out)
 	}
 	if !strings.Contains(string(out), "--- PASS: TestFIPSChildScanNamesTheHybridGroupsItCannotOffer") ||
-		!strings.Contains(string(out), "--- PASS: TestHybridGroupsNotOfferedMatchesAHandshake") {
+		!strings.Contains(string(out), "--- PASS: TestGroupsNotOfferedMatchesAHandshake") {
 		t.Fatalf("the FIPS child process did not run both tests:\n%s", out)
 	}
 }

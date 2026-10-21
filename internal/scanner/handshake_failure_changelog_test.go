@@ -20,8 +20,8 @@ import (
 // figures the 0.5.0 entries of CHANGELOG.md give for the error of a scan that
 // completed no TLS handshake to the error handshakeFailureMessage builds after
 // a handshake_failure alert: its size for 127.0.0.1 and ::1 on a five-digit
-// port, with and without GODEBUG=fips140=on,tlsmlkem=0, and the longest
-// address for which both commands of a default build fit within the CLI's cut.
+// port, with and without GODEBUG=tlsmlkem=0, and the longest address for which
+// both commands of a default build fit within the CLI's cut.
 //
 // Those entries gave figures measured before the error gained its sentence
 // about cipher suites, which made each of those errors 28 bytes longer, and
@@ -52,7 +52,7 @@ func TestTheChangelogGivesTheHandshakeFailureSizesThisTreeBuilds(t *testing.T) {
 	x25519, p256, p384 := tlsGroups[groupX25519MLKEM768].name,
 		tlsGroups[groupSecP256r1MLKEM768].name, tlsGroups[groupSecP384r1MLKEM1024].name
 	two := []string{p256, p384}           // the groups a default build does not offer
-	three := []string{x25519, p256, p384} // GODEBUG=fips140=on,tlsmlkem=0
+	three := []string{x25519, p256, p384} // GODEBUG=tlsmlkem=0
 
 	// size is the length of the error as the CLI prints it, which the entries
 	// give for errors that hold every command and name each group only there.
@@ -94,8 +94,8 @@ func TestTheChangelogGivesTheHandshakeFailureSizesThisTreeBuilds(t *testing.T) {
 			"IPv6 address and port of up to %d characters",
 			[]any{size(v6, two), longestWithEveryCommand(t, 23, 63, ipv6TargetOfLength, alert, two)}},
 		{"after a handshake_failure alert on a five-digit port, it is %d bytes for " +
-			"`127.0.0.1` and %d bytes for `::1`, and %d bytes for `127.0.0.1` with the " +
-			"setting above",
+			"`127.0.0.1` and %d bytes for `::1`, and %d bytes for `127.0.0.1` with " +
+			"`GODEBUG=tlsmlkem=0`",
 			[]any{size(v4, two), size(v6, two), size(v4, three)}},
 	}
 	for _, c := range claims {

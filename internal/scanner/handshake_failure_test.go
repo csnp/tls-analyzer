@@ -43,13 +43,19 @@ import (
 //   - the openssl commands give the address unquoted, as net.JoinHostPort
 //     renders it: TestTheOpensslCommandsQuoteAnIPv6Address. This one was
 //     observed: that test failed on the earlier code with the address bare.
-//   - hybridGroupsNotOffered returns nil, as it does when no ClientHello was
-//     read: TestHybridGroupsNotOfferedMatchesAHandshake, on any build that does
-//     not offer the P-curve hybrids.
-//   - hybridGroupsNotOffered decides by toolchainSupportsGroup instead of
-//     reading a ClientHello: TestHybridGroupsNotOfferedMatchesAHandshake, on a
-//     Go 1.26 or later toolchain, which names the P-curve hybrids but keeps them
-//     disabled for a module declaring go 1.25.
+//   - groupsNotOffered returns nil, as it does when no ClientHello was read:
+//     TestGroupsNotOfferedMatchesAHandshake, on any build that does not offer
+//     the P-curve hybrids.
+//   - groupsNotOffered decides by toolchainSupportsGroup instead of reading a
+//     ClientHello: TestGroupsNotOfferedMatchesAHandshake, on a Go 1.26 or later
+//     toolchain, which names the P-curve hybrids but keeps them disabled for a
+//     module declaring go 1.25.
+//   - groupsNotOffered reads only the three hybrid groups, as it did before it
+//     read every group the scan probes: TestGroupsNotOfferedMatchesAHandshake,
+//     in the FIPS 140-3 child processes that
+//     TestAFIPSBuildWithoutMLKEMNamesTheHybridGroupsItCannotOffer and
+//     TestAFIPSBuildListsX25519AsNotProbed start, where X25519 is not offered.
+//     It was observed to fail in both.
 
 // startTLSServerWithConfig serves cfg on a loopback port for the duration of
 // the test. Every accepted connection runs the server side of a handshake, so
@@ -214,7 +220,7 @@ func TestAServerSharingNoKeyExchangeGroupIsNotReportedUnreachable(t *testing.T) 
 		}
 		alone[offered[0]] = true
 	}
-	notOffered := hybridGroupsNotOffered()
+	notOffered := groupsNotOffered()
 	for _, group := range notOffered {
 		want := "openssl s_client -connect " + addr + " -groups " + group
 		if !alone[group] || !strings.Contains(msg, want) {
@@ -259,7 +265,7 @@ func TestTheOpensslCommandsQuoteAnIPv6Address(t *testing.T) {
 	msg := scanExpectingError(t, host, port).Error()
 	t.Logf("error for %s, %d bytes: %s", addr, len(msg), msg)
 
-	notOffered := hybridGroupsNotOffered()
+	notOffered := groupsNotOffered()
 	if len(notOffered) == 0 {
 		t.Fatalf("this build cannot negotiate SecP256r1MLKEM768, the server's only group, "+
 			"yet the error gives no openssl command to check it: %q", msg)
@@ -396,18 +402,16 @@ func checkUnreachableAddress(t *testing.T, host string, port int) {
 	}
 }
 
-// TestHybridGroupsNotOfferedMatchesAHandshake checks the groups the error names
-// against what crypto/tls does in this build: a hybrid group is listed as not
-// offered exactly when a client and a server that both allow only that group
-// cannot negotiate it.
-func TestHybridGroupsNotOfferedMatchesAHandshake(t *testing.T) {
+// TestGroupsNotOfferedMatchesAHandshake checks the groups the error names, and
+// the scan lists as not probed, against what crypto/tls does in this build:
+// each group the scan probes is listed as not offered exactly when a client
+// and a server that both allow only that group cannot negotiate it.
+func TestGroupsNotOfferedMatchesAHandshake(t *testing.T) {
 	notBefore, notAfter := validFrom()
 	cert := issueLeaf(t, []string{"localhost"}, nil, notBefore, notAfter)
-	notOffered := hybridGroupsNotOffered()
+	notOffered := groupsNotOffered()
 
-	for _, id := range []tls.CurveID{
-		groupX25519MLKEM768, groupSecP256r1MLKEM768, groupSecP384r1MLKEM1024,
-	} {
+	for _, id := range keyExchangeCandidates {
 		name := tlsGroups[id].name
 		listed := slices.Contains(notOffered, name)
 		negotiated := negotiatesOnly(t, cert.serving, id)

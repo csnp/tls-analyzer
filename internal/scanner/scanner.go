@@ -424,7 +424,7 @@ func (s *Scanner) noHandshakeError(ctx context.Context, host string, port int) e
 				"Scan it again", addr)
 	}
 
-	return errors.New(handshakeFailureMessage(addr, hsErr, hybridGroupsNotOffered()))
+	return errors.New(handshakeFailureMessage(addr, hsErr, groupsNotOffered()))
 }
 
 // handshakeFailureMessage describes a TLS handshake with addr that failed with
@@ -490,12 +490,16 @@ func handshakeFailureMessage(addr string, hsErr error, notOffered []string) stri
 	// address the scanner accepts, a 254-byte host name and a five-digit port,
 	// after any TLS alert, and only the commands that fit whole follow. The
 	// cipher suites share that sentence, introduced with "like" rather than
-	// "such as", which keeps a whole command within the cut under that GODEBUG
-	// setting for a 47-byte IPv6 address, such as
+	// "such as", and the commands follow "Check each group on its own", which
+	// keeps a whole command within the cut for a 47-byte IPv6 address, such as
 	// [ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535, after any TLS alert and
-	// after the server closes the connection. With "such as", the two alerts
-	// with the longest text, 113 and 121, left the first command one byte past
-	// the cut, so the error gave none.
+	// after the server closes the connection. That holds for the groups left
+	// out by default, with GODEBUG=fips140=on, with tlsmlkem=0, and with both,
+	// which leave out four. With "such as" and the three hybrid groups left out,
+	// the two alerts with the longest text, 113 and 121, left the first command
+	// one byte past the cut, so the error gave none. With the four groups and
+	// "Check each group with its own command", six alerts and an unexpected EOF
+	// did.
 	names := notOffered[len(notOffered)-1]
 	noun := "group"
 	if n := len(notOffered); n > 1 {
@@ -504,7 +508,7 @@ func handshakeFailureMessage(addr string, hsErr error, notOffered []string) stri
 	}
 	msg += fmt.Sprintf(" This scanner does not offer the key exchange %s %s, and this handshake "+
 		"lacks cipher suites like 3DES, RC4 or DHE.", noun, names) + reached
-	sep := " Check each group with its own command, for example: "
+	sep := " Check each group on its own, for example: "
 	for _, cmd := range commands {
 		if len(msg)+len(sep)+len(cmd) > sanitize.MaxReportDetail {
 			break
@@ -515,28 +519,42 @@ func handshakeFailureMessage(addr string, hsErr error, notOffered []string) stri
 	return msg
 }
 
-// hybridGroupsNotOffered names the hybrid post-quantum groups this build's TLS
-// client leaves out of its ClientHello even when they are requested. A group is
-// left out when the Go toolchain predates it, and also when the toolchain
-// implements it but keeps it disabled for this module's declared Go version
-// (GODEBUG tlssecpmlkem). The name a CurveID renders as shows only the first
-// case, so this has crypto/tls write a ClientHello and reads the groups in it.
-//
-// It returns nil when every hybrid group is offered and when the result could
-// not be observed, so a caller never names a group it did not observe missing.
-var hybridGroupsNotOffered = sync.OnceValue(func() []string {
-	hybrids := []tls.CurveID{groupX25519MLKEM768, groupSecP256r1MLKEM768, groupSecP384r1MLKEM1024}
+// keyExchangeCandidates are the key exchange groups probeKeyExchangeGroups
+// offers a server one at a time, post-quantum hybrids first.
+var keyExchangeCandidates = []tls.CurveID{
+	groupX25519MLKEM768,
+	groupSecP256r1MLKEM768,
+	groupSecP384r1MLKEM1024,
+	tls.X25519,
+	tls.CurveP256,
+	tls.CurveP384,
+	tls.CurveP521,
+}
 
+// groupsNotOffered names the groups of keyExchangeCandidates this build's TLS
+// client leaves out of its ClientHello even when they are requested, in that
+// order. A group is left out when the Go toolchain predates it, when the
+// toolchain implements it but keeps it disabled for this module's declared Go
+// version (GODEBUG tlssecpmlkem), and when GODEBUG turns it off: tlsmlkem=0
+// turns off the hybrid groups, and fips140=on turns off X25519, which FIPS
+// 140-3 mode does not allow. The name a CurveID renders as shows only the first
+// case, so this has crypto/tls write a ClientHello and reads the groups in it.
+// Reading only the hybrid groups missed X25519: with GODEBUG=fips140=on a
+// server offering X25519 was reported as not supporting it, and the error for a
+// server offering only X25519 named two other groups.
+//
+// It returns nil when every group is offered and when the result could not be
+// observed, so a caller never names a group it did not observe missing.
+var groupsNotOffered = sync.OnceValue(func() []string {
 	// A client left with none of these groups writes no ClientHello, which
-	// clientHelloGroups reports as offering none of them. A filler group such as
-	// X25519 would not prevent that: FIPS 140-3 mode does not offer X25519.
-	offered, ok := clientHelloGroups(hybrids)
+	// clientHelloGroups reports as offering none of them.
+	offered, ok := clientHelloGroups(keyExchangeCandidates)
 	if !ok {
 		return nil
 	}
 
 	var missing []string
-	for _, id := range hybrids {
+	for _, id := range keyExchangeCandidates {
 		if !slices.Contains(offered, id) {
 			missing = append(missing, tlsGroups[id].name)
 		}
@@ -720,11 +738,12 @@ func toolchainSupportsGroup(id tls.CurveID) bool {
 // buildOffersGroup reports whether this build's TLS client puts a group in its
 // ClientHello when asked to. Naming a group is not enough: Go 1.26 names
 // SecP256r1MLKEM768 and SecP384r1MLKEM1024 but leaves them out for a module that
-// declares go 1.25 (GODEBUG tlssecpmlkem=0), so every probe of them failed and a
-// server offering one was reported as not supporting it, with no coverage note.
-// hybridGroupsNotOffered reads a real ClientHello for that.
+// declares go 1.25 (GODEBUG tlssecpmlkem=0), and leaves X25519 out in FIPS 140-3
+// mode, so every probe of such a group failed and a server offering it was
+// reported as not supporting it, with no coverage note. groupsNotOffered reads
+// a real ClientHello for that.
 func buildOffersGroup(id tls.CurveID) bool {
-	return toolchainSupportsGroup(id) && !slices.Contains(hybridGroupsNotOffered(), tlsGroups[id].name)
+	return toolchainSupportsGroup(id) && !slices.Contains(groupsNotOffered(), tlsGroups[id].name)
 }
 
 // probeKeyExchangeGroups determines which key exchange groups the server
@@ -738,24 +757,14 @@ func buildOffersGroup(id tls.CurveID) bool {
 func (s *Scanner) probeKeyExchangeGroups(ctx context.Context, host string, port int,
 	reached *reachedAddresses) (supported []types.KeyExchange, skipped []string) {
 
-	candidates := []tls.CurveID{
-		groupX25519MLKEM768,
-		groupSecP256r1MLKEM768,
-		groupSecP384r1MLKEM1024,
-		tls.X25519,
-		tls.CurveP256,
-		tls.CurveP384,
-		tls.CurveP521,
-	}
-
 	type probeResult struct {
 		ke      *types.KeyExchange
 		skipped string
 	}
-	results := make([]probeResult, len(candidates))
+	results := make([]probeResult, len(keyExchangeCandidates))
 
 	var wg sync.WaitGroup
-	for i, id := range candidates {
+	for i, id := range keyExchangeCandidates {
 		if !buildOffersGroup(id) {
 			info := tlsGroups[id]
 			results[i] = probeResult{skipped: info.name}

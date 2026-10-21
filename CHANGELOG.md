@@ -246,10 +246,11 @@ field out.
   command for the first group. An error whose commands all fit names the groups
   only in its commands, as before: after a handshake_failure alert on a
   five-digit port, it is 426 bytes for `127.0.0.1` and 418 bytes for `::1`, and
-  495 bytes for `127.0.0.1` with the setting above. A test builds the error for
-  every host name length the scanner accepts, at ports 443 and 65535, and for
-  the longest name after each of the 256 TLS alert values, and finds each group
-  named within the 500 bytes.
+  495 bytes for `127.0.0.1` with `GODEBUG=tlsmlkem=0`, where the scanner offers
+  none of the three hybrid groups. A test builds the error for every host name
+  length the scanner accepts, at ports 443 and 65535, and for the longest name
+  after each of the 256 TLS alert values, and finds each group named within the
+  500 bytes.
 - **A port that is not a number from 1 to 65535 is refused without quoting it.**
   The error used to repeat the text after the colon, which on a `key: value` line
   is the value.
@@ -374,6 +375,28 @@ field out.
   `./tlsanalyzer version`. Building from source comes second and runs the
   binary where it was built, without `sudo`. `docs/install.md` names the
   archive for each platform.
+- **Run with `GODEBUG=fips140=on`, a scan lists `X25519` as a key exchange
+  group not probed**, instead of reporting a server that offers it as not
+  supporting it. FIPS 140-3 mode leaves `X25519` out of the ClientHello, and
+  the scan read only the three hybrid groups to learn which groups it could
+  offer, so its probe of `X25519` could only fail. Measured with Go 1.26.3
+  against a local server offering `X25519MLKEM768` and `X25519`, the scan found
+  only `X25519MLKEM768`, and its scan coverage note named `SecP256r1MLKEM768`
+  and `SecP384r1MLKEM1024`; the note now names `X25519` after them, and the
+  grade is unchanged. Against a local server offering only `X25519`, the
+  handshake failure gave a command for each of those two groups, and now gives
+  a third, for example
+  `openssl s_client -connect 127.0.0.1:60464 -groups X25519`. With
+  `GODEBUG=fips140=on,tlsmlkem=0`, the note and the error name `X25519` after
+  the three hybrid groups. Four groups leave less room for the commands, so the
+  words before them are now `Check each group on its own, for example:`, 10
+  bytes shorter than `Check each group with its own command, for example:`.
+  With the longer words and four groups, the error for a 47-byte IPv6 address
+  and port, such as `[ffff:ffff:ffff:ffff:ffff:ffff:ffff:ffff]:65535`, gave no
+  whole command after six of the 256 TLS alert values or after an unexpected
+  EOF; it now gives one after each alert value and after the server closes the
+  connection. By default and with `GODEBUG=tlsmlkem=0` alone, the groups listed
+  and named are unchanged.
 
 ## [0.4.1] - 2026-08-05
 

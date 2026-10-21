@@ -45,6 +45,11 @@ import (
 //     that a 47-byte IPv6 address keeps no whole command after the alerts with
 //     the longest text: TestAHandshakeFailureKeepsACommandForA47ByteIPv6Address.
 //     It was observed to fail with the cipher suites introduced by "such as".
+//   - the words before the first command are made longer, which the four
+//     groups not offered under GODEBUG=fips140=on,tlsmlkem=0 leave no room for:
+//     TestAHandshakeFailureKeepsACommandForA47ByteIPv6Address. It was observed
+//     to fail with the commands introduced by "Check each group with its own
+//     command".
 
 // TestAHandshakeFailureNamesEveryGroupWithinTheCut builds the error for host
 // names of every length the scanner accepts: 1 to 253 bytes at port 443 and
@@ -59,13 +64,7 @@ import (
 // does not offer, gives each openssl command whole and in the groups' order,
 // and after the first command leaves one out only when it would not fit.
 func TestAHandshakeFailureNamesEveryGroupWithinTheCut(t *testing.T) {
-	x25519, p256, p384 := tlsGroups[groupX25519MLKEM768].name,
-		tlsGroups[groupSecP256r1MLKEM768].name, tlsGroups[groupSecP384r1MLKEM1024].name
-	groupSets := [][]string{
-		{x25519, p256, p384}, // GODEBUG=fips140=on,tlsmlkem=0
-		{p256, p384},         // a Go 1.25 build
-		{x25519},             // a single group, named in the singular
-	}
+	groupSets := groupsNotOfferedSets()
 
 	alerts := make([]error, 256)
 	longest := 0
@@ -206,12 +205,13 @@ func TestAHandshakeFailureGivesTheCommandsThatFit(t *testing.T) {
 // TestAHandshakeFailureNamesEveryGroupWithinTheCut uses. Read as the CLI prints
 // it, every error gives at least one whole openssl command. With the cipher
 // suites introduced by "such as" and the three hybrid groups not offered, as
-// under GODEBUG=fips140=on,tlsmlkem=0, none was given after alert 113 (bad
-// certificate status response) or alert 121 (encrypted client hello required).
+// under GODEBUG=tlsmlkem=0, none was given after alert 113 (bad certificate
+// status response) or alert 121 (encrypted client hello required). With X25519
+// not offered either, as under GODEBUG=fips140=on,tlsmlkem=0, and the commands
+// introduced by "Check each group with its own command", none was given after
+// six alerts, 113 and 121 among them, or after an unexpected EOF.
 func TestAHandshakeFailureKeepsACommandForA47ByteIPv6Address(t *testing.T) {
-	x25519, p256, p384 := tlsGroups[groupX25519MLKEM768].name,
-		tlsGroups[groupSecP256r1MLKEM768].name, tlsGroups[groupSecP384r1MLKEM1024].name
-	groupSets := [][]string{{x25519, p256, p384}, {p256, p384}, {x25519}}
+	groupSets := groupsNotOfferedSets()
 
 	reasons := []error{io.EOF, io.ErrUnexpectedEOF}
 	for a := range 256 {
@@ -253,6 +253,23 @@ func TestAHandshakeFailureKeepsACommandForA47ByteIPv6Address(t *testing.T) {
 			}
 		}
 		t.Logf("the longest error for %s is %d bytes: %s", addr, len(longest), longest)
+	}
+}
+
+// groupsNotOfferedSets returns the sets of groups the error is built for: those
+// groupsNotOffered names in a default build and with GODEBUG=fips140=on,
+// tlsmlkem=0 or both, as measured with Go 1.26.3, and a single group, which the
+// error names in the singular.
+func groupsNotOfferedSets() [][]string {
+	hybrid, p256, p384 := tlsGroups[groupX25519MLKEM768].name,
+		tlsGroups[groupSecP256r1MLKEM768].name, tlsGroups[groupSecP384r1MLKEM1024].name
+	x25519 := tlsGroups[tls.X25519].name // FIPS 140-3 mode does not offer it
+	return [][]string{
+		{hybrid, p256, p384, x25519}, // GODEBUG=fips140=on,tlsmlkem=0
+		{hybrid, p256, p384},         // GODEBUG=tlsmlkem=0
+		{p256, p384, x25519},         // GODEBUG=fips140=on
+		{p256, p384},                 // a default build
+		{hybrid},                     // a single group
 	}
 }
 
