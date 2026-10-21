@@ -78,7 +78,7 @@ func TestALegacyOnlyServerErrorNamesTheCipherSuites(t *testing.T) {
 		t.Errorf("error is %d bytes, over the %d the CLI prints, so its end is cut off: %q",
 			len(msg), sanitize.MaxReportDetail, msg)
 	}
-	for _, group := range hybridGroupsNotOffered() {
+	for _, group := range groupsNotOffered() {
 		if want := "openssl s_client -connect " + addr + " -groups " + group; !strings.Contains(msg, want) {
 			t.Errorf("the error no longer gives %q: %q", want, msg)
 		}
