@@ -1,29 +1,15 @@
-<h1 align="center">QRAMM TLS Analyzer</h1>
+# QRAMM TLS Analyzer
 
-<p align="center">
-  <strong>Quantum-Ready TLS Security Assessment Tool</strong>
-</p>
+[![CI](https://github.com/csnp/tls-analyzer/actions/workflows/ci.yml/badge.svg)](https://github.com/csnp/tls-analyzer/actions/workflows/ci.yml)
+[![License: MIT](https://img.shields.io/badge/License-MIT-blue.svg)](LICENSE)
 
-<p align="center">
-  <a href="https://github.com/csnp/qramm-tls-analyzer/actions"><img src="https://github.com/csnp/qramm-tls-analyzer/workflows/CI/badge.svg" alt="CI Status"></a>
-  <a href="https://pkg.go.dev/github.com/csnp/qramm-tls-analyzer"><img src="https://pkg.go.dev/badge/github.com/csnp/qramm-tls-analyzer.svg" alt="Go Reference"></a>
-  <a href="LICENSE"><img src="https://img.shields.io/badge/License-MIT-blue.svg" alt="License"></a>
-</p>
+> Part of the [QRAMM](https://github.com/csnp/qramm) toolkit by CSNP: [CryptoScan](https://github.com/csnp/cryptoscan), [CryptoDeps](https://github.com/csnp/cryptodeps), **TLS Analyzer**. Framework: [qramm.org](https://qramm.org).
 
-<p align="center">
-  <a href="#quick-start">Quick Start</a> &bull;
-  <a href="#what-it-does">What it does</a> &bull;
-  <a href="#usage">Usage</a> &bull;
-  <a href="#output-formats">Output Formats</a> &bull;
-  <a href="#policies">Policies</a> &bull;
-  <a href="CONTRIBUTING.md">Contributing</a>
-</p>
+[Website](https://qramm.org) · [Docs](https://qramm.org/learn/tls-analyzer-guide.html)
 
----
+**Quantum-Ready TLS Security Assessment Tool**
 
 **QRAMM TLS Analyzer** is an open-source command-line tool that performs comprehensive TLS security analysis with a focus on **post-quantum cryptography (PQC) readiness**. As quantum computing advances, organizations must prepare their cryptographic infrastructure for the post-quantum era. This tool helps you understand your current TLS posture and provides actionable guidance for CNSA 2.0 compliance.
-
-Part of the [QRAMM (Quantum Readiness Assurance Maturity Model)](https://qramm.org) toolkit, developed by the [Cyber Security Non-Profit (CSNP)](https://csnp.org).
 
 > **Responsible use warning**
 >
